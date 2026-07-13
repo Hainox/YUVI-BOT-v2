@@ -1,0 +1,448 @@
+/* ─────────────────────────────────────────────────────────────────────
+   Production-specific styles for the Mini App.
+   Dark casino theme (matches reference); the slot itself keeps its own
+   bright Daioh palette and is letterboxed against the dark shell.
+   ───────────────────────────────────────────────────────────────────── */
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  background: #0d0a18;
+  overflow-x: hidden;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+  -webkit-user-select: none;
+  color: #e4e2ec;
+  font-family: 'Russo One', 'Anton', system-ui, -apple-system, sans-serif;
+}
+
+.webapp-root {
+  min-height: 100vh;
+  width: 100%;
+  max-width: 520px;
+  margin: 0 auto;
+  background: #0d0a18;
+  padding-bottom: env(safe-area-inset-bottom, 0);
+  position: relative;
+}
+
+/* ─── loading / error ─────────────────────────────────────────── */
+.screen-loading {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #9b97ad;
+  font-size: 14px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.screen-loading span { animation: pulse 1.4s ease-in-out infinite; }
+@keyframes pulse { 0%,100% { opacity: 0.4; } 50% { opacity: 1; } }
+
+.screen-error {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  text-align: center;
+  gap: 12px;
+}
+.screen-error h2 { margin: 0; font-size: 20px; color: #ff8585; }
+.screen-error .err-msg {
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  color: #aaa;
+  background: #1a1726;
+  padding: 8px 12px;
+  border-radius: 6px;
+  word-break: break-all;
+  max-width: 100%;
+}
+.screen-error .err-hint { color: #888; font-size: 13px; max-width: 320px; line-height: 1.5; }
+.screen-error code { background: #1a1726; padding: 2px 6px; border-radius: 4px; color: #c3b8ee; }
+.screen-error button {
+  background: #2a6fdb;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 10px 24px;
+  font-family: inherit;
+  font-weight: 700;
+  font-size: 14px;
+  cursor: pointer;
+  margin-top: 8px;
+}
+
+/* ─── menu ─────────────────────────────────────────────────────── */
+.menu {
+  padding: 24px 18px 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.menu-head { margin-bottom: 4px; }
+.menu-title {
+  font-family: 'Russo One', sans-serif;
+  font-size: 32px;
+  font-weight: 700;
+  margin: 0;
+  color: #f5f3ff;
+  letter-spacing: -0.01em;
+}
+.menu-sub {
+  font-size: 13px;
+  color: #807d92;
+  margin-top: 4px;
+  letter-spacing: 0.04em;
+}
+
+/* Balance card — the prominent blue/teal hero card from the reference */
+.balance-card {
+  background: linear-gradient(135deg, #5fb8f3 0%, #4990d8 100%);
+  padding: 18px 20px 20px;
+  border-radius: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: #fff;
+  box-shadow: 0 4px 20px rgba(60, 130, 220, 0.25);
+}
+.bc-handle {
+  font-size: 13px;
+  font-weight: 700;
+  opacity: 0.9;
+  letter-spacing: 0.02em;
+}
+.bc-amount {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-top: 2px;
+}
+.bc-val {
+  font-family: 'Russo One', sans-serif;
+  font-size: 38px;
+  font-weight: 900;
+  line-height: 1;
+  letter-spacing: -0.02em;
+}
+.bc-unit {
+  font-size: 13px;
+  opacity: 0.85;
+  text-transform: lowercase;
+  letter-spacing: 0.04em;
+}
+.bc-bank {
+  font-size: 13px;
+  opacity: 0.85;
+  margin-top: 4px;
+}
+.bc-bank strong { font-weight: 900; opacity: 1; }
+
+/* Feature grid — 2 columns */
+.menu-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.feature-card {
+  background: #1c1827;
+  border: 1px solid #2a2438;
+  border-radius: 14px;
+  padding: 16px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+  color: inherit;
+  position: relative;
+  transition: background 0.15s, transform 0.1s, border-color 0.15s;
+  min-height: 88px;
+}
+.feature-card:hover:not(:disabled) { background: #221d30; border-color: #3a3148; }
+.feature-card:active:not(:disabled) { transform: scale(0.985); }
+.feature-card:disabled { cursor: not-allowed; }
+
+.fc-title {
+  font-family: 'Russo One', sans-serif;
+  font-size: 17px;
+  font-weight: 700;
+  color: #f5f3ff;
+}
+.fc-desc {
+  font-size: 12px;
+  color: #807d92;
+  line-height: 1.4;
+  letter-spacing: 0.01em;
+}
+.fc-chev {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  color: #4a4361;
+  font-size: 22px;
+  line-height: 1;
+}
+.fc-locked .fc-title { color: #6d6985; }
+.fc-locked .fc-desc { color: #5b5870; font-style: italic; }
+.fc-locked { opacity: 0.55; }
+
+.fc-pink .fc-title  { color: #ff5b8d; }
+.fc-cyan .fc-title  { color: #7be6ff; }
+.fc-yellow .fc-title { color: #ffd84a; }
+
+/* HAVD banner — menu variant: more subdued, sits at bottom */
+.havd-banner-menu {
+  margin-top: 8px;
+  border: 2px solid #ffd84a;
+  background: #1c1827;
+  box-shadow: 4px 4px 0 #ffd84a;
+  transform: none;
+}
+.havd-banner-menu:hover {
+  transform: translate(-2px, -2px);
+  box-shadow: 6px 6px 0 #ffd84a;
+}
+
+/* ─── sub-screens (history / stats / rules) ───────────────────── */
+.subscreen {
+  padding: 24px 18px 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.subscreen-title {
+  font-family: 'Russo One', sans-serif;
+  font-size: 32px;
+  font-weight: 700;
+  margin: 0;
+  color: #f5f3ff;
+  letter-spacing: -0.01em;
+}
+.subscreen-sub {
+  font-size: 13px;
+  color: #807d92;
+  margin: -8px 0 0;
+  letter-spacing: 0.02em;
+}
+
+.empty-state {
+  padding: 60px 20px;
+  text-align: center;
+  background: #1c1827;
+  border: 1px solid #2a2438;
+  border-radius: 14px;
+  margin-top: 8px;
+}
+.empty-jp {
+  font-family: 'Mochiy Pop One', sans-serif;
+  font-size: 38px;
+  color: #4a4361;
+  margin-bottom: 8px;
+}
+.empty-en { color: #807d92; font-size: 13px; }
+
+/* History list */
+.hist-list {
+  display: flex;
+  flex-direction: column;
+  background: #1c1827;
+  border: 1px solid #2a2438;
+  border-radius: 14px;
+  overflow: hidden;
+}
+.hist-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid #25202f;
+  align-items: center;
+}
+.hist-row:last-child { border-bottom: none; }
+.hist-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.hist-actor {
+  font-family: 'Russo One', sans-serif;
+  font-size: 14px;
+  font-weight: 700;
+  color: #f5f3ff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.hist-kind { font-size: 11px; color: #807d92; }
+.hist-amount {
+  font-family: 'Russo One', sans-serif;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+.hist-amount.pos { color: #5fe89a; }
+.hist-amount.neg { color: #ff7570; }
+.hist-time { font-size: 11px; color: #5b5870; white-space: nowrap; }
+
+/* Stats */
+.stats-tabs {
+  display: flex;
+  background: #1c1827;
+  border: 1px solid #2a2438;
+  border-radius: 10px;
+  padding: 3px;
+  gap: 2px;
+}
+.stats-tab {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: #807d92;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 8px 10px;
+  border-radius: 7px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.stats-tab.active { background: #2a2438; color: #f5f3ff; }
+.stats-list {
+  display: flex;
+  flex-direction: column;
+  background: #1c1827;
+  border: 1px solid #2a2438;
+  border-radius: 14px;
+  overflow: hidden;
+}
+.stats-row {
+  display: grid;
+  grid-template-columns: 36px 1fr auto;
+  gap: 12px;
+  align-items: center;
+  padding: 11px 14px;
+  border-bottom: 1px solid #25202f;
+}
+.stats-row:last-child { border-bottom: none; }
+.stats-row.is-me { background: #221d30; }
+.stats-rank {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: #2a2438;
+  font-family: 'Russo One', sans-serif;
+  font-size: 13px;
+  font-weight: 700;
+  color: #807d92;
+}
+.stats-rank.rank-1 { background: #ffd84a; color: #111; }
+.stats-rank.rank-2 { background: #c9c6d4; color: #111; }
+.stats-rank.rank-3 { background: #d49156; color: #111; }
+.stats-name {
+  font-family: 'Russo One', sans-serif;
+  font-size: 14px;
+  font-weight: 700;
+  color: #f5f3ff;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.stats-me-tag {
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  background: #ff5b8d;
+  color: #fff;
+  padding: 2px 6px;
+  border-radius: 4px;
+  text-transform: uppercase;
+}
+.stats-val {
+  font-family: 'Russo One', sans-serif;
+  font-size: 15px;
+  font-weight: 700;
+  color: #f5f3ff;
+}
+
+/* Rules */
+.rule-block {
+  background: #1c1827;
+  border: 1px solid #2a2438;
+  border-radius: 14px;
+  padding: 16px 18px;
+}
+.rule-title {
+  font-family: 'Russo One', sans-serif;
+  font-size: 17px;
+  font-weight: 700;
+  margin: 0 0 8px;
+  color: #f5f3ff;
+}
+.rule-body { font-size: 13px; line-height: 1.55; color: #cac6da; }
+.rule-body p { margin: 6px 0; }
+.rule-body ul { margin: 6px 0; padding-left: 18px; }
+.rule-body li { margin: 4px 0; }
+.rule-body code { background: #2a2438; padding: 1px 6px; border-radius: 4px; font-family: ui-monospace, monospace; font-size: 12px; }
+.rule-body strong { color: #f5f3ff; }
+.pay-grid-rules {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px 16px;
+  font-size: 12px;
+  margin-top: 6px;
+}
+.pay-grid-rules > div { display: contents; }
+.pay-grid-rules .pg-name { color: #f5f3ff; font-weight: 700; }
+
+/* ─── slot screen overrides (matches webapp.css from before) ──── */
+.webapp-root[data-screen="slot"] > .slot {
+  width: 100%;
+  max-width: 520px;
+  min-height: 100vh;
+}
+
+/* User greeting inside slot header */
+.user-row {
+  align-self: flex-start;
+  background: #fff;
+  border: 2px solid #111;
+  padding: 3px 10px;
+  font-family: 'Russo One', 'Anton', sans-serif;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  box-shadow: 2px 2px 0 #111;
+  transform: rotate(-1deg);
+  max-width: 90%;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+}
+.user-greet { font-family: 'Mochiy Pop One', sans-serif; font-size: 10px; opacity: 0.7; }
+.user-name { color: var(--pink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 200px; }
+.user-suffix { font-family: 'Mochiy Pop One', sans-serif; font-size: 10px; opacity: 0.7; }
+
+.spin-error {
+  background: #2a1212;
+  border: 2px solid #ff7570;
+  color: #ffb5b3;
+  padding: 8px 12px;
+  font-family: 'Russo One', sans-serif;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  box-shadow: 3px 3px 0 #d6243a;
+  transform: rotate(-0.5deg);
+}
+
+@media (max-height: 700px) {
+  .slot-title { font-size: 44px; }
+  .slot-inner { padding: 12px 14px 16px; gap: 10px; }
+}
