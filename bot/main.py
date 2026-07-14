@@ -1,19 +1,41 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import logging
+import pkgutil
 
 from aiogram import Bot
 from aiogram import Dispatcher
+from aiogram import Router
 
+import bot.handlers as handlers_package
 from bot.config import settings
-from bot.handlers.backfill import router as backfill_router
-from bot.handlers.basic import router as basic_router
-from bot.handlers.edits import router as edits_router
-from bot.handlers.reactions import router as reactions_router
-from bot.handlers.stats import router as stats_router
 from bot.middleware.collector import CollectorMiddleware
 from bot.middleware.db_session import DbSessionMiddleware
+from bot.services.scheduler import get_scheduler
+from bot.services.scheduler import setup_jobs
+
+logger = logging.getLogger(__name__)
+
+
+def _discover_routers() -> list[Router]:
+    """Импортирует все модули bot.handlers и собирает их атрибуты `router`.
+
+    Детерминированный порядок (sorted по имени модуля), чтобы регистрация
+    была воспроизводима между запусками. Каждый новый bot/handlers/*.py с
+    `router = Router()` подключается автоматически, без правки этого файла.
+    """
+    routers: list[Router] = []
+    module_infos = sorted(
+        pkgutil.iter_modules(handlers_package.__path__), key=lambda m: m.name
+    )
+    for module_info in module_infos:
+        module = importlib.import_module(f"{handlers_package.__name__}.{module_info.name}")
+        router = getattr(module, "router", None)
+        if isinstance(router, Router):
+            routers.append(router)
+    return routers
 
 
 async def run() -> None:
@@ -28,11 +50,12 @@ async def run() -> None:
     dp.update.outer_middleware(DbSessionMiddleware())
     dp.message.outer_middleware(CollectorMiddleware())
 
-    dp.include_router(stats_router)
-    dp.include_router(reactions_router)
-    dp.include_router(edits_router)
-    dp.include_router(backfill_router)
-    dp.include_router(basic_router)
+    for router in _discover_routers():
+        dp.include_router(router)
+
+    scheduler = get_scheduler()
+    setup_jobs(bot)
+    scheduler.start()
 
     await dp.start_polling(
         bot,
