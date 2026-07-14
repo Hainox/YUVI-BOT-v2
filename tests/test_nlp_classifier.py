@@ -77,8 +77,10 @@ async def test_processes_only_unclassified(session):
     ) as mocked_classify:
         processed_count = await nlp_classifier.run_once(session)
 
-    # Как минимум наши три строки должны быть учтены в общем числе обработанных.
-    assert processed_count >= 3
+    # Из трёх вставленных строк реально необработанных только две
+    # (processed_id намеренно уже помечена обработанной и не должна попасть
+    # в выборку) — как минимум эти две должны быть учтены в общем числе.
+    assert processed_count >= 2
     mocked_classify.assert_awaited_once()
     called_texts = mocked_classify.call_args.args[0]
     assert "Привет, как дела?" in called_texts
