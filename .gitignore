@@ -15,3 +15,11 @@ build/
 coverage.xml
 htmlcov/
 
+# GSD planning docs — local-only, contains private reference-repo analysis
+.planning/
+
+# Local dev-only image for running DB-touching commands inside the docker
+# network on Windows hosts where Docker Desktop's host<->container asyncpg
+# connections are unreliable (see 01-01-SUMMARY.md "Issues Encountered")
+Dockerfile.dev
+
