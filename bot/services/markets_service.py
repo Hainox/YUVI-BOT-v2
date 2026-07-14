@@ -699,3 +699,91 @@ def register_auto_close(scheduler: AsyncIOScheduler) -> None:
         id=_AUTO_CLOSE_JOB_ID,
         replace_existing=True,
     )
+
+
+# --- auto_resolve_external (BET-02 + BET-03) + APScheduler -----------------
+
+
+async def auto_resolve_external(session: AsyncSession) -> None:
+    """Сверяет открытые/закрытые внешние (polymarket/manifold) рынки с
+    источником и авторезолвит те, что закрылись с явным победителем.
+
+    Per-market try/except: transient fetch-ошибка (сеть/таймаут/API вниз)
+    НЕ автоотменяет рынок — просто continue, ретрай следующим тиком (T-03-25).
+    Источник ещё торгуется (`not closed`) или закрылся без явного победителя
+    (`winning_label is None`) — тоже continue, ждём следующего тика.
+
+    Матчинг `winning_label`→`option.label` — casefold-сравнение с обрезкой
+    пробелов. Несовпадение ни с одним вариантом — `logger.warning` + skip:
+    НЕ гадаем, какой вариант считать победившим (T-03-25) — рынок ждёт
+    вмешательства человека (ручной `/market_resolve` админом).
+
+    Резолюция идёт через `resolve_market` — та же parimutuel-выплата с 5%
+    комиссией в банк, что и у ручной резолюции internal-рынков (BET-03).
+    """
+    external_markets_rows = (
+        await session.execute(
+            select(Market).where(
+                Market.status.in_(("open", "closed")),
+                Market.type.in_(("polymarket", "manifold")),
+            )
+        )
+    ).scalars().all()
+
+    for market in external_markets_rows:
+        try:
+            fetched = await external_markets.fetch_external_market(market.external_url)
+        except Exception:  # noqa: BLE001 - transient-сбой не должен ронять весь тик или отменять рынок
+            logger.exception(
+                "auto_resolve_external: не удалось получить рынок market_id=%s", market.id
+            )
+            continue
+
+        if not fetched["closed"] or fetched["winning_label"] is None:
+            continue
+
+        options = (
+            await session.execute(select(MarketOption).where(MarketOption.market_id == market.id))
+        ).scalars().all()
+        normalized_target = fetched["winning_label"].strip().casefold()
+        winner = next(
+            (option for option in options if option.label.strip().casefold() == normalized_target),
+            None,
+        )
+        if winner is None:
+            logger.warning(
+                "auto_resolve_external: нет варианта, совпадающего с label=%r, market_id=%s",
+                fetched["winning_label"],
+                market.id,
+            )
+            continue
+
+        await resolve_market(session, market.chat_id, market.id, winner.id)
+
+
+_EXTERNAL_CHECK_JOB_ID = "external_markets_check"
+
+
+def register_external_check(scheduler: AsyncIOScheduler) -> None:
+    """Регистрирует фоновую сверку внешних рынков как interval-job (30 минут),
+    по образцу register_auto_close/embed_worker.register: своя сессия,
+    broad-except — тик обязан пережить любую ошибку и не уронить планировщик
+    (T-03-27)."""
+
+    async def _job() -> None:
+        async with SessionLocal() as session:
+            try:
+                await auto_resolve_external(session)
+            except Exception:  # noqa: BLE001 - job обязан пережить любую ошибку и не уронить планировщик
+                logger.exception("external_markets_check: тик упал")
+
+    scheduler.add_job(
+        _job,
+        "interval",
+        minutes=30,
+        coalesce=True,
+        max_instances=1,
+        misfire_grace_time=600,
+        id=_EXTERNAL_CHECK_JOB_ID,
+        replace_existing=True,
+    )
