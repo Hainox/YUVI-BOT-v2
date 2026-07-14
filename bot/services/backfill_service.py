@@ -26,6 +26,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from datetime import timezone
+from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -43,6 +44,18 @@ from common.models.user import User
 logger = logging.getLogger(__name__)
 
 MSK = ZoneInfo("Europe/Moscow")
+
+# Pyrogram/Kurigram's default Client(workdir=...) resolves to
+# Path(sys.argv[0]).parent — the directory of whatever script was launched,
+# NOT the process's current working directory. That makes the session file
+# location depend on the entrypoint: bot/main.py -> workdir "bot/",
+# scripts/backfill_history.py -> workdir "scripts/", `python -c "..."` ->
+# workdir "." (cwd). Each entrypoint would silently create/use its OWN,
+# always-empty session file, so /backfill perpetually re-triggers an
+# interactive login prompt (EOFError in a non-interactive container) instead
+# of reusing the one real, already-authenticated session. Pin workdir to the
+# project root explicitly so every entrypoint shares the same session file.
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 # Батч-коммиты 100-500 строк (защита от DoS на пул соединений, T-06-02).
 _BATCH_SIZE = 200
@@ -287,6 +300,7 @@ async def run_backfill(chat_id: int) -> int:
         "yuvi_backfill_session",
         api_id=settings.tg_api_id,
         api_hash=settings.tg_api_hash,
+        workdir=_PROJECT_ROOT,
     ) as app:
         async for message in app.get_chat_history(chat_id):
             row = _pyrogram_message_to_row(message, chat_id)

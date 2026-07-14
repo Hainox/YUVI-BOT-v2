@@ -17,6 +17,7 @@ from sqlalchemy import func
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from bot.services.backfill_service import _PROJECT_ROOT
 from bot.services.backfill_service import bulk_upsert_messages
 from common.models.daily_stat import DailyStat
 from common.models.message import Message as MessageModel
@@ -146,3 +147,23 @@ async def test_bulk_upsert_messages_bumps_daily_stats_only_for_new_rows(session)
     )
     stat = result.scalar_one()
     assert stat.message_count == 2
+
+
+def test_project_root_workdir_is_stable_regardless_of_entrypoint():
+    """Регрессия: Client(workdir=...) по умолчанию у Pyrogram/Kurigram
+    резолвится в Path(sys.argv[0]).parent — директорию ЗАПУЩЕННОГО файла, а не
+    cwd процесса. Это означает, что bot/main.py, scripts/backfill_history.py
+    и `python -c "..."` создавали/искали файл сессии в РАЗНЫХ местах
+    ("bot/", "scripts/", "."), каждый раз получая пустую, неавторизованную
+    сессию — и /backfill бесконечно падал с EOFError при попытке
+    интерактивного логина в контейнере без TTY.
+
+    run_backfill обязан передавать явный workdir=_PROJECT_ROOT, который не
+    зависит от точки входа. Этот тест фиксирует, что _PROJECT_ROOT указывает
+    на корень репозитория (где реально лежит yuvi_backfill_session.session),
+    а не куда-то ещё.
+    """
+    assert _PROJECT_ROOT.is_dir()
+    assert (_PROJECT_ROOT / "bot").is_dir()
+    assert (_PROJECT_ROOT / "scripts").is_dir()
+    assert (_PROJECT_ROOT / "requirements.txt").is_file()
