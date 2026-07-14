@@ -10,6 +10,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 
 from api.deps import InvalidInitData
+from api.routes import events
 from bot.config import settings
 
 
@@ -35,6 +36,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="Yuvi Bot v2 API", version="0.1.0", lifespan=lifespan)
+app.include_router(events.router)
 
 
 @app.exception_handler(InvalidInitData)
