@@ -1,4 +1,4 @@
-"""Автодайджест дня (AI-02, D-01/D-02/D-03/D-12).
+"""Автодайджест дня + ручной /digest N (AI-02, D-01/D-02/D-03/D-12).
 
 build_digest(session, chat_id) — за СЕГОДНЯШНИЙ день (Europe/Moscow): если
 активность чата ниже settings.digest_min_messages — возвращает None БЕЗ
@@ -8,6 +8,9 @@ build_digest(session, chat_id) — за СЕГОДНЯШНИЙ день (Europe/
 активных участников дня — готовые агрегаты Фазы 1 (stats_service), (3)
 настроение/токсичность дня — заранее посчитанные NLP-метрики (mood_service,
 чистый SQL, никаких LLM/NLP-вызовов).
+
+build_manual_digest(session, chat_id, days) — та же сборка из трёх блоков для
+ручного /digest N, но БЕЗ порога D-03: явный запрос участника не спамит чат.
 
 count_day_messages читает daily_stats (несёт message_count) за ТОЧНУЮ дату,
 а не COUNT(*) по messages (RESEARCH.md Anti-Patterns — та таблица растёт
@@ -119,6 +122,20 @@ async def build_digest(session: AsyncSession, chat_id: int) -> str | None:
     mood_text = await _mood_block(session, chat_id, days=1)
 
     return _compose_digest("Дайджест дня", summary_text, participants_text, mood_text)
+
+
+async def build_manual_digest(session: AsyncSession, chat_id: int, days: int = 1) -> str:
+    """Ручной /digest N (D-02) — БЕЗ порога D-03/D-12: явный вызов участника,
+    чат не может "заспамить сам себя" автопостом, поэтому digest_min_messages
+    здесь намеренно не проверяется (порог применяется только к
+    автодайджесту, build_digest)."""
+    count = await stats_service.get_chat_message_count(session, chat_id, days)
+    summary_text = await _summary_block(session, chat_id, n=count)
+    participants_text = await _participants_block(session, chat_id, days=days)
+    mood_text = await _mood_block(session, chat_id, days=days)
+
+    header = f"Дайджест за последние {days} дн." if days else "Дайджест"
+    return _compose_digest(header, summary_text, participants_text, mood_text)
 
 
 async def run_daily_digest(bot: Bot) -> None:

@@ -4,11 +4,12 @@ get_scheduler() лениво создаёт и возвращает один и 
 (таймзона Europe/Moscow — все игровые/дайджест-сбросы идут по МСК).
 
 setup_jobs(bot) — единая точка расширения: регистрирует фоновую NLP-
-классификацию (nlp_classifier, interval 30с, NLP-02) и эмбеддинг-воркер
-(embed_worker, interval 45с) через их register(scheduler, bot). Импорты
-ленивые (внутри функции), чтобы модули, ещё не существующие на момент
-плана 01 (пустой setup_jobs), не ломали import bot.main до их появления.
-Автодайджест (D-01/D-02/D-03) добавит план 09 сюда же.
+классификацию (nlp_classifier, interval 30с, NLP-02), эмбеддинг-воркер
+(embed_worker, interval 45с) через их register(scheduler, bot), и
+автодайджест (digest_daily, cron hour=22 Europe/Moscow, D-01) через
+digest_service.run_daily_digest. Импорты ленивые (внутри функции), чтобы
+модули, ещё не существующие на момент плана 01 (пустой setup_jobs), не
+ломали import bot.main до их появления.
 """
 
 from __future__ import annotations
@@ -31,16 +32,41 @@ def get_scheduler() -> AsyncIOScheduler:
     return _scheduler
 
 
+_DIGEST_JOB_ID = "digest_daily"
+
+
 def setup_jobs(bot: Bot) -> None:
     """Точка расширения для фоновых job'ов.
 
-    Регистрирует NLP-классификацию (NLP-02) и эмбеддинг-воркер. Ленивый
-    импорт — эти модули появились только в плане 05; план 09 (автодайджест)
-    дополнит эту функцию ещё одним register(...) вызовом.
+    Регистрирует NLP-классификацию (NLP-02), эмбеддинг-воркер (план 05) и
+    автодайджест (план 09, D-01: раз в день, 22:00 МСК). Ленивые импорты —
+    эти модули появились в более поздних планах, чем изначальный (пустой)
+    setup_jobs плана 01.
     """
+    from bot.services import digest_service
     from bot.services import embed_worker
     from bot.services import nlp_classifier
 
     scheduler = get_scheduler()
     nlp_classifier.register(scheduler, bot)
     embed_worker.register(scheduler, bot)
+
+    async def _digest_job() -> None:
+        await digest_service.run_daily_digest(bot)
+
+    # D-01/D-02: раз в день в 22:00 МСК. coalesce+max_instances=1 — если бот
+    # был офлайн и APScheduler видит несколько пропущенных срабатываний,
+    # выполняется только одно, не шлём дайджест N раз (T-02-22). misfire_grace_time
+    # даёт запуск, даже если бот поднялся с опозданием в пределах часа.
+    scheduler.add_job(
+        _digest_job,
+        "cron",
+        hour=22,
+        minute=0,
+        timezone=MSK,
+        coalesce=True,
+        max_instances=1,
+        misfire_grace_time=3600,
+        id=_DIGEST_JOB_ID,
+        replace_existing=True,
+    )
