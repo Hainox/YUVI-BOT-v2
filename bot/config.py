@@ -12,6 +12,11 @@ class Settings(BaseSettings):
     chat_id: int = Field(alias="CHAT_ID")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
 
+    database_url: str = Field(alias="DATABASE_URL")
+    redis_url: str | None = Field(default=None, alias="REDIS_URL")
+    tg_api_id: int | None = Field(default=None, alias="TG_API_ID")
+    tg_api_hash: str | None = Field(default=None, alias="TG_API_HASH")
+
 
 settings = Settings()
 

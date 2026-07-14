@@ -8,13 +8,35 @@ on:
 jobs:
   lint-and-check:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: yuvi
+          POSTGRES_USER: yuvi
+          POSTGRES_PASSWORD: yuvi
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U yuvi"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql+asyncpg://yuvi:yuvi@localhost:5432/yuvi
+      BOT_TOKEN: test_token
+      CHAT_ID: "-1000000000000"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
       - name: Install deps
-        run: pip install -r requirements.txt
+        run: pip install -r requirements.txt -r requirements-dev.txt
       - name: Syntax check
         run: python -m compileall bot api nlp common
+      - name: Run migrations
+        run: alembic upgrade head
+      - name: Run tests
+        run: pytest -q
 
