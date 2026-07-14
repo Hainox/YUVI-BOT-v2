@@ -36,10 +36,12 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import func
 from sqlalchemy import select
 from sqlalchemy import update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
 from bot.services import economy_service
+from bot.services import external_markets
 from common.db.session import SessionLocal
 from common.models.bet import Bet
 from common.models.market import Market
@@ -73,6 +75,11 @@ class InvalidMarketArg(MarketError):
 
 class DuplicateRequest(MarketError):
     """Повторный запрос с тем же ref_id уже обработан — идемпотентный no-op."""
+
+
+class MarketAlreadyImported(MarketError):
+    """Этот внешний рынок (chat_id, type, external_id) уже был импортирован
+    ранее — дедуп (T-03-24), комиссия импорта повторно не списывается."""
 
 
 # --- Лимиты D-05 (модульные константы) ----------------------------------
@@ -193,6 +200,92 @@ async def create_market(
         session.add(MarketOption(market_id=market.id, label=label, pool=0, position=position))
 
     await session.commit()
+    return market
+
+
+# --- import_market (BET-02) ------------------------------------------------
+
+# Внешний рынок резолвится источником (auto_resolve_external), не локальным
+# closes_at — 365д здесь лишь предохранитель авто-закрытия auto_close_expired
+# на случай, если внешний источник никогда не закроется/не совпадёт по label.
+_IMPORT_MARKET_SAFETY_DURATION = timedelta(days=365)
+
+
+async def import_market(
+    session: AsyncSession, chat_id: int, creator_id: int, url: str, ref_id: str
+) -> Market:
+    """Импортирует рынок Polymarket/Manifold по `url` (BET-02): фетчит и
+    нормализует через `external_markets.fetch_external_market` (весь HTTP/
+    SSRF-риск изолирован там, T-03-23 — этот модуль никогда не вызывает
+    aiohttp напрямую), дедуплицирует по `(chat_id, type, external_id)`
+    (партиал-UNIQUE `ux_markets_chat_type_external`, T-03-24) и списывает
+    комиссию импорта (`settings.market_import_fee`) с импортёра в банк чата.
+
+    Дедуп-проверка выполняется ДО списания комиссии — повторный импорт уже
+    существующего внешнего рынка не берёт деньги второй раз, поднимает
+    `MarketAlreadyImported`. `UnsupportedMarketUrl`/`MarketFetchError`
+    (из `external_markets`) пробрасываются вызывающему как есть.
+    """
+    fetched = await external_markets.fetch_external_market(url)
+    market_type = "polymarket" if "polymarket.com" in url else "manifold"
+
+    existing = (
+        await session.execute(
+            select(Market).where(
+                Market.chat_id == chat_id,
+                Market.type == market_type,
+                Market.external_id == fetched["external_id"],
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        raise MarketAlreadyImported(
+            f"Этот рынок уже импортирован в этом чате (#{existing.id})"
+        )
+
+    fee = settings.market_import_fee
+    debited = await economy_service.debit(
+        session, chat_id, creator_id, fee, kind="market_import_fee", ref_id=ref_id
+    )
+    if not debited:
+        logger.info("import_market: ref_id=%s уже обработан, пропускаем", ref_id)
+        raise DuplicateRequest(f"Запрос на импорт рынка уже обработан (ref_id={ref_id})")
+
+    await economy_service.credit_bank(
+        session, chat_id, fee, kind="market_import_fee", ref_id=f"{ref_id}:bank"
+    )
+
+    market = Market(
+        chat_id=chat_id,
+        type=market_type,
+        question=fetched["question"],
+        creator_id=creator_id,
+        status="open",
+        closes_at=datetime.utcnow() + _IMPORT_MARKET_SAFETY_DURATION,
+        external_url=url,
+        external_id=fetched["external_id"],
+    )
+
+    try:
+        session.add(market)
+        await session.flush()  # нужен market.id для дочерних market_options; партиал-UNIQUE проверяется здесь
+
+        for position, label in enumerate(fetched["options"], start=1):
+            session.add(MarketOption(market_id=market.id, label=label, pool=0, position=position))
+
+        await session.commit()
+    except IntegrityError:
+        # Партиал-UNIQUE ux_markets_chat_type_external — backstop против гонки
+        # повторного импорта того же рынка между SELECT-проверкой выше и
+        # flush/commit (T-03-24). Ничего в этой транзакции ещё не было
+        # durable-закоммичено (debit/credit_bank шли через SAVEPOINT внутри
+        # той же ещё-не-закоммиченной внешней транзакции), поэтому rollback
+        # откатывает и списанную комиссию — повторный вызов с тем же ref_id
+        # у следующей попытки не станет двойным списанием.
+        await session.rollback()
+        raise MarketAlreadyImported(
+            f"Этот рынок уже импортирован в этом чате (external_id={fetched['external_id']})"
+        ) from None
     return market
 
 

@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.services import admin_service
 from bot.services import economy_service
+from bot.services import external_markets
 from bot.services import markets_service
 
 router = Router()
@@ -80,6 +81,17 @@ def _parse_market_id_arg(message: Message) -> int | None:
     return int(parts[1].strip())
 
 
+def _parse_market_import_args(message: Message) -> str | None:
+    """Парсит `/market_import <url>` — первый токен-аргумент после команды."""
+    if message.text is None:
+        return None
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        return None
+    url = parts[1].split()[0].strip()
+    return url or None
+
+
 def _parse_market_resolve_args(message: Message) -> tuple[int, int] | None:
     """Парсит `/market_resolve <id рынка> <номер варианта>` — два целых числа."""
     if message.text is None:
@@ -104,6 +116,18 @@ def format_market_created(detail: dict) -> str:
         f"<b>Рынок #{detail['id']} создан:</b> {question}\n"
         f"Варианты:\n{options_lines}\n"
         f"Ставки принимаются до {closes_at} (UTC)."
+    )
+
+
+def format_market_imported(detail: dict) -> str:
+    question = html.escape(detail["question"])
+    options_lines = "\n".join(
+        f"{option['position']}) {html.escape(option['label'])}" for option in detail["options"]
+    )
+    return (
+        f"<b>Импортирован рынок #{detail['id']}:</b> {question}\n"
+        f"Варианты:\n{options_lines}\n"
+        "Авторезолюция по источнику."
     )
 
 
@@ -203,6 +227,43 @@ async def market_create_command(message: Message, session: AsyncSession) -> None
 
     detail = await markets_service.get_market_detail(session, message.chat.id, market.id)
     await message.answer(format_market_created(detail), parse_mode="HTML")
+
+
+@router.message(Command("market_import"))
+async def market_import_command(message: Message, session: AsyncSession) -> None:
+    """Публичная команда (любой участник может импортировать — резолюция/
+    отмена остаются админскими, D-01/D-02, но импорт не ограничен)."""
+    if message.from_user is None:
+        return
+
+    url = _parse_market_import_args(message)
+    if url is None:
+        await message.answer(
+            "Использование: /market_import <ссылка на Polymarket или Manifold>"
+        )
+        return
+
+    ref_id = f"market_import:{message.chat.id}:{message.message_id}"
+
+    try:
+        market = await markets_service.import_market(
+            session, message.chat.id, message.from_user.id, url, ref_id
+        )
+    except (external_markets.UnsupportedMarketUrl, external_markets.MarketFetchError) as exc:
+        await message.answer(str(exc))
+        return
+    except markets_service.MarketAlreadyImported as exc:
+        await message.answer(str(exc))
+        return
+    except economy_service.InsufficientFunds as exc:
+        await message.answer(str(exc))
+        return
+    except markets_service.DuplicateRequest:
+        await message.answer("Этот запрос на импорт рынка уже обработан.")
+        return
+
+    detail = await markets_service.get_market_detail(session, message.chat.id, market.id)
+    await message.answer(format_market_imported(detail), parse_mode="HTML")
 
 
 @router.message(Command("bet"))
