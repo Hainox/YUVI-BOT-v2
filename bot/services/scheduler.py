@@ -3,11 +3,12 @@
 get_scheduler() лениво создаёт и возвращает один и тот же AsyncIOScheduler
 (таймзона Europe/Moscow — все игровые/дайджест-сбросы идут по МСК).
 
-setup_jobs(bot) — единая точка расширения: сюда планы 05 (автодайджест,
-D-01/D-02/D-03) и 09 (фоновая NLP-классификация/эмбеддинги, NLP-02) добавляют
-свои job'ы через scheduler.add_job(...). В Фазе 2 плане 01 функция намеренно
-пустая — здесь НЕ импортируются ещё не существующие модули nlp_classifier/
-digest_service.
+setup_jobs(bot) — единая точка расширения: регистрирует фоновую NLP-
+классификацию (nlp_classifier, interval 30с, NLP-02) и эмбеддинг-воркер
+(embed_worker, interval 45с) через их register(scheduler, bot). Импорты
+ленивые (внутри функции), чтобы модули, ещё не существующие на момент
+плана 01 (пустой setup_jobs), не ломали import bot.main до их появления.
+Автодайджест (D-01/D-02/D-03) добавит план 09 сюда же.
 """
 
 from __future__ import annotations
@@ -33,6 +34,13 @@ def get_scheduler() -> AsyncIOScheduler:
 def setup_jobs(bot: Bot) -> None:
     """Точка расширения для фоновых job'ов.
 
-    Пока пустая: планы 05 (автодайджест) и 09 (NLP-классификация/эмбеддинги)
-    добавят сюда scheduler.add_job(...) вызовы.
+    Регистрирует NLP-классификацию (NLP-02) и эмбеддинг-воркер. Ленивый
+    импорт — эти модули появились только в плане 05; план 09 (автодайджест)
+    дополнит эту функцию ещё одним register(...) вызовом.
     """
+    from bot.services import embed_worker
+    from bot.services import nlp_classifier
+
+    scheduler = get_scheduler()
+    nlp_classifier.register(scheduler, bot)
+    embed_worker.register(scheduler, bot)
