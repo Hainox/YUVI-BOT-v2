@@ -17,6 +17,7 @@ from aiogram import BaseMiddleware
 from aiogram.types import Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from bot.services import frequency_service
 from bot.services import message_service
 
 logger = logging.getLogger(__name__)
@@ -36,9 +37,21 @@ class CollectorMiddleware(BaseMiddleware):
             # запись пропускаем, но роутинг НЕ блокируем.
             return await handler(event, data)
 
-        # media/frequency: см. план 04 — на этом срезе пишем только текст+reply+thread.
         try:
-            await message_service.save_message(session, event)
+            is_new_message = await message_service.save_message(session, event)
+            if is_new_message:
+                # T-02-04/DATA-03: частоты бампаем ТОЛЬКО для реально новых
+                # сообщений — иначе ретрай того же telegram_message_id задвоил бы
+                # счётчики слов/эмодзи, как раньше задваивал daily_stats.
+                source_text = event.text or event.caption
+                words = frequency_service.extract_words(source_text)
+                emojis = frequency_service.extract_emojis(source_text)
+                await frequency_service.bump_word_frequency(
+                    session, event.chat.id, event.from_user.id, words
+                )
+                await frequency_service.bump_emoji_frequency(
+                    session, event.chat.id, event.from_user.id, emojis
+                )
             await session.commit()
         except Exception:
             await session.rollback()
