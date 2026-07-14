@@ -61,6 +61,10 @@ class Settings(BaseSettings):
     market_resolution_fee_pct: float = Field(default=0.05, alias="MARKET_RESOLUTION_FEE_PCT")
     market_import_fee: int = Field(default=50, alias="MARKET_IMPORT_FEE")
 
+    # --- Mini App (auth, D-01) ---
+    mini_app_init_data_ttl_sec: int = Field(default=86400, alias="MINI_APP_INIT_DATA_TTL_SEC")
+    mini_app_membership_cache_ttl_sec: int = Field(default=300, alias="MINI_APP_MEMBERSHIP_CACHE_TTL_SEC")
+
 
 settings = Settings()
 
