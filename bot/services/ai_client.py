@@ -21,6 +21,13 @@ from bot.config import settings
 
 logger = logging.getLogger(__name__)
 
+# AsyncOpenAI(api_key="") падает ещё на __init__ с OpenAIError("Missing
+# credentials") — пустая строка трактуется SDK как отсутствие ключа. Без
+# реального ключа бот не должен падать при старте (импорт этого модуля
+# происходит для ЛЮБОГО хендлера через bot/main.py's _discover_routers, задолго
+# до первого реального AI-вызова) — подставляем плейсхолдер, чтобы клиент
+# сконструировался; настоящая ошибка авторизации всплывёт только при вызове
+# .stream() (auth gate, а не краш при импорте).
 if not settings.openai_api_key:
     logger.warning(
         "ai_client: OPENAI_API_KEY пуст — вызовы к OpenCode Go завершатся ошибкой авторизации"
@@ -28,7 +35,7 @@ if not settings.openai_api_key:
 
 client = AsyncOpenAI(
     base_url=settings.openai_base_url,
-    api_key=settings.openai_api_key,
+    api_key=settings.openai_api_key or "sk-not-set",
     timeout=settings.ai_call_timeout_sec,
     max_retries=2,
 )
