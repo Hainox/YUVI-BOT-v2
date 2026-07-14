@@ -28,6 +28,7 @@ from api import telegram_client
 from api.deps import AuthContext
 from api.deps import InvalidInitData
 from api.main import handle_invalid_init_data
+from bot.config import settings
 
 _TEST_BOT_TOKEN = "test-bot-token"
 
@@ -112,7 +113,7 @@ def test_is_admin_status_false_for_non_admin_statuses():
 
 
 def _build_init_data(
-    bot_token: str = _TEST_BOT_TOKEN,
+    bot_token: str | None = None,
     *,
     user_id: int = 111,
     auth_date: int | None = None,
@@ -122,6 +123,8 @@ def _build_init_data(
     """Строит initData-строку по РЕАЛЬНОМУ алгоритму Telegram (тем же, что
     validate_init_data должен проверять) — сравнение сборки/проверки на
     независимой реализации доказывает, что проверка действительно криптографическая."""
+    if bot_token is None:
+        bot_token = settings.bot_token
     if auth_date is None:
         auth_date = int(time.time())
     fields = {
@@ -142,7 +145,7 @@ def _build_init_data(
 
 
 def test_validate_init_data_valid_signature_returns_parsed_dict():
-    init_data = _build_init_data(user_id=555)
+    init_data = _build_init_data(_TEST_BOT_TOKEN, user_id=555)
 
     parsed = deps.validate_init_data(init_data, _TEST_BOT_TOKEN, ttl_seconds=86400)
 
@@ -151,14 +154,14 @@ def test_validate_init_data_valid_signature_returns_parsed_dict():
 
 
 def test_validate_init_data_tampered_hash_raises():
-    init_data = _build_init_data(tamper_hash=True)
+    init_data = _build_init_data(_TEST_BOT_TOKEN, tamper_hash=True)
 
     with pytest.raises(InvalidInitData):
         deps.validate_init_data(init_data, _TEST_BOT_TOKEN, ttl_seconds=86400)
 
 
 def test_validate_init_data_no_hash_raises():
-    init_data = _build_init_data(omit_hash=True)
+    init_data = _build_init_data(_TEST_BOT_TOKEN, omit_hash=True)
 
     with pytest.raises(InvalidInitData):
         deps.validate_init_data(init_data, _TEST_BOT_TOKEN, ttl_seconds=86400)
@@ -166,7 +169,7 @@ def test_validate_init_data_no_hash_raises():
 
 def test_validate_init_data_expired_raises():
     stale_auth_date = int(time.time()) - 1000
-    init_data = _build_init_data(auth_date=stale_auth_date)
+    init_data = _build_init_data(_TEST_BOT_TOKEN, auth_date=stale_auth_date)
 
     with pytest.raises(InvalidInitData):
         deps.validate_init_data(init_data, _TEST_BOT_TOKEN, ttl_seconds=100)
@@ -176,7 +179,7 @@ def test_validate_init_data_uses_compare_digest_not_equality():
     """T-04-06: hash сравнивается constant-time — grep-гейт на исходнике, но
     поведенчески проверяем, что подмена хотя бы одного символа хэша отвергается
     (не только полная замена, как в test_validate_init_data_tampered_hash_raises)."""
-    init_data = _build_init_data(user_id=777)
+    init_data = _build_init_data(_TEST_BOT_TOKEN, user_id=777)
     fields = dict(kv.split("=", 1) for kv in init_data.split("&"))
     original_hash = fields["hash"]
     flipped = ("1" if original_hash[0] != "1" else "2") + original_hash[1:]

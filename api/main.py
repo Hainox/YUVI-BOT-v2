@@ -6,7 +6,10 @@ from contextlib import asynccontextmanager
 import httpx
 import redis.asyncio as redis
 from fastapi import FastAPI
+from fastapi import Request
+from fastapi.responses import JSONResponse
 
+from api.deps import InvalidInitData
 from bot.config import settings
 
 
@@ -32,6 +35,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="Yuvi Bot v2 API", version="0.1.0", lifespan=lifespan)
+
+
+@app.exception_handler(InvalidInitData)
+async def handle_invalid_init_data(request: Request, exc: InvalidInitData) -> JSONResponse:
+    """Маппит InvalidInitData -> 401 без утечки текста исключения клиенту
+    (Information Disclosure) — см. api/deps.py::validate_init_data (D-01)."""
+    return JSONResponse(status_code=401, content={"detail": "invalid init data"})
 
 
 @app.get("/health")
