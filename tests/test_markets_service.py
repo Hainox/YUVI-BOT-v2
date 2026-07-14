@@ -13,6 +13,8 @@ SQLAlchemy 2.0 (тот же паттерн уже проверен в test_econo
 from __future__ import annotations
 
 import inspect
+import math
+from datetime import datetime
 from datetime import timedelta
 
 import pytest
@@ -441,3 +443,292 @@ def test_format_market_detail_escapes_question():
     assert "&lt;b&gt;Опасный&lt;/b&gt;" in text
     assert "<script>" not in text
     assert "&lt;i&gt;вариант&lt;/i&gt;" in text
+
+
+# --- resolve_market (BET-03, D-01/D-03) -------------------------------------
+
+
+async def _get_option_by_position(session, market_id: int, position: int) -> MarketOption:
+    return (
+        await session.execute(
+            select(MarketOption).where(
+                MarketOption.market_id == market_id, MarketOption.position == position
+            )
+        )
+    ).scalar_one()
+
+
+async def _get_bet(session, market_id: int, user_id: int) -> Bet:
+    return (
+        await session.execute(
+            select(Bet).where(Bet.market_id == market_id, Bet.user_id == user_id)
+        )
+    ).scalar_one()
+
+
+@pytest.mark.asyncio
+async def test_resolve_market_parimutuel_payout(session):
+    chat_id = -100800010
+    creator_id, a_id, b_id, c_id = 810100, 810101, 810102, 810103
+    for uid in (creator_id, a_id, b_id, c_id):
+        await _ensure_user(session, uid)
+        await _fund(session, chat_id, uid)
+
+    market = await markets_service.create_market(
+        session, chat_id, creator_id, "Кто победит в матче?", ["Опция 1", "Опция 2"], "7d",
+        "test_parimutuel_setup",
+    )
+    await markets_service.place_bet(session, chat_id, market.id, a_id, 1, 60, "test_parimutuel_a")
+    await markets_service.place_bet(session, chat_id, market.id, b_id, 1, 40, "test_parimutuel_b")
+    await markets_service.place_bet(session, chat_id, market.id, c_id, 2, 100, "test_parimutuel_c")
+
+    opt1 = await _get_option_by_position(session, market.id, 1)
+
+    bank_before = await _get_bank_balance(session, chat_id)
+    result = await markets_service.resolve_market(session, chat_id, market.id, opt1.id)
+
+    assert result["status"] == "resolved"
+    assert result["total_pool"] == 200
+    assert result["fee"] == 10
+    assert result["winners_count"] == 2
+    assert result["total_paid"] == 114 + 76
+
+    assert await _get_user_balance(session, chat_id, a_id) == settings.economy_start_bonus - 60 + 114
+    assert await _get_user_balance(session, chat_id, b_id) == settings.economy_start_bonus - 40 + 76
+    assert await _get_user_balance(session, chat_id, c_id) == settings.economy_start_bonus - 100
+
+    assert await _get_bank_balance(session, chat_id) == bank_before + 10
+
+    bet_a = await _get_bet(session, market.id, a_id)
+    bet_b = await _get_bet(session, market.id, b_id)
+    bet_c = await _get_bet(session, market.id, c_id)
+    assert bet_a.payout == 114
+    assert bet_b.payout == 76
+    assert bet_c.payout == 0
+
+    market_row = (await session.execute(select(Market).where(Market.id == market.id))).scalar_one()
+    assert market_row.status == "resolved"
+    assert market_row.winning_option_id == opt1.id
+
+
+@pytest.mark.asyncio
+async def test_resolve_market_fee_matches_transfer_formula(session):
+    chat_id = -100800011
+    creator_id, bettor_id = 810110, 810111
+    await _ensure_user(session, creator_id)
+    await _ensure_user(session, bettor_id)
+    await _fund(session, chat_id, creator_id)
+    await _fund(session, chat_id, bettor_id)
+
+    market = await markets_service.create_market(
+        session, chat_id, creator_id, "Комиссия совпадает с /transfer?", ["Да", "Нет"], "7d",
+        "test_fee_formula_setup",
+    )
+    await markets_service.place_bet(session, chat_id, market.id, bettor_id, 1, 77, "test_fee_formula_bet")
+    opt1 = await _get_option_by_position(session, market.id, 1)
+
+    bank_before = await _get_bank_balance(session, chat_id)
+    result = await markets_service.resolve_market(session, chat_id, market.id, opt1.id)
+
+    expected_fee = max(1, math.ceil(77 * settings.market_resolution_fee_pct))
+    assert result["fee"] == expected_fee
+    assert await _get_bank_balance(session, chat_id) == bank_before + expected_fee
+
+
+@pytest.mark.asyncio
+async def test_resolve_market_dust_lost(session):
+    chat_id = -100800012
+    creator_id, a_id, b_id = 810120, 810121, 810122
+    for uid in (creator_id, a_id, b_id):
+        await _ensure_user(session, uid)
+        await _fund(session, chat_id, uid)
+
+    market = await markets_service.create_market(
+        session, chat_id, creator_id, "Пыль от целочисленного деления теряется?", ["Да", "Нет"], "7d",
+        "test_dust_setup",
+    )
+    # Пул победителя = 3 (не делится ровно) — гарантирует остаток от floor-деления.
+    await markets_service.place_bet(
+        session, chat_id, market.id, a_id, 1, settings.market_min_bet, "test_dust_a"
+    )
+    await markets_service.place_bet(
+        session, chat_id, market.id, b_id, 1, settings.market_min_bet + 1, "test_dust_b"
+    )
+    opt1 = await _get_option_by_position(session, market.id, 1)
+
+    bank_before = await _get_bank_balance(session, chat_id)
+    result = await markets_service.resolve_market(session, chat_id, market.id, opt1.id)
+
+    fee = result["fee"]
+    distributable = result["total_pool"] - fee
+    dust = distributable - result["total_paid"]
+
+    # Банк вырос РОВНО на fee — остаток НЕ ушёл ни игрокам, ни банку (D-03).
+    assert await _get_bank_balance(session, chat_id) == bank_before + fee
+    assert result["dust"] == dust
+    assert dust >= 0
+
+
+@pytest.mark.asyncio
+async def test_resolve_market_idempotent(session):
+    chat_id = -100800013
+    creator_id, bettor_id = 810130, 810131
+    await _ensure_user(session, creator_id)
+    await _ensure_user(session, bettor_id)
+    await _fund(session, chat_id, creator_id)
+    await _fund(session, chat_id, bettor_id)
+
+    market = await markets_service.create_market(
+        session, chat_id, creator_id, "Повторный resolve — no-op?", ["Да", "Нет"], "7d",
+        "test_idempotent_resolve_setup",
+    )
+    await markets_service.place_bet(
+        session, chat_id, market.id, bettor_id, 1, 50, "test_idempotent_resolve_bet"
+    )
+    opt1 = await _get_option_by_position(session, market.id, 1)
+
+    first = await markets_service.resolve_market(session, chat_id, market.id, opt1.id)
+    assert first["status"] == "resolved"
+
+    balance_after_first = await _get_user_balance(session, chat_id, bettor_id)
+    bank_after_first = await _get_bank_balance(session, chat_id)
+
+    second = await markets_service.resolve_market(session, chat_id, market.id, opt1.id)
+    assert second["status"] == "already_resolved"
+
+    assert await _get_user_balance(session, chat_id, bettor_id) == balance_after_first
+    assert await _get_bank_balance(session, chat_id) == bank_after_first
+
+
+@pytest.mark.asyncio
+async def test_resolve_winner_pool_zero_refunds_all(session):
+    chat_id = -100800014
+    creator_id, bettor_id = 810140, 810141
+    await _ensure_user(session, creator_id)
+    await _ensure_user(session, bettor_id)
+    await _fund(session, chat_id, creator_id)
+    await _fund(session, chat_id, bettor_id)
+
+    market = await markets_service.create_market(
+        session, chat_id, creator_id, "Никто не поставил на победивший вариант?", ["Да", "Нет"], "7d",
+        "test_winner_pool_zero_setup",
+    )
+    # Ставка идёт на вариант 2, а резолвим вариант 1 (winner.pool == 0).
+    await markets_service.place_bet(
+        session, chat_id, market.id, bettor_id, 2, 50, "test_winner_pool_zero_bet"
+    )
+    opt1 = await _get_option_by_position(session, market.id, 1)
+
+    balance_before = await _get_user_balance(session, chat_id, bettor_id)
+    bank_before = await _get_bank_balance(session, chat_id)
+
+    result = await markets_service.resolve_market(session, chat_id, market.id, opt1.id)
+
+    assert result["status"] == "resolved"
+    assert await _get_user_balance(session, chat_id, bettor_id) == balance_before + 50
+    assert await _get_bank_balance(session, chat_id) == bank_before
+
+    bet = await _get_bet(session, market.id, bettor_id)
+    assert bet.refunded is True
+    assert bet.payout == 50
+
+
+@pytest.mark.asyncio
+async def test_resolve_total_pool_zero(session):
+    chat_id = -100800015
+    creator_id = 810150
+    await _ensure_user(session, creator_id)
+    await _fund(session, chat_id, creator_id)
+
+    market = await markets_service.create_market(
+        session, chat_id, creator_id, "Никто вообще не ставил на этот рынок?", ["Да", "Нет"], "7d",
+        "test_total_pool_zero_setup",
+    )
+    opt1 = await _get_option_by_position(session, market.id, 1)
+
+    bank_before = await _get_bank_balance(session, chat_id)
+    result = await markets_service.resolve_market(session, chat_id, market.id, opt1.id)
+
+    assert result["status"] == "resolved"
+    assert result["total_pool"] == 0
+    assert result["winners_count"] == 0
+    assert result["fee"] == 0
+    assert await _get_bank_balance(session, chat_id) == bank_before
+
+
+# --- cancel_market (D-02) ----------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cancel_market_refunds_all(session):
+    chat_id = -100800016
+    creator_id, a_id, b_id = 810160, 810161, 810162
+    for uid in (creator_id, a_id, b_id):
+        await _ensure_user(session, uid)
+        await _fund(session, chat_id, uid)
+
+    market = await markets_service.create_market(
+        session, chat_id, creator_id, "Рынок нужно отменить целиком?", ["Да", "Нет"], "7d",
+        "test_cancel_setup",
+    )
+    await markets_service.place_bet(session, chat_id, market.id, a_id, 1, 60, "test_cancel_a")
+    await markets_service.place_bet(session, chat_id, market.id, b_id, 2, 40, "test_cancel_b")
+
+    balance_a_before = await _get_user_balance(session, chat_id, a_id)
+    balance_b_before = await _get_user_balance(session, chat_id, b_id)
+
+    result = await markets_service.cancel_market(session, chat_id, market.id)
+
+    assert result["status"] == "cancelled"
+    assert result["refunded_count"] == 2
+    assert result["total_refunded"] == 100
+
+    assert await _get_user_balance(session, chat_id, a_id) == balance_a_before + 60
+    assert await _get_user_balance(session, chat_id, b_id) == balance_b_before + 40
+
+    market_row = (await session.execute(select(Market).where(Market.id == market.id))).scalar_one()
+    assert market_row.status == "cancelled"
+
+    bet_a = await _get_bet(session, market.id, a_id)
+    bet_b = await _get_bet(session, market.id, b_id)
+    assert bet_a.refunded is True
+    assert bet_b.refunded is True
+
+
+# --- auto_close_expired -------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_auto_close_expired_transitions(session):
+    chat_id = -100800017
+    creator_id = 810170
+    await _ensure_user(session, creator_id)
+    await _fund(session, chat_id, creator_id)
+
+    expired_market = await markets_service.create_market(
+        session, chat_id, creator_id, "Этот рынок уже должен был закрыться?", ["Да", "Нет"], "5m",
+        "test_auto_close_expired_setup",
+    )
+    open_market = await markets_service.create_market(
+        session, chat_id, creator_id, "Этот рынок ещё открыт и не истёк?", ["Да", "Нет"], "7d",
+        "test_auto_close_open_setup",
+    )
+
+    # Искусственно переносим closes_at в прошлое для первого рынка.
+    expired_row = (
+        await session.execute(select(Market).where(Market.id == expired_market.id))
+    ).scalar_one()
+    expired_row.closes_at = datetime.utcnow() - timedelta(minutes=1)
+    await session.commit()
+
+    closed_count = await markets_service.auto_close_expired(session)
+    assert closed_count == 1
+
+    expired_row = (
+        await session.execute(select(Market).where(Market.id == expired_market.id))
+    ).scalar_one()
+    open_row = (
+        await session.execute(select(Market).where(Market.id == open_market.id))
+    ).scalar_one()
+    assert expired_row.status == "closed"
+    assert open_row.status == "open"

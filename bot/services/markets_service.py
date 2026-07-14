@@ -14,17 +14,25 @@ read-хелперы для просмотра.
 - Идемпотентность разовых операций — тот же `ref_id` + SAVEPOINT, что и у
   economy_service (Pattern 2): `economy_service.debit` возвращает False на
   повторный ref_id — операция становится no-op, деньги не двигаются повторно.
-- Резолюция/выплаты (`resolve_market`/`cancel_market`) — вне scope этого
-  плана (план 03-05).
+- Резолюция (`resolve_market`) — статус-переход "open"->"resolved" САМ является
+  гардом идемпотентности (RESEARCH.md Pattern 3-adjacent): повторный вызов на
+  уже resolved-рынке — no-op, без повторных выплат (T-03-19). D-03: остаток
+  floor-деления при выплате победителям НИКУДА не зачисляется (ни игрокам, ни
+  банку) — покидает оборот безвозвратно. Это значит, что
+  `sum(user_balance.balance) + chat_bank.balance` НЕ является инвариантом
+  после резолюции рынка (Pitfall 3) — не "чинить" это перенаправлением пыли
+  в банк, иначе комиссия BET-03 тихо вырастет сверх заявленных 5%.
 """
 
 from __future__ import annotations
 
 import logging
+import math
 import re
 from datetime import datetime
 from datetime import timedelta
 
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import func
 from sqlalchemy import select
 from sqlalchemy import update
@@ -32,6 +40,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
 from bot.services import economy_service
+from common.db.session import SessionLocal
 from common.models.bet import Bet
 from common.models.market import Market
 from common.models.market import MarketOption
@@ -355,3 +364,245 @@ async def get_user_portfolio(session: AsyncSession, chat_id: int, user_id: int) 
         }
         for row in rows
     ]
+
+
+# --- resolve_market (BET-03, D-01/D-03) ------------------------------------
+
+
+async def resolve_market(
+    session: AsyncSession, chat_id: int, market_id: int, winning_option_id: int
+) -> dict:
+    """Резолвит internal-рынок: parimutuel-выплата победителям + 5% комиссия
+    в банк (BET-03), той же формулой `max(1, ceil(0.05*pool))`, что и D-04's
+    transfer_with_fee. D-03: остаток floor-деления теряется (не игрокам, не
+    банку) — см. докстринг модуля/Pitfall 3.
+
+    Контракт порядка блокировок (RESEARCH.md Pattern 1): `markets` строка
+    блокируется FIRST (`SELECT ... FOR UPDATE`), замораживая `status` —
+    статус-переход "open"->"resolved" САМ служит гардом идемпотентности:
+    повторный resolve уже resolved-рынка — no-op (T-03-19), балансы/банк не
+    меняются. winner.pool == 0 (никто не поставил на выигравший вариант) —
+    полный рефанд всем ставившим (division-by-zero иначе), отдельно от
+    D-03 (которое применяется только когда winner.pool > 0). total_pool == 0
+    (вообще никто не ставил) — рынок просто закрывается, выплат нет.
+
+    Поднимает `MarketNotFound`, если рынка нет в этом чате; `MarketClosed`,
+    если рынок уже отменён (`status == "cancelled"`).
+    """
+    market = (
+        await session.execute(
+            select(Market).where(Market.chat_id == chat_id, Market.id == market_id).with_for_update()
+        )
+    ).scalar_one_or_none()
+    if market is None:
+        raise MarketNotFound(f"Рынок #{market_id} не найден")
+    if market.status == "resolved":
+        # Статус-переход — гард идемпотентности (T-03-19): повторный resolve
+        # уже resolved-рынка ничего не меняет.
+        return {"status": "already_resolved", "market_id": market_id}
+    if market.status == "cancelled":
+        raise MarketClosed(f"Рынок #{market_id} уже отменён")
+
+    options = (
+        await session.execute(
+            select(MarketOption).where(MarketOption.market_id == market_id).order_by(MarketOption.id)
+        )
+    ).scalars().all()
+    winner = next((option for option in options if option.id == winning_option_id), None)
+    if winner is None:
+        raise InvalidMarketArg(f"Нет варианта id={winning_option_id} в рынке #{market_id}")
+
+    total_pool = sum(option.pool for option in options)
+    all_bets = (await session.execute(select(Bet).where(Bet.market_id == market_id))).scalars().all()
+
+    winners_count = 0
+    total_paid = 0
+    fee = 0
+    dust = 0
+
+    if total_pool == 0:
+        # Никто не ставил вообще — нечего распределять, просто закрываем рынок.
+        pass
+    elif winner.pool == 0:
+        # Выигравший вариант без единой ставки — пропорциональная выплата
+        # математически не определена (деление на ноль). Полный рефанд всем,
+        # аналогично cancel_market — отдельный кейс от D-03 (тот применяется
+        # только когда есть ненулевой пул победителя, из которого распределять).
+        for bet in all_bets:
+            await economy_service.credit(
+                session,
+                chat_id,
+                bet.user_id,
+                bet.amount,
+                kind="market_refund",
+                ref_id=f"market_refund:{market_id}:{bet.id}",
+            )
+            bet.payout = bet.amount
+            bet.refunded = True
+        total_paid = total_pool
+    else:
+        # BET-03 + D-04: та же формула комиссии, что у /transfer.
+        fee = max(1, math.ceil(total_pool * settings.market_resolution_fee_pct))
+        distributable = total_pool - fee
+
+        # Контракт порядка блокировок, шаг 3: user_balance по возрастанию user_id.
+        winning_bets = sorted(
+            (bet for bet in all_bets if bet.option_id == winning_option_id), key=lambda bet: bet.user_id
+        )
+        for bet in winning_bets:
+            # D-03: floor-деление — остаток НИКОМУ не зачисляется (не игроку,
+            # не банку). См. докстринг модуля/Pitfall 3.
+            payout = (distributable * bet.amount) // winner.pool
+            await economy_service.credit(
+                session,
+                chat_id,
+                bet.user_id,
+                payout,
+                kind="market_payout",
+                ref_id=f"market_resolve:{market_id}:{bet.id}",
+            )
+            bet.payout = payout
+            total_paid += payout
+            winners_count += 1
+
+        for bet in all_bets:
+            if bet.option_id != winning_option_id:
+                bet.payout = 0
+
+        dust = distributable - total_paid
+
+        # Контракт порядка блокировок, шаг 4: банк — ПОСЛЕДНИМ.
+        await economy_service.credit_bank(
+            session, chat_id, fee, kind="market_resolution_fee", ref_id=f"market_resolve_fee:{market_id}"
+        )
+
+    market.status = "resolved"
+    market.winning_option_id = winning_option_id
+    await session.commit()
+
+    return {
+        "status": "resolved",
+        "market_id": market_id,
+        "winning_option_id": winning_option_id,
+        "winners_count": winners_count,
+        "total_paid": total_paid,
+        "fee": fee,
+        "dust": dust,
+        "total_pool": total_pool,
+    }
+
+
+async def resolve_market_by_position(
+    session: AsyncSession, chat_id: int, market_id: int, winning_position: int
+) -> dict:
+    """Тонкая обёртка над `resolve_market` — переводит 1-based номер варианта
+    (как показывает `/market <id>`, RESEARCH.md Assumption A4) в DB `option_id`.
+    Нужна отдельно от `resolve_market`, чтобы будущий `auto_resolve_external`
+    (план 03-06) мог звать `resolve_market` напрямую с уже известным option_id,
+    а админ-команда `/market_resolve` — по человекочитаемому номеру.
+    """
+    option = (
+        await session.execute(
+            select(MarketOption).where(
+                MarketOption.market_id == market_id, MarketOption.position == winning_position
+            )
+        )
+    ).scalar_one_or_none()
+    if option is None:
+        raise InvalidMarketArg(f"Нет варианта №{winning_position} в рынке #{market_id}")
+    return await resolve_market(session, chat_id, market_id, option.id)
+
+
+# --- cancel_market (D-02, полный рефанд) ------------------------------------
+
+
+async def cancel_market(session: AsyncSession, chat_id: int, market_id: int) -> dict:
+    """Отменяет рынок с полным рефандом всем ставившим (D-02) — форма
+    `resolve_market` без комиссии/выплаты. Статус-переход тоже служит гардом
+    идемпотентности: повторная отмена уже cancelled/resolved-рынка — no-op.
+
+    Поднимает `MarketNotFound`, если рынка нет в этом чате.
+    """
+    market = (
+        await session.execute(
+            select(Market).where(Market.chat_id == chat_id, Market.id == market_id).with_for_update()
+        )
+    ).scalar_one_or_none()
+    if market is None:
+        raise MarketNotFound(f"Рынок #{market_id} не найден")
+    if market.status in ("cancelled", "resolved"):
+        return {"status": f"already_{market.status}", "market_id": market_id, "refunded_count": 0, "total_refunded": 0}
+
+    all_bets = (await session.execute(select(Bet).where(Bet.market_id == market_id))).scalars().all()
+
+    refunded_count = 0
+    total_refunded = 0
+    for bet in all_bets:
+        await economy_service.credit(
+            session,
+            chat_id,
+            bet.user_id,
+            bet.amount,
+            kind="market_cancel_refund",
+            ref_id=f"market_cancel:{market_id}:{bet.id}",
+        )
+        bet.payout = bet.amount
+        bet.refunded = True
+        refunded_count += 1
+        total_refunded += bet.amount
+
+    market.status = "cancelled"
+    await session.commit()
+
+    return {
+        "status": "cancelled",
+        "market_id": market_id,
+        "refunded_count": refunded_count,
+        "total_refunded": total_refunded,
+    }
+
+
+# --- auto_close_expired + APScheduler --------------------------------------
+
+
+async def auto_close_expired(session: AsyncSession) -> int:
+    """Атомарный массовый переход просроченных открытых рынков в "closed".
+    Затрагивает только `markets` — контракт порядка блокировок не применим
+    (одна таблица). Возвращает число переведённых рынков."""
+    stmt = (
+        update(Market)
+        .where(Market.status == "open", Market.closes_at <= func.now())
+        .values(status="closed")
+    )
+    result = await session.execute(stmt)
+    await session.commit()
+    return result.rowcount
+
+
+_AUTO_CLOSE_JOB_ID = "markets_auto_close"
+
+
+def register_auto_close(scheduler: AsyncIOScheduler) -> None:
+    """Регистрирует фоновый auto-close как interval-job (5 минут), по образцу
+    embed_worker.register: своя сессия, broad-except — тик обязан пережить
+    любую ошибку и не уронить планировщик (T-03-21)."""
+
+    async def _job() -> None:
+        async with SessionLocal() as session:
+            try:
+                closed_count = await auto_close_expired(session)
+                if closed_count:
+                    logger.info("markets_auto_close: закрыто просроченных рынков — %s", closed_count)
+            except Exception:  # noqa: BLE001 - job обязан пережить любую ошибку и не уронить планировщик
+                logger.exception("markets_auto_close: тик упал")
+
+    scheduler.add_job(
+        _job,
+        "interval",
+        minutes=5,
+        coalesce=True,
+        max_instances=1,
+        misfire_grace_time=120,
+        id=_AUTO_CLOSE_JOB_ID,
+        replace_existing=True,
+    )
