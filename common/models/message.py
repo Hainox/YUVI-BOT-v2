@@ -3,6 +3,7 @@ from __future__ import annotations
 from sqlalchemy import BigInteger
 from sqlalchemy import Boolean
 from sqlalchemy import DateTime
+from sqlalchemy import Float
 from sqlalchemy import ForeignKey
 from sqlalchemy import String
 from sqlalchemy import Text
@@ -38,4 +39,10 @@ class Message(Base):
     is_forwarded: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     source: Mapped[str] = mapped_column(String(16), nullable=False, default="live")
     deleted_at: Mapped[DateTime | None] = mapped_column(DateTime, nullable=True)  # D-04: остаётся NULL в этой фазе
+
+    # NLP-колонки (NLP-01/NLP-02) — заполняются фоновой классификацией батчами по 200 каждые 30с
+    nlp_processed_at: Mapped[DateTime | None] = mapped_column(DateTime, nullable=True)
+    sentiment_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    sentiment_label: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    toxicity_score: Mapped[float | None] = mapped_column(Float, nullable=True)
 
