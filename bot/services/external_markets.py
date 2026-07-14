@@ -98,18 +98,59 @@ async def _get_json(url: str, retries: int = 5, base_delay: float = 2.0) -> dict
     raise MarketFetchError(f"Не удалось получить {url}: {last_exc}") from last_exc
 
 
+async def _get_json_by_slug(url: str, not_found_msg: str) -> dict:
+    """_get_json для выделенных `.../slug/{slug}` эндпоинтов Gamma API.
+
+    В отличие от list-эндпоинта `/markets?slug=`, который на отсутствующий
+    slug отвечает `200 []` (обрабатывается вызывающей стороной через `if not
+    data`), выделенные by-slug эндпоинты (`/markets/slug/{slug}`,
+    `/events/slug/{slug}`) на отсутствующий slug отвечают `404` (проверено
+    live 2026-07-14) — `response.raise_for_status()` внутри `_get_json`
+    превращает это в `aiohttp.ClientResponseError`, который не входит в
+    список ретраев `_get_json` и без этой обёртки ушёл бы наверх
+    непойманным (не `MarketFetchError`), ломая единообразную обработку
+    ошибок у вызывающей стороны (markets_service/handlers ловят
+    `MarketFetchError`, а не сырой `aiohttp.ClientResponseError`)."""
+    try:
+        return await _get_json(url)
+    except aiohttp.ClientResponseError as exc:
+        if exc.status == 404:
+            raise MarketFetchError(not_found_msg) from exc
+        raise
+
+
 async def _fetch_polymarket(url: str) -> dict:
     """Фетч и нормализация рынка Polymarket. outcomes/outcomePrices — JSON-строка внутри JSON
     (Pitfall 4) — требуется ДВОЙНОЙ json.loads."""
     if match := _POLYMARKET_MARKET_RE.search(url):
         slug = match.group(1)
-        data = await _get_json(f"{_GAMMA_BASE}/markets?slug={slug}")
-        if not data:
+        # Живая проверка (2026-07-14, реальный Gamma API, без мока) показала:
+        # `/markets?slug={slug}` (list-эндпоинт) по умолчанию применяет
+        # closed=false ДАЖЕ при указанном slug — для уже закрытого рынка
+        # возвращает пустой список `[]`, хотя рынок существует. Так как
+        # единственная цель auto_resolve_external — находить именно ЗАКРЫТЫЕ
+        # рынки, этот путь никогда бы не находил разрешённые рынки.
+        # `&closed=true` НЕ является исправлением: он превращает фильтр в
+        # обратный и тогда уже ОТКРЫТЫЕ рынки по тому же slug возвращают `[]`
+        # (проверено live на открытом рынке). Единственный вариант, отдающий
+        # рынок ПО SLUG независимо от открыт/закрыт — выделенный
+        # `/markets/slug/{slug}` эндпоинт (возвращает единственный объект, а
+        # не список — отсюда другая распаковка ниже).
+        market = await _get_json_by_slug(
+            f"{_GAMMA_BASE}/markets/slug/{slug}", f"Рынок Polymarket не найден: {slug}"
+        )
+        if not market:
             raise MarketFetchError(f"Рынок Polymarket не найден: {slug}")
-        market = data[0]
     elif match := _POLYMARKET_EVENT_RE.search(url):
         slug = match.group(1)
-        event = await _get_json(f"{_GAMMA_BASE}/events/slug/{slug}")
+        # /events/slug/{slug} — тот же class выделенного by-slug эндпоинта,
+        # что и /markets/slug/{slug}: 404 на отсутствующий slug (проверено
+        # live), но при этом (в отличие от /markets?slug=) уже КОРРЕКТНО
+        # находит закрытые события без доп. query-параметров — фикса по
+        # аналогии с market-веткой здесь не требуется, только 404-обёртка.
+        event = await _get_json_by_slug(
+            f"{_GAMMA_BASE}/events/slug/{slug}", f"Событие Polymarket не найдено: {slug}"
+        )
         markets = event.get("markets", [])
         if len(markets) != 1:
             raise UnsupportedMarketUrl(

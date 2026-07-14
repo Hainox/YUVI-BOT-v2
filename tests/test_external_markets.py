@@ -9,7 +9,19 @@ tests/test_nlp_classifier.py, где так же мокается nlp_client).
 - Polymarket: outcomes/outcomePrices — JSON-строка внутри JSON, нужен
   ДВОЙНОЙ json.loads (Pitfall 4, RESEARCH.md).
 - Polymarket closed market: winning_label по эвристике price > 0.99
-  (Assumption A3).
+  (Assumption A3) — подтверждено ЖИВЫМ прогоном против реального Gamma API
+  на реальном разрешённом рынке `will-trump-win-the-2020-us-presidential-
+  election` в рамках чекпоинта 03-06 Task 3 (см. 03-06-SUMMARY.md):
+  outcomePrices=["~0.0000000436", "~0.9999999563"] → "No" > 0.99, что
+  совпадает с реальным исходом (Trump проиграл выборы 2020).
+- Polymarket market-branch регрессия (03-06 Task 3, найдено при том же живом
+  прогоне): `/markets?slug={slug}` (list-эндпоинт) применяет closed=false
+  ДАЖЕ при заданном slug — для уже ЗАКРЫТОГО рынка живой ответ был `[]`,
+  из-за чего auto_resolve_external НИКОГДА бы не находил разрешённые
+  Polymarket-рынки. Фикс — выделенный `/markets/slug/{slug}` эндпоинт
+  (возвращает единственный объект, не список; подтверждено live, что он
+  корректно находит рынок независимо от closed/open, в отличие от `&closed=
+  true`, который live-проверкой ломает поиск ОТКРЫТЫХ рынков по slug).
 - Manifold: BINARY/MULTIPLE_CHOICE, resolution → winning_label.
 - SSRF (Pitfall 5, T-03-09): URL с хостом, не входящим в allowlist
   {polymarket.com, manifold.markets}, отклоняется ДО какого-либо HTTP-запроса
@@ -18,8 +30,9 @@ tests/test_nlp_classifier.py, где так же мокается nlp_client).
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
+import aiohttp
 import pytest
 
 from bot.services import external_markets
@@ -35,7 +48,9 @@ async def test_polymarket_market_double_json_loads(monkeypatch):
         "conditionId": "cond-123",
         "id": "999",
     }
-    mock_get_json = AsyncMock(return_value=[market])
+    # /markets/slug/{slug} возвращает ЕДИНСТВЕННЫЙ объект, не список
+    # (регрессия 03-06 Task 3 — см. модульный docstring).
+    mock_get_json = AsyncMock(return_value=market)
     monkeypatch.setattr(external_markets, "_get_json", mock_get_json)
 
     result = await external_markets.fetch_external_market(
@@ -54,6 +69,78 @@ async def test_polymarket_market_double_json_loads(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_polymarket_market_uses_dedicated_slug_endpoint_not_filtered_list(monkeypatch):
+    """Регрессия 03-06 Task 3: `/markets?slug={slug}` (list-эндпоинт) на реальном
+    Gamma API молча применяет closed=false даже с заданным slug и отдаёт `[]`
+    для уже закрытого рынка — auto_resolve_external никогда не находил бы
+    разрешённые Polymarket-рынки. Фикс — `/markets/slug/{slug}` (выделенный
+    by-slug эндпоинт, отдаёт рынок независимо от open/closed — подтверждено
+    live). Тест доказывает: (а) запрошенный URL — именно `/markets/slug/`, а
+    НЕ `/markets?slug=`; (б) фикс работает и для закрытого, и для открытого
+    рынка (не однобокая правка вида `&closed=true`, которая на реальном API
+    ломает поиск открытых рынков — см. docstring модуля)."""
+    closed_market = {
+        "question": "Закрытый рынок",
+        "outcomes": '["Yes", "No"]',
+        "outcomePrices": '["0.995", "0.005"]',
+        "closed": True,
+        "conditionId": "cond-closed",
+        "id": "1",
+    }
+    open_market = {
+        "question": "Открытый рынок",
+        "outcomes": '["Yes", "No"]',
+        "outcomePrices": '["0.5", "0.5"]',
+        "closed": False,
+        "conditionId": "cond-open",
+        "id": "2",
+    }
+
+    async def _fake_get_json(url: str):
+        # Единственный by-slug эндпоинт — независимо от open/closed рынка.
+        assert "/markets/slug/" in url
+        assert "?slug=" not in url
+        if "closed-market-slug" in url:
+            return closed_market
+        if "open-market-slug" in url:
+            return open_market
+        raise AssertionError(f"unexpected url: {url}")
+
+    monkeypatch.setattr(external_markets, "_get_json", _fake_get_json)
+
+    closed_result = await external_markets.fetch_external_market(
+        "https://polymarket.com/market/closed-market-slug"
+    )
+    assert closed_result["closed"] is True
+    assert closed_result["winning_label"] == "Yes"
+
+    open_result = await external_markets.fetch_external_market(
+        "https://polymarket.com/market/open-market-slug"
+    )
+    assert open_result["closed"] is False
+    assert open_result["winning_label"] is None
+
+
+@pytest.mark.asyncio
+async def test_polymarket_market_not_found_404_raises_market_fetch_error(monkeypatch):
+    """Регрессия 03-06 Task 3: выделенный by-slug эндпоинт на отсутствующий
+    slug отвечает 404 (проверено live), а не `200 []` как list-эндпоинт.
+    `_get_json` пробрасывает `aiohttp.ClientResponseError` через
+    `raise_for_status()` — без явной обёртки (`_get_json_by_slug`) это ушло
+    бы наверх непойманным вместо ожидаемого `MarketFetchError`."""
+    request_info = Mock(real_url="https://gamma-api.polymarket.com/markets/slug/missing")
+    not_found = aiohttp.ClientResponseError(
+        request_info=request_info, history=(), status=404, message="Not Found"
+    )
+    monkeypatch.setattr(external_markets, "_get_json", AsyncMock(side_effect=not_found))
+
+    with pytest.raises(external_markets.MarketFetchError):
+        await external_markets.fetch_external_market(
+            "https://polymarket.com/market/missing-slug"
+        )
+
+
+@pytest.mark.asyncio
 async def test_polymarket_closed_winning_label_by_price_threshold(monkeypatch):
     market = {
         "question": "Уже решено?",
@@ -63,7 +150,8 @@ async def test_polymarket_closed_winning_label_by_price_threshold(monkeypatch):
         "conditionId": "cond-456",
         "id": "1000",
     }
-    monkeypatch.setattr(external_markets, "_get_json", AsyncMock(return_value=[market]))
+    # /markets/slug/{slug} возвращает единственный объект, не список.
+    monkeypatch.setattr(external_markets, "_get_json", AsyncMock(return_value=market))
 
     result = await external_markets.fetch_external_market(
         "https://polymarket.com/market/already-resolved"
@@ -209,7 +297,8 @@ async def test_dispatch_routes_by_host(monkeypatch):
 
     async def _fake_get_json(url: str):
         if url.startswith(external_markets._GAMMA_BASE):
-            return [polymarket_market]
+            # /markets/slug/{slug} возвращает единственный объект, не список.
+            return polymarket_market
         if url.startswith(external_markets._MANIFOLD_BASE):
             return manifold_market
         raise AssertionError(f"unexpected url: {url}")
