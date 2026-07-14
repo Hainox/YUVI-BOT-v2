@@ -9,8 +9,13 @@ from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from common.db.base import Base
+from common.models import daily_stat  # noqa: F401
+from common.models import emoji_frequency  # noqa: F401
 from common.models import message  # noqa: F401
+from common.models import message_edit  # noqa: F401
+from common.models import reaction  # noqa: F401
 from common.models import user  # noqa: F401
+from common.models import word_frequency  # noqa: F401
 
 config = context.config
 
