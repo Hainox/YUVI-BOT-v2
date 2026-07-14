@@ -58,7 +58,14 @@ async def save_message(session: AsyncSession, event: Message) -> None:
     message_stmt = message_stmt.on_conflict_do_nothing(
         index_elements=["chat_id", "telegram_message_id"],
     )
-    await session.execute(message_stmt)
+    message_result = await session.execute(message_stmt)
+
+    if message_result.rowcount == 0:
+        # T-02-04: сообщение уже было записано раньше (ретрай после краша до
+        # commit) — строка messages не вставилась повторно (on_conflict_do_nothing),
+        # поэтому daily_stats тоже НЕ инкрементируем: иначе один и тот же message_id
+        # задвоил бы счётчик при повторной обработке (полная идемпотентность записи).
+        return
 
     stat_date = event.date.astimezone(MSK).date()
     daily_stat_stmt = pg_insert(DailyStat).values(
