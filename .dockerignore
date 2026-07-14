@@ -1,0 +1,23 @@
+.git/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.idea/
+.vscode/
+node_modules/
+dist/
+build/
+.DS_Store
+*.log
+coverage.xml
+htmlcov/
+
+# Secrets and local-only artifacts — must never end up baked into an image
+.env
+.planning/
+Dockerfile.dev
+*.session
+*.session-journal

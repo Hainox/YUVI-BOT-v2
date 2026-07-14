@@ -23,3 +23,9 @@ htmlcov/
 # connections are unreliable (see 01-01-SUMMARY.md "Issues Encountered")
 Dockerfile.dev
 
+# Kurigram/Pyrogram MTProto session files — these are live login credentials
+# for the personal Telegram account used for backfill (DATA-04), equivalent
+# to a password. Never commit.
+*.session
+*.session-journal
+
