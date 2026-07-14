@@ -5,11 +5,13 @@ get_scheduler() лениво создаёт и возвращает один и 
 
 setup_jobs(bot) — единая точка расширения: регистрирует фоновую NLP-
 классификацию (nlp_classifier, interval 30с, NLP-02), эмбеддинг-воркер
-(embed_worker, interval 45с) через их register(scheduler, bot), и
+(embed_worker, interval 45с) через их register(scheduler, bot),
 автодайджест (digest_daily, cron hour=22 Europe/Moscow, D-01) через
-digest_service.run_daily_digest. Импорты ленивые (внутри функции), чтобы
-модули, ещё не существующие на момент плана 01 (пустой setup_jobs), не
-ломали import bot.main до их появления.
+digest_service.run_daily_digest, и auto-close просроченных рынков ставок
+(markets_auto_close, interval 5м) через markets_service.register_auto_close
+(план 03-05). Импорты ленивые (внутри функции), чтобы модули, ещё не
+существующие на момент плана 01 (пустой setup_jobs), не ломали import
+bot.main до их появления.
 """
 
 from __future__ import annotations
@@ -38,18 +40,21 @@ _DIGEST_JOB_ID = "digest_daily"
 def setup_jobs(bot: Bot) -> None:
     """Точка расширения для фоновых job'ов.
 
-    Регистрирует NLP-классификацию (NLP-02), эмбеддинг-воркер (план 05) и
-    автодайджест (план 09, D-01: раз в день, 22:00 МСК). Ленивые импорты —
-    эти модули появились в более поздних планах, чем изначальный (пустой)
-    setup_jobs плана 01.
+    Регистрирует NLP-классификацию (NLP-02), эмбеддинг-воркер (план 05),
+    автодайджест (план 09, D-01: раз в день, 22:00 МСК) и auto-close
+    просроченных рынков ставок (план 03-05, markets_auto_close, interval
+    5м). Ленивые импорты — эти модули появились в более поздних планах,
+    чем изначальный (пустой) setup_jobs плана 01.
     """
     from bot.services import digest_service
     from bot.services import embed_worker
+    from bot.services import markets_service
     from bot.services import nlp_classifier
 
     scheduler = get_scheduler()
     nlp_classifier.register(scheduler, bot)
     embed_worker.register(scheduler, bot)
+    markets_service.register_auto_close(scheduler)
 
     async def _digest_job() -> None:
         await digest_service.run_daily_digest(bot)

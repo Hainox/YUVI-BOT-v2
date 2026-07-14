@@ -1,25 +1,31 @@
 """Команды рынков ставок (BET-01): /market_create /bet /markets /market
-/portfolio. Тонкий хендлер: парсит вход, зовёт markets_service, форматирует
-и отвечает — вся логика жизненного цикла рынка в сервисе.
+/portfolio /market_resolve /market_cancel. Тонкий хендлер: парсит вход,
+зовёт markets_service, форматирует и отвечает — вся логика жизненного
+цикла рынка в сервисе.
 
-Вопрос/варианты рынка — НОВЫЙ пользовательский HTML-surface этой фазы
-(T-03-13/Pitfall 6): каждый format_* прогоняет question/label через
-html.escape перед вставкой в parse_mode="HTML"-ответ, аналогично уже
-принятой конвенции stats.py/economy.py.
+Вопрос/варианты рынка — пользовательский HTML-surface этой фазы (T-03-13/
+Pitfall 6): каждый format_* прогоняет question/label через html.escape
+перед вставкой в parse_mode="HTML"-ответ, аналогично уже принятой
+конвенции stats.py/economy.py.
 
-/market_resolve и /market_cancel (D-01/D-02, ChatAdminFilter) — вне scope
-этого плана, добавляются планом 03-05.
+/market_resolve и /market_cancel — АДМИНСКИЕ команды (D-01/D-02): ручной
+гейт admin_service.is_chat_admin с явным ответом не-админу, той же формы,
+что bot/handlers/backfill.py (не молчаливый ChatAdminFilter — понятная
+обратная связь). Ни создатель рынка, ни любой участник резолвить/отменять
+не могут — только текущий (live-проверка) админ чата.
 """
 
 from __future__ import annotations
 
 import html
 
+from aiogram import Bot
 from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from bot.services import admin_service
 from bot.services import economy_service
 from bot.services import markets_service
 
@@ -65,13 +71,24 @@ def _parse_bet_args(message: Message) -> tuple[int, int, int] | None:
 
 
 def _parse_market_id_arg(message: Message) -> int | None:
-    """Парсит `/market <id>`."""
+    """Парсит `/market <id>` (и `/market_cancel <id>`)."""
     if message.text is None:
         return None
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2 or not parts[1].strip().isdigit():
         return None
     return int(parts[1].strip())
+
+
+def _parse_market_resolve_args(message: Message) -> tuple[int, int] | None:
+    """Парсит `/market_resolve <id рынка> <номер варианта>` — два целых числа."""
+    if message.text is None:
+        return None
+    tokens = message.text.split()[1:]
+    if len(tokens) != 2 or not all(token.isdigit() for token in tokens):
+        return None
+    market_id, winning_position = (int(token) for token in tokens)
+    return market_id, winning_position
 
 
 # --- Чистые форматтеры (юнит-тестируемые без message/session) --------------
@@ -111,6 +128,22 @@ def format_market_detail(detail: dict) -> str:
     closes_at = detail["closes_at"].strftime("%d.%m.%Y %H:%M")
     lines.append(f"Закрытие: {closes_at} (UTC)")
     return "\n".join(lines)
+
+
+def format_market_resolved(result: dict, option_label: str) -> str:
+    label = html.escape(option_label)
+    return (
+        f"<b>Рынок #{result['market_id']} резолвлен:</b> победил вариант «{label}».\n"
+        f"Победителей: {result['winners_count']}, выплачено: {result['total_paid']}, "
+        f"комиссия в банк: {result['fee']}."
+    )
+
+
+def format_market_cancelled(result: dict) -> str:
+    return (
+        f"Рынок #{result['market_id']} отменён, рефанд {result['refunded_count']} ставок "
+        f"на сумму {result['total_refunded']} ювиков."
+    )
 
 
 def format_portfolio(rows: list[dict]) -> str:
@@ -243,3 +276,68 @@ async def portfolio_command(message: Message, session: AsyncSession) -> None:
 
     rows = await markets_service.get_user_portfolio(session, message.chat.id, message.from_user.id)
     await message.answer(format_portfolio(rows), parse_mode="HTML")
+
+
+@router.message(Command("market_resolve"))
+async def market_resolve_command(message: Message, session: AsyncSession, bot: Bot) -> None:
+    if message.from_user is None or not await admin_service.is_chat_admin(
+        bot, message.chat.id, message.from_user.id
+    ):
+        await message.reply("Только администратор чата может резолвить рынок.")
+        return
+
+    parsed = _parse_market_resolve_args(message)
+    if parsed is None:
+        await message.answer("Использование: /market_resolve <id рынка> <номер варианта>")
+        return
+
+    market_id, winning_position = parsed
+
+    try:
+        result = await markets_service.resolve_market_by_position(
+            session, message.chat.id, market_id, winning_position
+        )
+    except (
+        markets_service.MarketNotFound,
+        markets_service.MarketClosed,
+        markets_service.InvalidMarketArg,
+    ) as exc:
+        await message.answer(str(exc))
+        return
+
+    if result["status"] == "already_resolved":
+        await message.answer(f"Рынок #{market_id} уже был резолвлен ранее.")
+        return
+
+    detail = await markets_service.get_market_detail(session, message.chat.id, market_id)
+    option_label = next(
+        option["label"] for option in detail["options"] if option["position"] == winning_position
+    )
+    await message.answer(format_market_resolved(result, option_label), parse_mode="HTML")
+
+
+@router.message(Command("market_cancel"))
+async def market_cancel_command(message: Message, session: AsyncSession, bot: Bot) -> None:
+    if message.from_user is None or not await admin_service.is_chat_admin(
+        bot, message.chat.id, message.from_user.id
+    ):
+        await message.reply("Только администратор чата может отменить рынок.")
+        return
+
+    market_id = _parse_market_id_arg(message)
+    if market_id is None:
+        await message.answer("Использование: /market_cancel <id рынка>")
+        return
+
+    try:
+        result = await markets_service.cancel_market(session, message.chat.id, market_id)
+    except markets_service.MarketNotFound as exc:
+        await message.answer(str(exc))
+        return
+
+    if result["status"] != "cancelled":
+        already = "отменён" if result["status"] == "already_cancelled" else "резолвлен"
+        await message.answer(f"Рынок #{market_id} уже {already}, повторная отмена невозможна.")
+        return
+
+    await message.answer(format_market_cancelled(result), parse_mode="HTML")
