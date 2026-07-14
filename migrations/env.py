@@ -9,14 +9,19 @@ from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from common.db.base import Base
+from common.models import bet  # noqa: F401
 from common.models import bot_setting  # noqa: F401
+from common.models import chat_bank  # noqa: F401
 from common.models import daily_stat  # noqa: F401
+from common.models import economy_tx  # noqa: F401
 from common.models import emoji_frequency  # noqa: F401
+from common.models import market  # noqa: F401
 from common.models import message  # noqa: F401
 from common.models import message_edit  # noqa: F401
 from common.models import message_embedding  # noqa: F401
 from common.models import reaction  # noqa: F401
 from common.models import user  # noqa: F401
+from common.models import user_balance  # noqa: F401
 from common.models import word_frequency  # noqa: F401
 
 config = context.config
