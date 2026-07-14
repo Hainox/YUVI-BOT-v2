@@ -109,7 +109,7 @@ def format_peak_day(peak: tuple | None, days: int | None) -> str:
     return f"Самый активный день ({period}): {peak_date.strftime('%d.%m.%Y')} — {count} сообщ."
 
 
-@router.message(Command("mystats"))
+@router.message(Command("mystats", "stats"))
 async def mystats_command(message: Message, session: AsyncSession) -> None:
     if message.from_user is None:
         return
@@ -135,7 +135,7 @@ async def chatstats_command(message: Message, session: AsyncSession) -> None:
     await message.answer(text, parse_mode="HTML")  # D-05: всегда отвечаем прямо в группе
 
 
-@router.message(Command("who"))
+@router.message(Command("who", "top"))
 async def who_command(message: Message, session: AsyncSession) -> None:
     if message.from_user is None:
         return
@@ -158,7 +158,7 @@ async def streak_command(message: Message, session: AsyncSession) -> None:
     await message.answer(text, parse_mode="HTML")  # D-05: всегда отвечаем прямо в группе
 
 
-@router.message(Command("peakday"))
+@router.message(Command("peakday", "activity"))
 async def peakday_command(message: Message, session: AsyncSession) -> None:
     if message.from_user is None:
         return
@@ -166,5 +166,20 @@ async def peakday_command(message: Message, session: AsyncSession) -> None:
     days = _parse_days_arg(message)
     peak = await stats_service.get_peak_day(session, message.chat.id, days)
     text = format_peak_day(peak, days)
+
+    await message.answer(text, parse_mode="HTML")  # D-05: всегда отвечаем прямо в группе
+
+
+@router.message(Command("words"))
+async def words_command(message: Message, session: AsyncSession) -> None:
+    """STATS-02: /words свёрнут в топ слов — переиспользует get_top_words
+    и format_top_words, те же функции, что использует /chatstats. Никакой
+    отдельной SQL-логики не заводится (Command Consolidation Map).
+    """
+    if message.from_user is None:
+        return
+
+    top_words = await stats_service.get_top_words(session, message.chat.id, days=None, limit=10)
+    text = format_top_words(top_words)
 
     await message.answer(text, parse_mode="HTML")  # D-05: всегда отвечаем прямо в группе
