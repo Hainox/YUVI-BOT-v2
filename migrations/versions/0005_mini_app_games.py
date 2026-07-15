@@ -96,8 +96,8 @@ def upgrade() -> None:
         sa.Column("stake", sa.BigInteger(), nullable=False),
         # pending -> accepted -> resolved/declined/cancelled (mirrors markets.status)
         sa.Column("status", sa.String(length=16), nullable=False, server_default="pending"),
-        sa.Column("winner_id", sa.BigInteger(), nullable=True),
-        sa.Column("loser_id", sa.BigInteger(), nullable=True),
+        sa.Column("winner_id", sa.BigInteger(), sa.ForeignKey("users.id"), nullable=True),
+        sa.Column("loser_id", sa.BigInteger(), sa.ForeignKey("users.id"), nullable=True),
         sa.Column("fee", sa.BigInteger(), nullable=True),
         sa.Column("mute_seconds", sa.Integer(), nullable=True),
         sa.Column("created_at", sa.DateTime(), server_default=sa.text("now()"), nullable=False),
