@@ -69,6 +69,11 @@ class Settings(BaseSettings):
     # переопределяется через MINI_APP_INIT_DATA_TTL_SEC.
     mini_app_init_data_ttl_sec: int = Field(default=3600, alias="MINI_APP_INIT_DATA_TTL_SEC")
     mini_app_membership_cache_ttl_sec: int = Field(default=300, alias="MINI_APP_MEMBERSHIP_CACHE_TTL_SEC")
+    # Frontend (miniapp/, docker-compose port 8003) is served from a different
+    # origin than the api container (port 8002) — CORS must be explicit (WR-06).
+    mini_app_frontend_origin: str = Field(
+        default="http://localhost:8003", alias="MINI_APP_FRONTEND_ORIGIN"
+    )
 
 
 settings = Settings()

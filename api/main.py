@@ -7,6 +7,7 @@ import httpx
 import redis.asyncio as redis
 from fastapi import FastAPI
 from fastapi import Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from api.deps import InvalidInitData
@@ -36,6 +37,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="Yuvi Bot v2 API", version="0.1.0", lifespan=lifespan)
+
+# Mini App frontend (miniapp/, port 8003) is a different origin than this api
+# (port 8002) — browsers block fetch()/EventSource without explicit CORS (WR-06).
+# Not a wildcard: X-Telegram-Init-Data is a bearer-like credential.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[settings.mini_app_frontend_origin],
+    allow_credentials=True,
+    allow_methods=["GET"],
+    allow_headers=["X-Telegram-Init-Data"],
+)
+
 app.include_router(events.router)
 
 
