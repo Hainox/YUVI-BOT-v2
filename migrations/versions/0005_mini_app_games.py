@@ -64,8 +64,8 @@ def upgrade() -> None:
     op.create_table(
         "clicker_market_pool",
         sa.Column("chat_id", sa.BigInteger(), primary_key=True),
-        sa.Column("r_cp", sa.Float(), nullable=False),
-        sa.Column("r_h", sa.Float(), nullable=False),
+        sa.Column("r_cp", sa.Numeric(20, 8), nullable=False),
+        sa.Column("r_h", sa.Numeric(20, 8), nullable=False),
         sa.Column("updated_at", sa.DateTime(), server_default=sa.text("now()"), nullable=False),
         # No CHECK: AMM reserves are pricing state, not money (economy_service holds money).
     )
@@ -75,7 +75,7 @@ def upgrade() -> None:
         "clicker_market_price",
         sa.Column("id", sa.BigInteger(), primary_key=True, autoincrement=True),
         sa.Column("chat_id", sa.BigInteger(), nullable=False),
-        sa.Column("price", sa.Float(), nullable=False),
+        sa.Column("price", sa.Numeric(20, 8), nullable=False),
         sa.Column("created_at", sa.DateTime(), server_default=sa.text("now()"), nullable=False),
     )
     op.create_index(
