@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import BigInteger
@@ -29,6 +30,6 @@ class ClickerMarketPool(Base):
     chat_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     r_cp: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
     r_h: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
-    updated_at: Mapped[DateTime] = mapped_column(
+    updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
     )

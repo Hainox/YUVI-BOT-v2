@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from sqlalchemy import BigInteger
 from sqlalchemy import DateTime
 from sqlalchemy import ForeignKey
@@ -33,4 +35,4 @@ class GachaCollection(Base):
     char_id: Mapped[str] = mapped_column(String(64), nullable=False)
     stars: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     copies: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    created_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

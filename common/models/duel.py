@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from sqlalchemy import BigInteger
 from sqlalchemy import DateTime
 from sqlalchemy import ForeignKey
@@ -31,5 +33,5 @@ class Duel(Base):
     loser_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     fee: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     mute_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    created_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now())
-    resolved_at: Mapped[DateTime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

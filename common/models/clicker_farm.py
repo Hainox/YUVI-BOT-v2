@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from sqlalchemy import BigInteger
 from sqlalchemy import DateTime
 from sqlalchemy import ForeignKey
@@ -32,7 +34,7 @@ class ClickerFarm(Base):
     auto_level: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     pity_ssr: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     pity_ur: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    last_accrued_at: Mapped[DateTime] = mapped_column(
+    last_accrued_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
     )
-    created_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
