@@ -44,9 +44,15 @@ _PUBLIC_COMMANDS: list[BotCommand] = [
     BotCommand(command="topics", description="Топ тем в чате"),
     BotCommand(command="phrase", description="Случайная цитата"),
     BotCommand(command="joke", description="Шутка"),
+    BotCommand(command="duel", description="Вызвать участника на дуэль"),
+    BotCommand(command="duelbot", description="Дуэль против банка чата"),
+    BotCommand(command="duel_accept", description="Принять дуэль"),
+    BotCommand(command="duel_decline", description="Отклонить дуэль"),
+    BotCommand(command="duel_cancel", description="Отменить свою дуэль"),
 ]
 
 _ADMIN_ONLY_COMMANDS: list[BotCommand] = [
+    BotCommand(command="unmute", description="[Админ] Досрочно снять мут после дуэли"),
     BotCommand(command="market_resolve", description="[Админ] Разрешить рынок"),
     BotCommand(command="market_cancel", description="[Админ] Отменить рынок"),
     BotCommand(command="backfill", description="[Админ] Загрузить историю чата"),
