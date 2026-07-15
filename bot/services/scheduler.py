@@ -9,11 +9,13 @@ setup_jobs(bot) — единая точка расширения: регистр
 автодайджест (digest_daily, cron hour=22 Europe/Moscow, D-01) через
 digest_service.run_daily_digest, auto-close просроченных рынков ставок
 (markets_auto_close, interval 5м) через markets_service.register_auto_close
-(план 03-05), и сверку/авторезолюцию внешних рынков Polymarket/Manifold
+(план 03-05), сверку/авторезолюцию внешних рынков Polymarket/Manifold
 (external_markets_check, interval 30м) через
-markets_service.register_external_check (план 03-06). Импорты ленивые
-(внутри функции), чтобы модули, ещё не существующие на момент плана 01
-(пустой setup_jobs), не ломали import bot.main до их появления.
+markets_service.register_external_check (план 03-06), и авто-стенд
+просроченных раздач блэкджека (blackjack_timeouts, interval 30с, D-07/D-08)
+через casino_service.register_blackjack_timeouts (план 04.1-03). Импорты
+ленивые (внутри функции), чтобы модули, ещё не существующие на момент
+плана 01 (пустой setup_jobs), не ломали import bot.main до их появления.
 """
 
 from __future__ import annotations
@@ -45,11 +47,13 @@ def setup_jobs(bot: Bot) -> None:
     Регистрирует NLP-классификацию (NLP-02), эмбеддинг-воркер (план 05),
     автодайджест (план 09, D-01: раз в день, 22:00 МСК), auto-close
     просроченных рынков ставок (план 03-05, markets_auto_close, interval
-    5м) и сверку/авторезолюцию внешних рынков (план 03-06,
-    external_markets_check, interval 30м). Ленивые импорты — эти модули
-    появились в более поздних планах, чем изначальный (пустой) setup_jobs
-    плана 01.
+    5м), сверку/авторезолюцию внешних рынков (план 03-06,
+    external_markets_check, interval 30м) и авто-стенд просроченных раздач
+    блэкджека (план 04.1-03, blackjack_timeouts, interval 30с, D-07/D-08).
+    Ленивые импорты — эти модули появились в более поздних планах, чем
+    изначальный (пустой) setup_jobs плана 01.
     """
+    from bot.services import casino_service
     from bot.services import digest_service
     from bot.services import embed_worker
     from bot.services import markets_service
@@ -60,6 +64,7 @@ def setup_jobs(bot: Bot) -> None:
     embed_worker.register(scheduler, bot)
     markets_service.register_auto_close(scheduler)
     markets_service.register_external_check(scheduler)
+    casino_service.register_blackjack_timeouts(scheduler)
 
     async def _digest_job() -> None:
         await digest_service.run_daily_digest(bot)

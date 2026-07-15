@@ -34,7 +34,9 @@ import secrets
 from datetime import datetime
 from datetime import timedelta
 
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import select
+from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -42,6 +44,7 @@ from bot.config import settings
 from bot.services import blackjack_engine
 from bot.services import economy_service
 from bot.services import slot_engine
+from common.db.session import SessionLocal
 from common.models.casino_game import CasinoGame
 
 logger = logging.getLogger(__name__)
@@ -579,3 +582,87 @@ async def blackjack_action(
     await _finalize_blackjack(session, game_row, player, dealer, outcome_name, payout, state=state)
     await session.commit()
     return _blackjack_view(game_row)
+
+
+# --- Таймаут-резолвер блэкджека (D-07/D-08, T-04.1-10) + APScheduler --------
+
+
+async def resolve_blackjack_timeouts(session: AsyncSession) -> int:
+    """Сканирует активные раздачи блэкджека с истёкшим `state.turn_deadline`
+    (D-07: 60с на ход) и авто-стендит их (D-08) — дилер доигрывает по
+    обычным правилам (soft-17 stand), исход settle'ится так, как будто
+    игрок сам нажал "stand". Ставка НИКОГДА не замораживается навсегда
+    (T-04.1-10).
+
+    Per-row try/except (форма `markets_service.auto_resolve_external`) —
+    одна застрявшая раздача не блокирует весь батч. Возвращает число
+    авто-стендённых раздач."""
+    rows = (
+        await session.execute(
+            select(CasinoGame)
+            .where(
+                CasinoGame.game == "blackjack",
+                CasinoGame.status == "active",
+                text("(state->>'turn_deadline')::timestamp <= now()"),
+            )
+            .with_for_update()
+        )
+    ).scalars().all()
+
+    resolved_count = 0
+    for game_row in rows:
+        try:
+            state = dict(game_row.state)
+            deck = list(state["deck"])
+            player = list(state["player"])
+            dealer = list(state["dealer"])
+            bet = state["bet"]
+
+            deck, dealer = blackjack_engine.dealer_play(deck, dealer)
+            state["deck"] = deck
+            state["dealer"] = dealer
+            outcome_name, mult = blackjack_engine.settle_outcome(player, dealer, False)
+            payout = int(bet * mult)
+
+            await _finalize_blackjack(session, game_row, player, dealer, outcome_name, payout, state=state)
+            await session.commit()
+            resolved_count += 1
+        except Exception:  # noqa: BLE001 - один застрявший раунд не должен ронять весь тик
+            logger.exception(
+                "resolve_blackjack_timeouts: не удалось авто-стендить game_id=%s", game_row.id
+            )
+            await session.rollback()
+
+    return resolved_count
+
+
+_BLACKJACK_TIMEOUTS_JOB_ID = "blackjack_timeouts"
+
+
+def register_blackjack_timeouts(scheduler: AsyncIOScheduler) -> None:
+    """Регистрирует авто-стенд просроченных раздач блэкджека как interval-job
+    (30с — раздачи короткоживущие, 60-секундный таймаут требует частого
+    скана), по образцу `markets_service.register_auto_close`: своя сессия,
+    broad-except — тик обязан пережить любую ошибку и не уронить планировщик."""
+
+    async def _job() -> None:
+        async with SessionLocal() as session:
+            try:
+                resolved_count = await resolve_blackjack_timeouts(session)
+                if resolved_count:
+                    logger.info(
+                        "blackjack_timeouts: авто-стенд просроченных раздач — %s", resolved_count
+                    )
+            except Exception:  # noqa: BLE001 - job обязан пережить любую ошибку и не уронить планировщик
+                logger.exception("blackjack_timeouts: тик упал")
+
+    scheduler.add_job(
+        _job,
+        "interval",
+        seconds=30,
+        coalesce=True,
+        max_instances=1,
+        misfire_grace_time=120,
+        id=_BLACKJACK_TIMEOUTS_JOB_ID,
+        replace_existing=True,
+    )
