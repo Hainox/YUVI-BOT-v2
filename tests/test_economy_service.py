@@ -217,6 +217,48 @@ async def test_debit_insufficient_raises(session):
     assert await _get_user_balance(session, chat_id, user_id) == 1000
 
 
+# --- debit_to_bank (IN-01: общий стейк-примитив казино/дуэлей) --------------
+
+
+@pytest.mark.asyncio
+async def test_debit_to_bank_moves_stake_to_shared_bank(session):
+    chat_id = -100700009
+    user_id = 800080
+    await _ensure_user(session, user_id)
+    await economy_service.get_balance(session, chat_id, user_id)  # 1000
+    bank_before = await _get_bank_balance(session, chat_id)
+
+    ok = await economy_service.debit_to_bank(
+        session, chat_id, user_id, 100, "casino_bet", "test_debit_to_bank_ref"
+    )
+    await session.commit()
+
+    assert ok is True
+    assert await _get_user_balance(session, chat_id, user_id) == 900
+    assert await _get_bank_balance(session, chat_id) == bank_before + 100
+
+
+@pytest.mark.asyncio
+async def test_debit_to_bank_idempotent_skips_bank_leg_on_replay(session):
+    chat_id = -100700010
+    user_id = 800081
+    await _ensure_user(session, user_id)
+    await economy_service.get_balance(session, chat_id, user_id)  # 1000
+
+    ref_id = "test_debit_to_bank_replay"
+    first = await economy_service.debit_to_bank(session, chat_id, user_id, 100, "casino_bet", ref_id)
+    await session.commit()
+    assert first is True
+    bank_after_first = await _get_bank_balance(session, chat_id)
+
+    second = await economy_service.debit_to_bank(session, chat_id, user_id, 100, "casino_bet", ref_id)
+    await session.commit()
+
+    assert second is False
+    assert await _get_user_balance(session, chat_id, user_id) == 900
+    assert await _get_bank_balance(session, chat_id) == bank_after_first
+
+
 # --- leaderboard / chat summary (D-06) --------------------------------------
 
 

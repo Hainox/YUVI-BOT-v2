@@ -131,7 +131,10 @@ async def test_create_escrows_challenger_stake(session):
     assert duel.stake == stake
 
     assert await _get_user_balance(session, chat_id, challenger_id) == challenger_before - stake
-    assert await _get_bank_balance(session, chat_id) == bank_before + stake
+    # WR-04 (04.1-REVIEW): ставка НЕ заходит в общий chat_bank, пока дуэль
+    # pending — иначе рефанд отмены/отклонения зависел бы от текущего
+    # остатка банка, просаженного несвязанными выплатами (см. тест ниже).
+    assert await _get_bank_balance(session, chat_id) == bank_before
 
 
 @pytest.mark.asyncio
@@ -204,6 +207,34 @@ async def test_accept_resolves_coinflip_with_fee(session, monkeypatch):
         == challenger_before - stake + expected_pot
     )
     assert await _get_user_balance(session, chat_id, opponent_id) == opponent_before - stake
+
+
+@pytest.mark.asyncio
+async def test_accept_duel_bank_receives_only_fee(session, monkeypatch):
+    """WR-04 (04.1-REVIEW): обе ставки временно заходят в chat_bank ровно в
+    момент accept_duel (challenger'а — отложенно из create_duel, оппонента —
+    через _escrow_stake), полностью выплачиваются победителю через
+    pay_from_bank — банк должен прирасти РОВНО на комиссию fee, эскроу не
+    должен "застревать" в банке."""
+    chat_id = -100910027
+    challenger_id, opponent_id = 910027, 910028
+    await _ensure_user(session, challenger_id)
+    await _ensure_user(session, opponent_id)
+    await _fund(session, chat_id, challenger_id)
+    await _fund(session, chat_id, opponent_id)
+    bank_before = await _get_bank_balance(session, chat_id)
+
+    stake = 100
+    duel = await duel_service.create_duel(
+        session, chat_id, challenger_id, opponent_id, stake, "test_bank_fee_create"
+    )
+
+    monkeypatch.setattr(duel_service, "_rng", _ForcedChoiceRng(challenger_id))
+    result = await duel_service.accept_duel(
+        session, chat_id, duel.id, opponent_id, "test_bank_fee_accept"
+    )
+
+    assert await _get_bank_balance(session, chat_id) == bank_before + result["fee"]
 
 
 @pytest.mark.asyncio
@@ -376,6 +407,35 @@ async def test_cancel_refunds_challenger(session):
     assert await _get_user_balance(session, chat_id, challenger_id) == challenger_before
 
 
+@pytest.mark.asyncio
+async def test_decline_refund_full_even_when_shared_bank_is_empty(session):
+    """WR-04 (04.1-REVIEW) regression: до фикса рефанд шёл через
+    pay_from_bank, капнутый ОБЩИМ остатком chat_bank (D-06) — раз ставка
+    challenger'а заходила в банк уже на create_duel, любая несвязанная
+    выплата, просадившая банк между эскроу и отменой, оставляла игрока,
+    который вообще не играл, без части его собственных денег. Теперь ставка
+    challenger'а не заходит в chat_bank, пока дуэль pending (создаём дуэль и
+    явно проверяем, что банк остаётся на нуле), поэтому рефанд гарантированно
+    полный независимо от состояния банка."""
+    chat_id = -100910023
+    challenger_id, opponent_id = 910023, 910024
+    await _ensure_user(session, challenger_id)
+    await _ensure_user(session, opponent_id)
+    challenger_before = await _fund(session, chat_id, challenger_id)
+    await _fund(session, chat_id, opponent_id)
+
+    stake = 100
+    duel = await duel_service.create_duel(
+        session, chat_id, challenger_id, opponent_id, stake, "test_drain_create"
+    )
+    assert await _get_bank_balance(session, chat_id) == 0
+
+    result = await duel_service.decline_duel(session, chat_id, duel.id, opponent_id)
+
+    assert result["refunded"] == stake
+    assert await _get_user_balance(session, chat_id, challenger_id) == challenger_before
+
+
 # --- Хендлеры: мут проигравшего + /unmute (D-01/D-02/D-03) -------------------
 
 
@@ -413,6 +473,37 @@ async def test_duel_accept_handler_applies_mute_and_sticker(session, bot, monkey
     assert (until_date - before).total_seconds() == pytest.approx(600, abs=5)
 
     bot.send_sticker.assert_any_await(chat_id, duel_handlers.MUTE_STICKER_ID)
+
+
+@pytest.mark.asyncio
+async def test_duel_accept_handler_survives_mute_failure(session, bot, monkeypatch):
+    """WR-05 (04.1-REVIEW) regression: restrict_chat_member падает (например,
+    проигравший — админ чата, Telegram отвергает попытку его замутить) —
+    деньги уже двинулись (duel_service.accept_duel закоммитил ДО вызова
+    _apply_mute), поэтому пользователь всё равно должен получить
+    подтверждение результата дуэли, а не необработанное исключение."""
+    chat_id = -100910029
+    challenger_id, opponent_id = 910029, 910030
+    await _ensure_user(session, challenger_id, "Челленджер")
+    await _ensure_user(session, opponent_id, "Оппонент")
+    await _fund(session, chat_id, challenger_id)
+    await _fund(session, chat_id, opponent_id)
+
+    stake = 100
+    duel = await duel_service.create_duel(
+        session, chat_id, challenger_id, opponent_id, stake, "test_mute_fail_create"
+    )
+
+    monkeypatch.setattr(duel_service, "_rng", _ForcedChoiceRng(challenger_id))
+    bot.restrict_chat_member.side_effect = Exception("CHAT_ADMIN_REQUIRED")
+
+    message = _fake_message(
+        chat_id, opponent_id, "Оппонент", f"/duel_accept {duel.id}", message_id=42
+    )
+
+    await duel_handlers.duel_accept_command(message, session, bot)
+
+    message.answer.assert_awaited_once()
 
 
 @pytest.mark.asyncio

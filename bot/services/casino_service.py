@@ -115,17 +115,13 @@ async def _debit_stake(
     session: AsyncSession, chat_id: int, user_id: int, bet: int, idem_key: str
 ) -> bool:
     """Списывает ставку с игрока и зачисляет её в банк чата — общий "стейк"
-    для всех игр, ref_id производный от idem_key. Возвращает False, если
-    debit уже был применён ранее для этого idem_key (replay)."""
-    debited = await economy_service.debit(
+    для всех игр, ref_id производный от idem_key. Тонкая обёртка над
+    `economy_service.debit_to_bank` (IN-01 04.1-REVIEW: общий примитив с
+    `duel_service._escrow_stake`). Возвращает False, если debit уже был
+    применён ранее для этого idem_key (replay)."""
+    return await economy_service.debit_to_bank(
         session, chat_id, user_id, bet, kind="casino_bet", ref_id=f"casino:{idem_key}"
     )
-    if not debited:
-        return False
-    await economy_service.credit_bank(
-        session, chat_id, bet, kind="casino_bet", ref_id=f"casino:{idem_key}:bank"
-    )
-    return True
 
 
 def _stored_result(game_row: CasinoGame) -> dict:
@@ -295,6 +291,27 @@ def _roulette_win(bet_type: str, bet_value, spin: int) -> tuple[bool, int]:
     raise InvalidBet(f"Неизвестный тип ставки рулетки: {bet_type}")
 
 
+def _validate_roulette_bet_value(bet_type: str, bet_value) -> None:
+    """WR-06 (04.1-REVIEW): `bet_value` должен лежать в легальном домене для
+    своего `bet_type`, иначе ставка молча всегда проигрывает (симптом сломанного
+    клиента маскируется под обычный проигрыш вместо явной ошибки)."""
+    if bet_type == "number":
+        if not isinstance(bet_value, int) or isinstance(bet_value, bool) or not (0 <= bet_value <= 36):
+            raise InvalidBet("bet_value для 'number' должен быть целым числом 0..36")
+    elif bet_type == "color":
+        if bet_value not in ("red", "black"):
+            raise InvalidBet("bet_value для 'color' должен быть 'red' или 'black'")
+    elif bet_type == "parity":
+        if bet_value not in ("even", "odd"):
+            raise InvalidBet("bet_value для 'parity' должен быть 'even' или 'odd'")
+    elif bet_type == "half":
+        if bet_value not in ("low", "high"):
+            raise InvalidBet("bet_value для 'half' должен быть 'low' или 'high'")
+    elif bet_type == "dozen":
+        if bet_value not in (1, 2, 3):
+            raise InvalidBet("bet_value для 'dozen' должен быть 1, 2 или 3")
+
+
 async def play_roulette(
     session: AsyncSession,
     chat_id: int,
@@ -309,6 +326,7 @@ async def play_roulette(
     'low'|'high'/1|2|3 (дюжина) соответственно."""
     if bet_type not in _ROULETTE_BET_TYPES:
         raise InvalidBet(f"Неизвестный тип ставки рулетки: {bet_type}")
+    _validate_roulette_bet_value(bet_type, bet_value)
 
     def compute() -> tuple[int, dict]:
         spin = _rng.randint(0, 36)
@@ -564,7 +582,12 @@ async def blackjack_action(
     if len(player) != 2:
         raise InvalidBet("Удвоить можно только на исходной раздаче (2 карты)")
 
-    await _debit_stake(session, chat_id, user_id, bet, f"{game_id}:double")
+    debited = await _debit_stake(session, chat_id, user_id, bet, f"{game_id}:double")
+    if not debited:
+        # Гонка/повтор на double уже применённом ref_id: FOR UPDATE выше
+        # обычно исключает это (см. WR-02 04.1-REVIEW), проверка — defense
+        # in depth, не полагается на то, что блокировка никогда не сломается.
+        raise CasinoError(f"Удвоение уже обработано (game_id={game_id})")
 
     bet_effective = bet * 2
     player.append(deck.pop())
@@ -595,23 +618,40 @@ async def resolve_blackjack_timeouts(session: AsyncSession) -> int:
     (T-04.1-10).
 
     Per-row try/except (форма `markets_service.auto_resolve_external`) —
-    одна застрявшая раздача не блокирует весь батч. Возвращает число
-    авто-стендённых раздач."""
-    rows = (
+    одна застрявшая раздача не блокирует весь батч. Батч-wide `FOR UPDATE`
+    здесь НЕ используется (WR-03 04.1-REVIEW): первичный SELECT только
+    собирает id-кандидатов БЕЗ блокировки, каждая строка запрашивается и
+    блокируется (`FOR UPDATE`) заново непосредственно перед финализацией,
+    внутри своей собственной транзакции/commit — иначе commit первой же
+    обработанной строки снял бы лок со ВСЕХ строк батча разом, открывая окно
+    гонки с параллельным `blackjack_action` для ещё не обработанных строк.
+    Статус перепроверяется ("active") после повторного лока — раздача могла
+    уже settle'иться живым действием игрока между первичным SELECT и этим
+    моментом. Возвращает число авто-стендённых раздач."""
+    ids = (
         await session.execute(
-            select(CasinoGame)
-            .where(
+            select(CasinoGame.id).where(
                 CasinoGame.game == "blackjack",
                 CasinoGame.status == "active",
                 text("(state->>'turn_deadline')::timestamp <= now()"),
             )
-            .with_for_update()
         )
     ).scalars().all()
 
     resolved_count = 0
-    for game_row in rows:
+    for game_id in ids:
         try:
+            game_row = (
+                await session.execute(
+                    select(CasinoGame).where(CasinoGame.id == game_id).with_for_update()
+                )
+            ).scalar_one_or_none()
+            if game_row is None or game_row.status != "active":
+                # Уже settle'илась (live-действие игрока) между первичным
+                # SELECT и этим локом — не наш случай, no-op.
+                await session.commit()
+                continue
+
             state = dict(game_row.state)
             deck = list(state["deck"])
             player = list(state["player"])
@@ -629,7 +669,7 @@ async def resolve_blackjack_timeouts(session: AsyncSession) -> int:
             resolved_count += 1
         except Exception:  # noqa: BLE001 - один застрявший раунд не должен ронять весь тик
             logger.exception(
-                "resolve_blackjack_timeouts: не удалось авто-стендить game_id=%s", game_row.id
+                "resolve_blackjack_timeouts: не удалось авто-стендить game_id=%s", game_id
             )
             await session.rollback()
 

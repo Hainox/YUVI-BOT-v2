@@ -21,6 +21,7 @@ from datetime import timedelta
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy import update
 
 from bot.config import settings
 from bot.services import blackjack_engine
@@ -324,6 +325,40 @@ async def test_double_doubles_stake_one_card_then_stands(session, monkeypatch):
     assert len(game.outcome["player"]) == 3  # ровно одна добранная карта
 
 
+# --- double: replay-защита (WR-02) -------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_double_raises_when_debit_replayed(session, monkeypatch):
+    """WR-02 (04.1-REVIEW) regression: раньше возврат `_debit_stake` на ветке
+    "double" не проверялся — если бы debit не применился (idem_key уже
+    использован), раздача всё равно удвоилась бы БЕЗ фактического списания
+    второй ставки. Форсируем этот сценарий монкипатчем `_debit_stake`."""
+    chat_id = -100910014
+    user_id = 910014
+    await _ensure_user(session, user_id)
+    balance_before = await _fund(session, chat_id, user_id)
+    await _seed_bank(session, chat_id, 100_000, "test_bj_double_replay_seed_bank")
+
+    monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["8", "4", "6", "5", "9", "6"]))
+
+    bet = 100
+    started = await casino_service.start_blackjack(session, chat_id, user_id, bet, "test_bj_double_replay")
+
+    async def _fake_debit_stake(session, chat_id, user_id, bet, idem_key):
+        return False
+
+    monkeypatch.setattr(casino_service, "_debit_stake", _fake_debit_stake)
+
+    with pytest.raises(casino_service.CasinoError):
+        await casino_service.blackjack_action(session, chat_id, started["id"], user_id, "double")
+
+    # Раздача не settle'илась молча и ставка не удвоилась.
+    game = await _reload(session, started["id"])
+    assert game.status == "active"
+    assert await _get_user_balance(session, chat_id, user_id) == balance_before - bet
+
+
 # --- Идемпотентность действия на уже settled раздаче (T-04.1-09) ------------
 
 
@@ -381,6 +416,68 @@ async def test_timeout_auto_stands(session, monkeypatch):
     assert game.payout == expected_payout
     assert game.outcome["result"] == "win"
     assert await _get_user_balance(session, chat_id, user_id) == balance_before - bet + expected_payout
+
+
+@pytest.mark.asyncio
+async def test_timeout_batch_does_not_clobber_concurrently_settled_row(session, monkeypatch):
+    """WR-03 (04.1-REVIEW) regression: раньше батч-wide `FOR UPDATE` на ВСЕХ
+    просроченных раздачах релизился уже после commit'a ПЕРВОЙ обработанной
+    строки — застрявший в памяти `game_row` ВТОРОЙ строки мог перезаписать
+    исход, который параллельный live `blackjack_action` успел settle'ить
+    между первичным batch-SELECT'ом и тем моментом, когда цикл до неё
+    добрался. Симулируем гонку без реальной конкурентности: во время
+    обработки ПЕРВОЙ раздачи в батче (side effect внутри `_finalize_blackjack`)
+    напрямую переводим ВТОРУЮ раздачу в status="settled" с заведомо другим
+    исходом — как будто это сделал параллельный вызов. Батч (с фиксом)
+    обязан пропустить уже не-active вторую раздачу, а не перезаписать её."""
+    chat_id = -100910015
+    user_a, user_b = 910015, 910016
+    await _ensure_user(session, user_a)
+    await _ensure_user(session, user_b)
+    await _fund(session, chat_id, user_a)
+    await _fund(session, chat_id, user_b)
+    await _seed_bank(session, chat_id, 100_000, "test_bj_batch_race_seed_bank")
+
+    monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["10", "10", "10", "5", "2"]))
+    game_a = await casino_service.start_blackjack(session, chat_id, user_a, 100, "test_bj_batch_race_a")
+    await _set_turn_deadline_past(session, game_a["id"])
+
+    monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["9", "9", "9", "9"]))
+    game_b = await casino_service.start_blackjack(session, chat_id, user_b, 100, "test_bj_batch_race_b")
+    await _set_turn_deadline_past(session, game_b["id"])
+
+    real_finalize = casino_service._finalize_blackjack
+    processed_order: list[int] = []
+
+    async def _finalize_with_race(session, game_row, player, dealer, outcome_name, payout, *, state=None):
+        processed_order.append(game_row.id)
+        if len(processed_order) == 1:
+            other_id = game_b["id"] if game_row.id == game_a["id"] else game_a["id"]
+            await session.execute(
+                update(CasinoGame)
+                .where(CasinoGame.id == other_id)
+                .values(
+                    status="settled",
+                    payout=999999,
+                    outcome={"result": "concurrent_live_win", "player": [], "dealer": []},
+                )
+            )
+            await session.commit()
+        await real_finalize(session, game_row, player, dealer, outcome_name, payout, state=state)
+
+    monkeypatch.setattr(casino_service, "_finalize_blackjack", _finalize_with_race)
+
+    resolved_count = await casino_service.resolve_blackjack_timeouts(session)
+
+    # Только первая (реально ещё активная на момент своей обработки) раздача
+    # прошла через _finalize_blackjack — вторая была пропущена re-check'ом.
+    assert resolved_count == 1
+    assert len(processed_order) == 1
+
+    other_id = game_b["id"] if processed_order[0] == game_a["id"] else game_a["id"]
+    other_row = await _reload(session, other_id)
+    assert other_row.payout == 999999
+    assert other_row.outcome["result"] == "concurrent_live_win"
 
 
 # --- Bank cap (D-06) ----------------------------------------------------------

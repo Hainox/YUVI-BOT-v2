@@ -283,6 +283,40 @@ async def test_roulette_dozen_pays_3x(session, monkeypatch):
     assert await _get_user_balance(session, chat_id, user_id) == balance_before - bet + expected_payout
 
 
+# --- Валидация bet_value рулетки (WR-06) --------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "bet_type,bet_value",
+    [
+        ("number", 999),
+        ("number", -1),
+        ("number", "seven"),
+        ("color", "purple"),
+        ("parity", "maybe"),
+        ("half", "middle"),
+        ("dozen", 4),
+    ],
+)
+async def test_roulette_invalid_bet_value_raises(session, bet_type, bet_value):
+    """WR-06 (04.1-REVIEW) regression: bet_value вне легального домена для
+    своего bet_type раньше молча принимался как всегда проигрывающая ставка
+    (клиентский баг маскировался под обычный проигрыш) — теперь явный
+    InvalidBet ДО списания денег."""
+    chat_id = -100900011
+    user_id = 900011
+    await _ensure_user(session, user_id)
+    balance_before = await _fund(session, chat_id, user_id)
+
+    with pytest.raises(casino_service.InvalidBet):
+        await casino_service.play_roulette(
+            session, chat_id, user_id, 10, bet_type, bet_value, f"test_roulette_invalid_{bet_type}"
+        )
+
+    assert await _get_user_balance(session, chat_id, user_id) == balance_before
+
+
 # --- Идемпотентность replay --------------------------------------------------
 
 

@@ -248,6 +248,23 @@ async def debit(
     return True
 
 
+async def debit_to_bank(
+    session: AsyncSession, chat_id: int, user_id: int, amount: int, kind: str, ref_id: str
+) -> bool:
+    """Идемпотентное списание со счёта игрока в банк чата — общий "стейк"-
+    паттерн (ставка казино/эскроу дуэли, IN-01 04.1-REVIEW: раньше дублировался
+    в casino_service._debit_stake и duel_service._escrow_stake). `debit(user)`
+    + `credit_bank(amount)`, банковская нога получает производный `ref_id`
+    (`f"{ref_id}:bank"`). Возвращает False, если `debit` уже был применён ранее
+    для этого `ref_id` (replay) — в этом случае `credit_bank` не вызывается
+    вовсе. Не коммитит — транзакцию завершает вызывающий."""
+    debited = await debit(session, chat_id, user_id, amount, kind=kind, ref_id=ref_id)
+    if not debited:
+        return False
+    await credit_bank(session, chat_id, amount, kind=kind, ref_id=f"{ref_id}:bank")
+    return True
+
+
 async def credit_bank(
     session: AsyncSession, chat_id: int, amount: int, kind: str, ref_id: str
 ) -> bool:

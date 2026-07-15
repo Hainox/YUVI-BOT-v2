@@ -24,6 +24,7 @@ ChatAdminFilter) — любой ТЕКУЩИЙ админ чата может д
 from __future__ import annotations
 
 import html
+import logging
 from datetime import datetime
 from datetime import timedelta
 
@@ -40,6 +41,8 @@ from bot.services import duel_service
 from bot.services import economy_service
 from bot.services.scheduler import get_scheduler
 from common.models.user import User
+
+logger = logging.getLogger(__name__)
 
 router = Router()
 
@@ -258,7 +261,14 @@ async def duelbot_command(message: Message, session: AsyncSession, bot: Bot) -> 
         return
 
     if result["loser_id"] is not None:
-        await _apply_mute(bot, message.chat.id, result["loser_id"], result["mute_seconds"])
+        try:
+            await _apply_mute(bot, message.chat.id, result["loser_id"], result["mute_seconds"])
+        except Exception:
+            # WR-05 (04.1-REVIEW): деньги уже двинулись (duel_service.duelbot
+            # закоммитил) — падение мута (например, проигравший — админ чата,
+            # Telegram отвергает restrictChatMember на админов) не должно
+            # съедать ответ пользователю о завершённой дуэли.
+            logger.exception("duelbot: не удалось замутить loser_id=%s", result["loser_id"])
 
     if result["winner_id"] is not None:
         text = (
@@ -299,7 +309,12 @@ async def duel_accept_command(message: Message, session: AsyncSession, bot: Bot)
         return
 
     if result["loser_id"] is not None:
-        await _apply_mute(bot, message.chat.id, result["loser_id"], result["mute_seconds"])
+        try:
+            await _apply_mute(bot, message.chat.id, result["loser_id"], result["mute_seconds"])
+        except Exception:
+            # WR-05 (04.1-REVIEW): та же защита, что в duelbot_command выше —
+            # деньги уже двинулись (duel_service.accept_duel закоммитил).
+            logger.exception("duel_accept: не удалось замутить loser_id=%s", result["loser_id"])
 
     await message.answer(
         f"<b>Дуэль #{duel_id} завершена:</b> победитель забирает {result['pot']} ювиков "

@@ -2,8 +2,11 @@
 приём/отклонение/отмена вызова.
 
 Деньги двигает ТОЛЬКО через `bot.services.economy_service` (debit/credit_bank
-для эскроу ставок, pay_from_bank для выплаты победителю) — этот модуль
-НИКОГДА не пишет user_balance/chat_bank/economy_tx напрямую
+для эскроу ставок, pay_from_bank для выплаты победителю, credit для полного
+рефанда отменённой/отклонённой дуэли — WR-04 04.1-REVIEW: ставка челленджера
+попадает в chat_bank только в момент реального резолва в accept_duel, не
+раньше, поэтому рефанд pending-дуэли не зависит от bank-cap D-06) — этот
+модуль НИКОГДА не пишет user_balance/chat_bank/economy_tx напрямую
 (economy_service.py — единственный модуль с таким правом, см. его докстринг).
 
 Идемпотентность:
@@ -89,18 +92,18 @@ def _fee_and_pot(stake: int) -> tuple[int, int]:
 async def _escrow_stake(
     session: AsyncSession, chat_id: int, user_id: int, stake: int, ref_id: str
 ) -> bool:
-    """Списывает ставку с игрока и зачисляет её в банк чата — общий эскроу
-    для create_duel/accept_duel/duelbot. Возвращает False, если ref_id уже
-    применялся (replay)."""
-    debited = await economy_service.debit(
+    """Списывает ставку с игрока и зачисляет её в банк чата — эскроу для
+    оппонента (accept_duel) и челленджера /duelbot, чья ставка резолвится
+    атомарно в той же функции без промежуточного "pending"-окна. Тонкая
+    обёртка над `economy_service.debit_to_bank` (IN-01 04.1-REVIEW: общий
+    примитив с `casino_service._debit_stake`). Возвращает False, если ref_id
+    уже применялся (replay).
+
+    НЕ используется для эскроу ставки челленджера в `create_duel` (WR-04
+    04.1-REVIEW) — см. `create_duel`/`_refund_pending_duel`."""
+    return await economy_service.debit_to_bank(
         session, chat_id, user_id, stake, kind="duel_stake", ref_id=ref_id
     )
-    if not debited:
-        return False
-    await economy_service.credit_bank(
-        session, chat_id, stake, kind="duel_stake", ref_id=f"{ref_id}:bank"
-    )
-    return True
 
 
 async def _get_duel_for_update(session: AsyncSession, chat_id: int, duel_id: int) -> Duel:
@@ -142,14 +145,26 @@ async def create_duel(
     ref_id: str,
 ) -> Duel:
     """Создаёт вызов на дуэль: валидирует ставку против баланса челленджера,
-    эскроу ставки в банк чата, вставляет Duel(status="pending"). Поднимает
+    списывает ставку с челленджера, вставляет Duel(status="pending"). Поднимает
     DuelError при нарушении лимитов D-04/D-05, economy_service.InsufficientFunds
     при нехватке средств, DuelAlreadyResolved при повторе ref_id (идемпотентный
-    no-op — дуэль повторно не создаётся, форма markets_service.create_market)."""
+    no-op — дуэль повторно не создаётся, форма markets_service.create_market).
+
+    WR-04 (04.1-REVIEW): ставка списывается с челленджера, но НЕ зачисляется
+    в общий `chat_bank` на этапе "pending" — банк чата коммингалит деньги
+    ВСЕХ активных игр/дуэлей, а `pay_from_bank` намеренно капает выплату
+    остатком банка (D-06); если бы ставка уже лежала в банке, отмена/отклонение
+    (`_refund_pending_duel`) рисковала бы вернуть МЕНЬШЕ, чем реально было
+    поставлено, если банк тем временем просел на несвязанных выплатах — а это
+    деньги игрока, которые он ещё ни разу не поставил ни на что. Ставка
+    попадает в банк только в `accept_duel`, в момент, когда дуэль
+    ДЕЙСТВИТЕЛЬНО резолвится и рефанд уже невозможен."""
     balance = await economy_service.get_balance(session, chat_id, challenger_id)
     _validate_stake(stake, balance)
 
-    escrowed = await _escrow_stake(session, chat_id, challenger_id, stake, ref_id)
+    escrowed = await economy_service.debit(
+        session, chat_id, challenger_id, stake, kind="duel_stake", ref_id=ref_id
+    )
     if not escrowed:
         logger.info("create_duel: ref_id=%s уже обработан, пропускаем", ref_id)
         raise DuelAlreadyResolved(f"Запрос на дуэль уже обработан (ref_id={ref_id})")
@@ -200,6 +215,15 @@ async def accept_duel(
         # транзакции быть не должно (FOR UPDATE сериализует конкурентные
         # accept) — защитный backstop.
         raise DuelAlreadyResolved(f"Запрос на приём дуэли уже обработан (ref_id={ref_id})")
+
+    # WR-04 (04.1-REVIEW): челленджер уже был дебетован в create_duel, но его
+    # ставка не заходила в chat_bank (оставалась зарезервированной вне общего
+    # банка на случай рефанда). Дуэль теперь необратимо резолвится — заводим
+    # её в банк здесь же, под тем же FOR UPDATE-локом строки Duel, ПЕРЕД тем,
+    # как считать pot/выплату.
+    await economy_service.credit_bank(
+        session, chat_id, duel.stake, kind="duel_stake", ref_id=f"duel:{duel_id}:challenger_bank"
+    )
 
     fee, pot = _fee_and_pot(duel.stake)
     winner_id = _rng.choice([duel.challenger_id, opponent_id])
@@ -289,6 +313,12 @@ async def duelbot(
 async def _refund_pending_duel(
     session: AsyncSession, chat_id: int, duel_id: int, actor_id: int, actor_field: str, new_status: str
 ) -> dict:
+    """WR-04 (04.1-REVIEW): рефанд идёт прямым `economy_service.credit`, а НЕ
+    `pay_from_bank` — ставка челленджера никогда не заходила в общий
+    `chat_bank` (см. create_duel), это его собственные деньги, ни разу не
+    поставленные ни на что, а не банковская выплата. Прямой credit
+    гарантирует ПОЛНЫЙ рефанд независимо от текущего остатка банка (никакого
+    D-06 bank-cap здесь — он относится только к реальным игровым выплатам)."""
     duel = await _get_duel_for_update(session, chat_id, duel_id)
     if duel.status != "pending":
         await session.commit()
@@ -298,7 +328,7 @@ async def _refund_pending_duel(
         await session.commit()
         raise DuelError("Только соответствующий участник дуэли может выполнить это действие")
 
-    refunded = await economy_service.pay_from_bank(
+    refunded_ok = await economy_service.credit(
         session,
         chat_id,
         duel.challenger_id,
@@ -308,7 +338,7 @@ async def _refund_pending_duel(
     )
     duel.status = new_status
     await session.commit()
-    return {"status": new_status, "duel_id": duel_id, "refunded": refunded}
+    return {"status": new_status, "duel_id": duel_id, "refunded": duel.stake if refunded_ok else 0}
 
 
 async def decline_duel(session: AsyncSession, chat_id: int, duel_id: int, actor_id: int) -> dict:
