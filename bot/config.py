@@ -62,7 +62,12 @@ class Settings(BaseSettings):
     market_import_fee: int = Field(default=50, alias="MARKET_IMPORT_FEE")
 
     # --- Mini App (auth, D-01) ---
-    mini_app_init_data_ttl_sec: int = Field(default=86400, alias="MINI_APP_INIT_DATA_TTL_SEC")
+    # initData также передаётся query-параметром для SSE (EventSource не умеет
+    # кастомные заголовки) — query-строки чаще утекают через логи прокси/
+    # Referer/историю браузера, чем заголовки. Дефолт снижен с 24ч до 1ч,
+    # чтобы сузить окно валидности утёкшего URL (WR-04); при необходимости
+    # переопределяется через MINI_APP_INIT_DATA_TTL_SEC.
+    mini_app_init_data_ttl_sec: int = Field(default=3600, alias="MINI_APP_INIT_DATA_TTL_SEC")
     mini_app_membership_cache_ttl_sec: int = Field(default=300, alias="MINI_APP_MEMBERSHIP_CACHE_TTL_SEC")
 
 
