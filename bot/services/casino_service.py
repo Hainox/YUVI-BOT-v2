@@ -31,12 +31,15 @@ from __future__ import annotations
 
 import logging
 import secrets
+from datetime import datetime
+from datetime import timedelta
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
+from bot.services import blackjack_engine
 from bot.services import economy_service
 from bot.services import slot_engine
 from common.models.casino_game import CasinoGame
@@ -52,6 +55,12 @@ DICE_HOUSE_EDGE = 0.02
 ROULETTE_NUMBER_MULT = 36
 ROULETTE_EVEN_MULT = 2
 ROULETTE_DOZEN_MULT = 3
+
+# Блэкджек (04.1-03, D-03/D-07/D-08)
+BLACKJACK_TURN_SECONDS = 60
+BLACKJACK_NATURAL_MULT = 2.5
+BLACKJACK_WIN_MULT = 2.0
+BLACKJACK_PUSH_MULT = 1.0
 
 # Европейская рулетка (0-36): стандартный набор красных номеров, остальные
 # (кроме 0) — чёрные. 0 не имеет цвета и проигрывает все "внешние" ставки.
@@ -344,3 +353,229 @@ async def play_slots(
         }
 
     return await _settle(session, chat_id, user_id, "slots", bet, idem_key, compute)
+
+
+# --- blackjack (D-03/D-07/D-08: стейтфул-раздача, деck/руки в state JSONB) ---
+
+
+def _blackjack_view(game_row: CasinoGame) -> dict:
+    """Публичный вид раздачи: пока активна — карты игрока и ТОЛЬКО верхняя
+    (видимая) карта дилера (T-04.1-08 — вторая карта дилера скрыта до
+    settle); после settle — обе карты дилера + итог/выплата."""
+    state = game_row.state or {}
+    view: dict = {
+        "id": game_row.id,
+        "status": game_row.status,
+        "bet": game_row.bet,
+        "player": state.get("player"),
+    }
+    if game_row.status == "active":
+        dealer = state.get("dealer") or []
+        view["dealer_upcard"] = dealer[0] if dealer else None
+    else:
+        view["dealer"] = state.get("dealer")
+        view["payout"] = game_row.payout
+        view["outcome"] = game_row.outcome
+    return view
+
+
+def _blackjack_deadline() -> str:
+    return (datetime.utcnow() + timedelta(seconds=BLACKJACK_TURN_SECONDS)).isoformat()
+
+
+async def _finalize_blackjack(
+    session: AsyncSession,
+    game_row: CasinoGame,
+    player: list[str],
+    dealer: list[str],
+    outcome_name: str,
+    payout: int,
+    *,
+    state: dict | None = None,
+) -> None:
+    """Общий финал раздачи: капнутая банком выплата (D-06, если payout > 0),
+    запись outcome/payout, статус-переход "active"->"settled" (T-04.1-09).
+    Не коммитит — коммитит вызывающий."""
+    paid = 0
+    if payout > 0:
+        paid = await economy_service.pay_from_bank(
+            session,
+            game_row.chat_id,
+            game_row.user_id,
+            payout,
+            kind="casino_payout",
+            ref_id=f"casino:bj:{game_row.id}",
+        )
+    if state is not None:
+        game_row.state = state
+    game_row.outcome = {"result": outcome_name, "player": player, "dealer": dealer}
+    game_row.payout = paid
+    game_row.status = "settled"
+
+
+async def start_blackjack(
+    session: AsyncSession, chat_id: int, user_id: int, bet: int, idem_key: str
+) -> dict:
+    """Раздаёт руку блэкджека (04.1-03): списывает ставку в банк (общий
+    `_debit_stake`), тасует колоду через общий сеанс `_rng`, кладёт 2 карты
+    игроку + 2 дилеру (T-04.1-08 — колода server-authoritative, живёт в
+    `CasinoGame.state` JSONB). Натурал игрока (2 карты, 21) settle'ится
+    немедленно (натурал 2.5x или push при натурале у дилера, D-03) —
+    иначе раздача остаётся `status="active"` до `blackjack_action`.
+
+    Идемпотентна по `idem_key` — повторный вызов возвращает сохранённую
+    раздачу без повторного движения денег (та же двухуровневая идемпотентность,
+    что у `_settle`)."""
+    existing = await _find_existing(session, user_id, idem_key)
+    if existing is not None:
+        logger.info(
+            "start_blackjack: idem_key=%s уже обработан, возвращаем сохранённую раздачу",
+            idem_key,
+        )
+        return _blackjack_view(existing)
+
+    balance = await economy_service.get_balance(session, chat_id, user_id)
+    _validate_bet(bet, balance)
+
+    debited = await _debit_stake(session, chat_id, user_id, bet, idem_key)
+    if not debited:
+        existing = await _find_existing(session, user_id, idem_key)
+        if existing is not None:
+            return _blackjack_view(existing)
+        raise DuplicateRound(f"Раздача уже обрабатывается конкурентным запросом (idem_key={idem_key})")
+
+    deck = blackjack_engine.new_shuffled_deck(_rng)
+    player_cards = [deck.pop(), deck.pop()]
+    dealer_cards = [deck.pop(), deck.pop()]
+
+    state = {
+        "deck": deck,
+        "player": player_cards,
+        "dealer": dealer_cards,
+        "bet": bet,
+        "turn_deadline": _blackjack_deadline(),
+    }
+
+    game_row = CasinoGame(
+        chat_id=chat_id,
+        user_id=user_id,
+        game="blackjack",
+        bet=bet,
+        payout=0,
+        outcome=None,
+        state=state,
+        status="active",
+        idem_key=idem_key,
+    )
+    try:
+        session.add(game_row)
+        await session.flush()  # нужен game_row.id для ref_id немедленного settle натурала ниже
+    except IntegrityError:
+        # Партиал-UNIQUE (user_id, idem_key) — backstop против гонки между
+        # SELECT-проверкой выше и flush здесь (форма _settle/import_market).
+        await session.rollback()
+        existing = await _find_existing(session, user_id, idem_key)
+        if existing is None:
+            raise
+        return _blackjack_view(existing)
+
+    if blackjack_engine.is_natural(player_cards):
+        outcome_name, mult = blackjack_engine.settle_outcome(player_cards, dealer_cards, True)
+        payout = int(bet * mult)
+        await _finalize_blackjack(session, game_row, player_cards, dealer_cards, outcome_name, payout)
+
+    await session.commit()
+    return _blackjack_view(game_row)
+
+
+async def blackjack_action(
+    session: AsyncSession, chat_id: int, game_id: int, user_id: int, action: str
+) -> dict:
+    """Действие в активной раздаче: `hit`/`stand`/`double`. `SELECT ... FOR
+    UPDATE` на строку раздачи первым (контракт порядка блокировок), затем
+    статус-переход "active"->"settled" САМ служит гардом идемпотентности
+    (T-04.1-09, форма `markets_service.resolve_market`) — повторный вызов
+    на уже settled-раздаче возвращает сохранённый исход, деньги не двигаются
+    повторно.
+
+    `hit` — добор одной карты; перебор (>21) settle'ится сразу как bust,
+    иначе `state.turn_deadline` продлевается ещё на `BLACKJACK_TURN_SECONDS`
+    (раздача остаётся активной). `stand` — дилер доигрывает (soft-17 stand,
+    D-03) и раздача settle'ится. `double` — требует РОВНО двухкарточную
+    открывающую раздачу; списывает ещё одну ставку (`_debit_stake`,
+    `idem_key=f"{game_id}:double"`), добирает ровно одну карту, затем дилер
+    доигрывает и раздача settle'ится на удвоенной ставке."""
+    if action not in ("hit", "stand", "double"):
+        raise InvalidBet("action должен быть 'hit'/'stand'/'double'")
+
+    game_row = (
+        await session.execute(
+            select(CasinoGame)
+            .where(
+                CasinoGame.id == game_id,
+                CasinoGame.user_id == user_id,
+                CasinoGame.game == "blackjack",
+            )
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if game_row is None:
+        raise CasinoError(f"Раздача блэкджека #{game_id} не найдена")
+
+    if game_row.status != "active":
+        # Гард идемпотентности (T-04.1-09): повторный action на уже settled
+        # раздаче — no-op, возвращаем сохранённый исход.
+        await session.commit()
+        return _blackjack_view(game_row)
+
+    state = dict(game_row.state)
+    deck = list(state["deck"])
+    player = list(state["player"])
+    dealer = list(state["dealer"])
+    bet = state["bet"]
+
+    if action == "hit":
+        player.append(deck.pop())
+        state["deck"] = deck
+        state["player"] = player
+        value, _ = blackjack_engine.hand_value(player)
+        if value > 21:
+            await _finalize_blackjack(session, game_row, player, dealer, "bust", 0, state=state)
+        else:
+            state["turn_deadline"] = _blackjack_deadline()
+            game_row.state = state
+        await session.commit()
+        return _blackjack_view(game_row)
+
+    if action == "stand":
+        deck, dealer = blackjack_engine.dealer_play(deck, dealer)
+        state["deck"] = deck
+        state["dealer"] = dealer
+        outcome_name, mult = blackjack_engine.settle_outcome(player, dealer, False)
+        payout = int(bet * mult)
+        await _finalize_blackjack(session, game_row, player, dealer, outcome_name, payout, state=state)
+        await session.commit()
+        return _blackjack_view(game_row)
+
+    # action == "double"
+    if len(player) != 2:
+        raise InvalidBet("Удвоить можно только на исходной раздаче (2 карты)")
+
+    await _debit_stake(session, chat_id, user_id, bet, f"{game_id}:double")
+
+    bet_effective = bet * 2
+    player.append(deck.pop())
+    state["deck"] = deck
+    state["player"] = player
+    value, _ = blackjack_engine.hand_value(player)
+    if value > 21:
+        outcome_name, mult = "bust", 0.0
+    else:
+        deck, dealer = blackjack_engine.dealer_play(deck, dealer)
+        state["deck"] = deck
+        state["dealer"] = dealer
+        outcome_name, mult = blackjack_engine.settle_outcome(player, dealer, False)
+    payout = int(bet_effective * mult)
+    await _finalize_blackjack(session, game_row, player, dealer, outcome_name, payout, state=state)
+    await session.commit()
+    return _blackjack_view(game_row)
