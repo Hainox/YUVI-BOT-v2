@@ -38,6 +38,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
 from bot.services import economy_service
+from bot.services import slot_engine
 from common.models.casino_game import CasinoGame
 
 logger = logging.getLogger(__name__)
@@ -304,3 +305,42 @@ async def play_roulette(
         return payout, {"spin": spin, "bet_type": bet_type, "bet_value": bet_value, "won": won}
 
     return await _settle(session, chat_id, user_id, "roulette", bet, idem_key, compute)
+
+
+# --- slots (D-05/D-06: Azumanga, RTP ~92.78%) --------------------------------
+
+
+async def play_slots(
+    session: AsyncSession, chat_id: int, user_id: int, bet: int, idem_key: str
+) -> dict:
+    """Слот "Azumanga" (04.1-02) — server-authoritative спин по всем
+    `slot_engine.TOTAL_LINES` (10) paylines одновременно. `bet` — суммарная
+    ставка на раунд; должна быть положительным кратным `TOTAL_LINES`, откуда
+    выводится `bet_per_line = bet // TOTAL_LINES` (ставка на каждую линию
+    одинаковая, выбор подмножества линий не поддерживается — упрощение
+    относительно черновика `webapp/slot-data.jsx`).
+
+    RNG-исход (сетка + авто-доигранные фриспины) считает чистый
+    `slot_engine.spin_grid`/`evaluate_grid`, вызванный ЧЕРЕЗ общий seam
+    `_rng` этого модуля (НЕ через собственный `slot_engine._rng` — тот
+    используется только для внутреннего авто-розыгрыша фриспинов). Деньги
+    двигает исключительно `_settle` (стейк -> RNG -> капнутая банком выплата
+    -> `CasinoGame`), здесь — только сборка `compute()`-замыкания."""
+    if bet <= 0 or bet % slot_engine.TOTAL_LINES != 0:
+        raise InvalidBet(
+            f"Ставка должна быть положительным кратным {slot_engine.TOTAL_LINES} "
+            "(по числу линий слота)"
+        )
+    bet_per_line = bet // slot_engine.TOTAL_LINES
+
+    def compute() -> tuple[int, dict]:
+        grid = slot_engine.spin_grid(_rng)
+        result = slot_engine.evaluate_grid(grid, bet_per_line)
+        return result.total_payout, {
+            "grid": result.grid,
+            "wins": result.line_wins,
+            "freespins": result.freespins,
+            "scatter": result.scatter_count,
+        }
+
+    return await _settle(session, chat_id, user_id, "slots", bet, idem_key, compute)
