@@ -30,5 +30,5 @@ class ClickerMarketPool(Base):
     r_cp: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
     r_h: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
     updated_at: Mapped[DateTime] = mapped_column(
-        DateTime, nullable=False, server_default=func.now()
+        DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
     )
