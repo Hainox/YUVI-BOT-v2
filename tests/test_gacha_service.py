@@ -41,6 +41,15 @@ async def _fund(session, chat_id: int, user_id: int) -> int:
     return await economy_service.get_balance(session, chat_id, user_id)
 
 
+async def _top_up(session, chat_id: int, user_id: int, amount: int, ref_id: str) -> int:
+    """Стартового бонуса (economy_start_bonus=1000) не хватает на ×10-ролл
+    (2700) или на несколько последовательных роллов подряд — довносит
+    ювики через economy_service.credit (не пишет баланс напрямую)."""
+    await economy_service.credit(session, chat_id, user_id, amount, kind="test_top_up", ref_id=ref_id)
+    await session.commit()
+    return await _get_user_balance(session, chat_id, user_id)
+
+
 async def _get_user_balance(session, chat_id: int, user_id: int) -> int:
     result = await session.execute(
         select(UserBalance.balance).where(
@@ -125,7 +134,8 @@ async def test_roll10_costs_2700_and_returns_10(session, monkeypatch):
     chat_id = -100910002
     user_id = 910002
     await _ensure_user(session, user_id)
-    balance_before = await _fund(session, chat_id, user_id)
+    await _fund(session, chat_id, user_id)
+    balance_before = await _top_up(session, chat_id, user_id, 10_000, "test_roll10_cost_top_up")
     bank_before = await _get_bank_balance(session, chat_id)
 
     monkeypatch.setattr(gacha_service, "_rng", _ForcedRng(random_value=0.0, choice_index=0))
@@ -257,6 +267,7 @@ async def test_dupe_adds_star_up_to_5(session, monkeypatch):
     user_id = 910006
     await _ensure_user(session, user_id)
     await _fund(session, chat_id, user_id)
+    await _top_up(session, chat_id, user_id, 10_000, "test_dupe_star_top_up")
 
     monkeypatch.setattr(gacha_service, "_rng", _ForcedRng(random_value=0.0, choice_index=0))
     char = gacha_catalog.chars_of_tier("SR")[0]
@@ -279,6 +290,7 @@ async def test_dupe_over_5_refunds(session, monkeypatch):
     user_id = 910007
     await _ensure_user(session, user_id)
     await _fund(session, chat_id, user_id)
+    await _top_up(session, chat_id, user_id, 10_000, "test_dupe_refund_top_up")
 
     monkeypatch.setattr(gacha_service, "_rng", _ForcedRng(random_value=0.0, choice_index=0))
     char = gacha_catalog.chars_of_tier("SR")[0]
@@ -323,6 +335,7 @@ async def test_roll10_guarantees_sr(session, monkeypatch):
     user_id = 910008
     await _ensure_user(session, user_id)
     await _fund(session, chat_id, user_id)
+    await _top_up(session, chat_id, user_id, 10_000, "test_roll10_guarantee_top_up")
 
     # "Худшая удача" под D-07 — всё равно UR (лучше SR) на каждом пике,
     # гарантия тривиально выполняется, т.к. ниже SR тиров в весах нет.
