@@ -61,6 +61,14 @@ class Settings(BaseSettings):
     market_resolution_fee_pct: float = Field(default=0.05, alias="MARKET_RESOLUTION_FEE_PCT")
     market_import_fee: int = Field(default=50, alias="MARKET_IMPORT_FEE")
 
+    # --- Казино (04.1, D-04/D-05) ---
+    # Единая минимальная ставка для ВСЕХ игр казино и дуэлей (не разная по играм).
+    casino_min_bet: int = Field(default=10, alias="CASINO_MIN_BET")
+    # Максимальная ставка — % от текущего баланса игрока (1.0 = 100%, т.е.
+    # фактически лимита сверх баланса нет — economy_service._guarded_debit уже
+    # естественно запрещает ставить больше баланса).
+    casino_max_bet_pct: float = Field(default=1.0, alias="CASINO_MAX_BET_PCT")
+
     # --- Mini App (auth, D-01) ---
     # initData также передаётся query-параметром для SSE (EventSource не умеет
     # кастомные заголовки) — query-строки чаще утекают через логи прокси/

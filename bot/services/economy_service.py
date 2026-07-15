@@ -253,6 +253,46 @@ async def credit_bank(
     return True
 
 
+async def pay_from_bank(
+    session: AsyncSession, chat_id: int, user_id: int, amount: int, kind: str, ref_id: str
+) -> int:
+    """Идемпотентная выплата банк->игрок (payout казино/дуэлей, 04.1 D-06).
+
+    Выплата урезается до остатка банка — `paid = min(amount, bank_balance)`,
+    читаемого `SELECT ChatBank ... FOR UPDATE`; банк никогда не уходит в
+    минус (тот же инвариант, что `_credit_bank`, но в обратную сторону).
+    Возвращает фактически выплаченную сумму (0, если `amount <= 0`, банк пуст,
+    или `ref_id` уже применялся). Списание банка + начисление игроку +
+    два `_log_tx` (банк user_id=None amount=-paid, игрок amount=+paid) — в
+    ОДНОМ SAVEPOINT (та же форма, что `credit`/`debit`). Не коммитит —
+    транзакцию завершает вызывающий."""
+    bank_balance = (
+        await session.execute(
+            select(ChatBank.balance).where(ChatBank.chat_id == chat_id).with_for_update()
+        )
+    ).scalar_one_or_none() or 0
+
+    paid = min(amount, bank_balance) if amount > 0 else 0
+    if paid <= 0:
+        return 0
+
+    await _get_or_create_balance(session, chat_id, user_id)
+    try:
+        async with session.begin_nested():
+            await session.execute(
+                update(ChatBank)
+                .where(ChatBank.chat_id == chat_id)
+                .values(balance=ChatBank.balance - paid)
+            )
+            await _credit(session, chat_id, user_id, paid)
+            await _log_tx(session, chat_id, None, -paid, kind, ref_id)
+            await _log_tx(session, chat_id, user_id, paid, kind, f"{ref_id}:user")
+    except IntegrityError:
+        logger.info("pay_from_bank: ref_id=%s (kind=%s) уже применён, пропускаем", ref_id, kind)
+        return 0
+    return paid
+
+
 async def get_leaderboard(session: AsyncSession, chat_id: int, limit: int = 10) -> list[dict]:
     """Топ участников чата по балансу (для /leaderboard)."""
     stmt = (
