@@ -88,17 +88,23 @@ class _ForcedRng:
     """Тестовый RNG-стаб, monkeypatched вместо `gacha_service._rng` (форма
     `casino_service._ForcedRng`). `random()` форсирует взвешенный выбор тира
     (см. `gacha_service._weighted_choice`), `choice(seq)` форсирует выбор
-    персонажа по индексу."""
+    персонажа: фиксированным индексом (по умолчанию) либо по кругу
+    (`cycle=True` — каждый следующий вызов сдвигается на 1, чтобы ×10-ролл
+    разошёлся по разным персонажам вместо повторного дублирования одного)."""
 
-    def __init__(self, random_value: float = 0.0, choice_index: int = 0):
+    def __init__(self, random_value: float = 0.0, choice_index: int = 0, cycle: bool = False):
         self._random_value = random_value
         self._choice_index = choice_index
+        self._cycle = cycle
+        self._call_count = 0
 
     def random(self) -> float:
         return self._random_value
 
     def choice(self, seq):
-        return seq[self._choice_index % len(seq)]
+        index = (self._choice_index + self._call_count) if self._cycle else self._choice_index
+        self._call_count += 1
+        return seq[index % len(seq)]
 
 
 # --- D-07: R существует в каталоге, но недостижим через ролл -----------------
@@ -138,7 +144,11 @@ async def test_roll10_costs_2700_and_returns_10(session, monkeypatch):
     balance_before = await _top_up(session, chat_id, user_id, 10_000, "test_roll10_cost_top_up")
     bank_before = await _get_bank_balance(session, chat_id)
 
-    monkeypatch.setattr(gacha_service, "_rng", _ForcedRng(random_value=0.0, choice_index=0))
+    # cycle=True разводит 10 пиков по разным SR-персонажам каталога — иначе
+    # один и тот же чар набрал бы дубли и рефанды сверх 5★, и итоговый баланс
+    # не был бы равен ровно balance_before-2700 (эта проверка — про стоимость
+    # ролла, не про дубли/рефанды, см. отдельные test_dupe_*).
+    monkeypatch.setattr(gacha_service, "_rng", _ForcedRng(random_value=0.0, cycle=True))
 
     result = await gacha_service.roll(session, chat_id, user_id, 10, "test_roll10_cost")
 

@@ -123,7 +123,7 @@ async def _pick_char(session: AsyncSession, chat_id: int, tier: str) -> gacha_ca
     return _rng.choice(chars)
 
 
-# --- Грант + дубль -> звезда (refund — Task 3) -------------------------------
+# --- Грант + дубль -> звезда/refund (D-03) -----------------------------------
 
 
 async def _select_collection_row(
@@ -147,12 +147,27 @@ async def _apply_dupe(
     char: gacha_catalog.Character,
     row: GachaCollection,
 ) -> dict:
-    """Дубль: +1 copies, +1★ до MAX_STARS (refund сверх 5★ — Task 3)."""
+    """Дубль: +1 copies, +1★ до MAX_STARS; сверх — refund ювиками (mint через
+    `economy_service.credit`, D-03), звёзды выше MAX_STARS не растут. ref_id
+    включает `copies` (уникален на каждый следующий дубль сверх 5★), чтобы
+    несколько последовательных рефандов одного персонажа не считались одним
+    и тем же replay."""
     row.copies += 1
+    refunded = 0
     if row.stars < gacha_catalog.MAX_STARS:
         row.stars += 1
+    else:
+        refunded = gacha_catalog.DUPE_REFUND[char.tier]
+        await economy_service.credit(
+            session,
+            chat_id,
+            user_id,
+            refunded,
+            kind="gacha_refund",
+            ref_id=f"gacha_refund:{chat_id}:{user_id}:{char.char_id}:{row.copies}",
+        )
     await session.flush()
-    return {"char_id": char.char_id, "tier": char.tier, "stars": row.stars, "refunded": 0}
+    return {"char_id": char.char_id, "tier": char.tier, "stars": row.stars, "refunded": refunded}
 
 
 async def _grant(
@@ -184,7 +199,7 @@ async def _grant(
     return {"char_id": char.char_id, "tier": char.tier, "stars": 1, "refunded": 0}
 
 
-# --- ×10 SR-гарант (D-03, заглушка — реальная защита в Task 3) --------------
+# --- ×10 SR-гарант (D-03) -----------------------------------------------------
 
 
 def _enforce_sr_guarantee(tiers: list[str]) -> list[str]:
