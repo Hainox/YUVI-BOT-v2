@@ -185,7 +185,9 @@ async def test_constant_product_invariant(session):
     # БОЛЬШЕ k, но не меньше и не более чем на пренебрежимо малую дельту).
     new_k_small = small_new_r_cp * small_new_r_h
     assert new_k_small >= k
-    assert (new_k_small - k) / k < Decimal("0.000001")
+    # Допуск ~ 1/r_h (максимальная относительная "пыль" от floor-округления
+    # выхода на единицу ювика) — с большим запасом для Numeric(20,8).
+    assert (new_k_small - k) / k < Decimal("0.0001")
 
     # Слиппедж: более крупная конвертация даёт худший курс за единицу CP.
     small_rate = Decimal(small_out) / Decimal(200_000)
