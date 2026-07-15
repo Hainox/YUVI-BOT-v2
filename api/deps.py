@@ -55,7 +55,10 @@ def validate_init_data(init_data: str, bot_token: str, ttl_seconds: int) -> dict
     Возвращает распарсенные поля (без `hash`) при успехе; иначе поднимает
     `InvalidInitData` с коротким машинным описанием причины.
     """
-    parsed = dict(parse_qsl(init_data, strict_parsing=True))
+    try:
+        parsed = dict(parse_qsl(init_data, strict_parsing=True))
+    except ValueError as exc:
+        raise InvalidInitData("malformed init data") from exc
     received_hash = parsed.pop("hash", None)
     if received_hash is None:
         raise InvalidInitData("no hash")
@@ -87,8 +90,11 @@ def extract_init_data(request: Request) -> str:
 
 
 def _resolve_user_id(parsed: dict) -> int:
-    user = json.loads(parsed["user"])
-    return int(user["id"])
+    try:
+        user = json.loads(parsed["user"])
+        return int(user["id"])
+    except (KeyError, ValueError, TypeError) as exc:
+        raise InvalidInitData("missing or malformed user field") from exc
 
 
 async def require_membership(request: Request) -> AuthContext:
@@ -97,7 +103,13 @@ async def require_membership(request: Request) -> AuthContext:
     init_data = extract_init_data(request)
     parsed = validate_init_data(init_data, settings.bot_token, settings.mini_app_init_data_ttl_sec)
     user_id = _resolve_user_id(parsed)
-    chat_id = int(request.query_params.get("chat_id"))
+    raw_chat_id = request.query_params.get("chat_id")
+    if raw_chat_id is None:
+        raise HTTPException(status_code=400, detail="chat_id is required")
+    try:
+        chat_id = int(raw_chat_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="chat_id must be an integer")
 
     status = await telegram_client.get_chat_member_status(
         request.app.state.http_client, settings.bot_token, chat_id, user_id
