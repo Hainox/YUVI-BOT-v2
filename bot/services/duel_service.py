@@ -188,7 +188,10 @@ async def accept_duel(
         await session.commit()
         raise DuelError("Только приглашённый оппонент может принять дуэль")
 
-    balance = await economy_service.get_balance(session, chat_id, opponent_id)
+    # peek_balance (не commit!) — иначе разрывает FOR UPDATE выше и открывает
+    # окно гонки, где два параллельных accept_duel оба проходят проверку
+    # status == "pending" и оба эскроуируют ставку (двойное списание).
+    balance = await economy_service.peek_balance(session, chat_id, opponent_id)
     _validate_stake(duel.stake, balance)
 
     escrowed = await _escrow_stake(session, chat_id, opponent_id, duel.stake, ref_id)

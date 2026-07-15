@@ -37,4 +37,7 @@ class ClickerFarm(Base):
     last_accrued_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
     )
+    last_tap_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

@@ -162,11 +162,21 @@ async def tap(
 ) -> dict:
     """Анти-чит тап (D-03/T-04.1-12): `accepted = min(count, max(1,
     int(MAX_CPS*elapsed_ms/1000)))` — клиентский `count` никогда не
-    принимается напрямую. CP растёт на `accepted * tap_value(tap_level)`."""
+    принимается напрямую. `elapsed_ms` тоже не принимается напрямую (CR-02):
+    клэмпится сверху реальным серверным интервалом с прошлого принятого тапа
+    (`last_tap_at`, пишется ТОЛЬКО этой функцией — в отличие от
+    `last_accrued_at`, который сбрасывает каждый poll `get_farm_state`, что
+    сделало бы его непригодным для анти-чита тапа). CP растёт на
+    `accepted * tap_value(tap_level)`."""
     farm = await _get_or_create_farm(session, chat_id, user_id)
     _accrue_offline(farm)
 
-    accepted = min(count, max(1, int(MAX_CPS * elapsed_ms / 1000)))
+    now = datetime.utcnow()
+    server_elapsed_ms = max(0.0, (now - farm.last_tap_at).total_seconds() * 1000)
+    trusted_elapsed_ms = min(elapsed_ms, server_elapsed_ms)
+    farm.last_tap_at = now
+
+    accepted = min(count, max(1, int(MAX_CPS * trusted_elapsed_ms / 1000)))
     farm.cp += accepted * tap_value(farm.tap_level)
 
     await session.commit()

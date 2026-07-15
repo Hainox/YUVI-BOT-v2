@@ -88,6 +88,9 @@ async def test_tap_increments_cp_by_tap_value(session):
     user_id = 910002
     await _ensure_user(session, user_id)
     await clicker_service.get_farm_state(session, chat_id, user_id)
+    # last_tap_at в прошлое — иначе серверный клэмп (CR-02) обрежет elapsed_ms
+    # до ~0, т.к. farm только что создана и last_tap_at == "сейчас".
+    await _set_farm(session, chat_id, user_id, last_tap_at=datetime.utcnow() - timedelta(seconds=5))
 
     count = 5
     elapsed_ms = 1000  # max(1, int(30*1000/1000)) = 30 >= count -> не клэмпится
@@ -107,6 +110,7 @@ async def test_tap_anticheat_clamps_count(session):
     user_id = 910003
     await _ensure_user(session, user_id)
     await clicker_service.get_farm_state(session, chat_id, user_id)
+    await _set_farm(session, chat_id, user_id, last_tap_at=datetime.utcnow() - timedelta(seconds=5))
 
     count = 1000
     elapsed_ms = 100  # max(1, int(30*100/1000)) = max(1, 3) = 3
@@ -127,6 +131,7 @@ async def test_tap_anticheat_minimum_one(session):
     user_id = 910004
     await _ensure_user(session, user_id)
     await clicker_service.get_farm_state(session, chat_id, user_id)
+    await _set_farm(session, chat_id, user_id, last_tap_at=datetime.utcnow() - timedelta(seconds=5))
 
     count = 1000
     elapsed_ms = 1  # int(30*1/1000) = 0 -> max(1, 0) = 1 (пол анти-чита)
@@ -134,6 +139,31 @@ async def test_tap_anticheat_minimum_one(session):
 
     assert result["accepted"] == 1
     assert result["cp"] == clicker_service.tap_value(1)
+
+
+@pytest.mark.asyncio
+async def test_tap_anticheat_ignores_inflated_client_elapsed(session):
+    """CR-02: клиент не может разогнать анти-чит, заявляя огромный elapsed_ms
+    на каждый запрос — клэмп берёт min(client_elapsed_ms, реальный серверный
+    интервал с last_tap_at). Два тапа подряд (без реальной паузы между ними)
+    с фиктивным elapsed_ms=60000 должны получить `accepted` на основе
+    РЕАЛЬНОГО (крошечного) интервала, а не заявленной минуты."""
+    chat_id = -100910008
+    user_id = 910008
+    await _ensure_user(session, user_id)
+    await clicker_service.get_farm_state(session, chat_id, user_id)
+    await _set_farm(session, chat_id, user_id, last_tap_at=datetime.utcnow() - timedelta(seconds=5))
+
+    fabricated_elapsed_ms = 60_000  # клиент лжёт: "прошла минута"
+    first = await clicker_service.tap(session, chat_id, user_id, 5000, fabricated_elapsed_ms)
+    # Первый тап всё ещё видит last_tap_at 5с в прошлом -> клэмп по 5с легитимен.
+    assert first["accepted"] <= max(1, int(clicker_service.MAX_CPS * 5000))
+
+    second = await clicker_service.tap(session, chat_id, user_id, 5000, fabricated_elapsed_ms)
+    # Второй тап случился практически сразу после первого (реальный elapsed ~0),
+    # поэтому даже с тем же заявленным elapsed_ms=60000 клэмп должен схлопнуться
+    # к полу анти-чита (1), а не повторно принять до MAX_CPS*60 тапов.
+    assert second["accepted"] == 1
 
 
 # --- оффлайн-накопление (D-03) -------------------------------------------------

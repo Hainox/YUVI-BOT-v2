@@ -155,6 +155,16 @@ async def get_balance(session: AsyncSession, chat_id: int, user_id: int) -> int:
     return balance
 
 
+async def peek_balance(session: AsyncSession, chat_id: int, user_id: int) -> int:
+    """Баланс участника БЕЗ commit — для вызывающих, уже держащих блокировку
+    строки (`FOR UPDATE`) в этой же транзакции (Pattern 1: строка-владелец
+    блокируется FIRST). `get_balance` коммитит и потому снял бы такую
+    блокировку раньше времени; эта функция безопасна между локом и
+    последующим debit/credit в одной транзакции. Не коммитит — транзакцию
+    завершает вызывающий, как credit/debit/credit_bank/pay_from_bank."""
+    return await _get_or_create_balance(session, chat_id, user_id)
+
+
 async def transfer_with_fee(
     session: AsyncSession,
     chat_id: int,
