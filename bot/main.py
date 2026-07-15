@@ -13,6 +13,7 @@ import bot.handlers as handlers_package
 from bot.config import settings
 from bot.middleware.collector import CollectorMiddleware
 from bot.middleware.db_session import DbSessionMiddleware
+from bot.services.commands_service import setup_bot_commands
 from bot.services.scheduler import get_scheduler
 from bot.services.scheduler import setup_jobs
 
@@ -43,6 +44,8 @@ async def run() -> None:
 
     bot = Bot(token=settings.bot_token)
     dp = Dispatcher()
+
+    await setup_bot_commands(bot)
 
     # Middleware регистрируется до подключения роутеров ниже: DbSession — для
     # каждого апдейта, Collector — только для message-апдейтов (DATA-01, команды
