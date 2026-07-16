@@ -53,6 +53,7 @@ _PUBLIC_COMMANDS: list[BotCommand] = [
 
 _ADMIN_ONLY_COMMANDS: list[BotCommand] = [
     BotCommand(command="unmute", description="[Админ] Досрочно снять мут после дуэли"),
+    BotCommand(command="farmwipe", description="[Админ] Сбросить ферму участника"),
     BotCommand(command="market_resolve", description="[Админ] Разрешить рынок"),
     BotCommand(command="market_cancel", description="[Админ] Отменить рынок"),
     BotCommand(command="backfill", description="[Админ] Загрузить историю чата"),

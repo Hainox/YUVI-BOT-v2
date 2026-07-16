@@ -72,13 +72,21 @@ async def _ensure_user(user_id: int, first_name: str = "Тест") -> None:
 async def _seed_farm_cp(chat_id: int, user_id: int, cp: int) -> None:
     """Гарантирует существование строки фермы и выставляет `cp` напрямую (в
     обход тапов/апгрейдов) — детерминированная подготовка баланса CP для
-    тестов апгрейда/конвертации без прохода через анти-чит тапа."""
+    тестов апгрейда/конвертации без прохода через анти-чит тапа.
+
+    `tap_level`/`auto_level` ЯВНО сбрасываются к начальным значениям (не
+    только `cp`) — эти HTTP-тесты коммитят в реальный Postgres напрямую (в
+    отличие от `session`-фикстуры conftest.py, которая откатывает
+    транзакцию), поэтому повторный прогон тестового набора против того же
+    контейнера без пересоздания БД иначе застал бы уже прокачанный с
+    прошлого прогона уровень и сделал бы ассерты на конкретный `tap_level`
+    недетерминированными."""
     async with SessionLocal() as db_session:
         await clicker_service.get_farm_state(db_session, chat_id, user_id)
         await db_session.execute(
             update(ClickerFarm)
             .where(ClickerFarm.chat_id == chat_id, ClickerFarm.user_id == user_id)
-            .values(cp=cp)
+            .values(cp=cp, tap_level=1, auto_level=0)
         )
         await db_session.commit()
 
