@@ -1,3 +1,5 @@
+name: yuvibotv2
+
 services:
   postgres:
     image: pgvector/pgvector:pg16
