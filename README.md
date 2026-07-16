@@ -1,113 +1,10 @@
 # Yuvi Bot v2
 
-Yuvi Bot v2 — это новая, чисто спроектированная версия Telegram-бота для одного дружеского чата: сбор 100% активности, аналитика, AI-команды, игровая экономика и Mini App.
+Telegram-бот для геймификации одного дружеского группового чата: бот живёт в чате, собирает 100% активности (сообщения, реакции, медиа, реплаи) и превращает общение в игру — статистика, AI-команды, экономика «ювики», казино в Mini App, рынки ставок, гача, дуэли.
 
-## Зачем этот репозиторий
+Полная переработка с нуля заброшенного проекта [Yuvi-bot](https://github.com/Hainox/Yuvi-bot) (код не перенесён — только идеи фич); архитектурный эталон — [xyloz_tg_bot](https://github.com/Heide172/xyloz_tg_bot).
 
-Главная цель — **надежно собирать данные чата без потерь**, а поверх них строить:
-- статистику и ежедневные игровые механики;
-- AI-функции (summary, digest, ask, card);
-- экономику «гривны» и игровые системы (рынки, гача, дуэли, казино).
-
-## Технологический стек
-
-| Блок | Стек |
-|---|---|
-| Bot | Python 3.11, aiogram 3.x |
-| API | FastAPI |
-| NLP | FastAPI + transformers (CPU) |
-| Data | PostgreSQL + pgvector, Redis |
-| ORM и миграции | SQLAlchemy 2 (async), Alembic |
-| Mini App | SvelteKit + nginx |
-| Деплой | docker-compose на VPS Ubuntu |
-
-## Что уже готово (5 из 9 фаз, ~56%)
-
-Проект больше не скелет — бот полноценно работает в чате:
-
-1. **Сбор данных** — 100% сообщений (не catch-all), реакции, реплаи, эмодзи/стикеры/медиа, частотные словари, backfill истории через userbot.
-2. **Статистика** — `/mystats`, `/chatstats`, `/who`, `/streak`, `/peakday`, топы слов и активности.
-3. **AI-команды** — `/summary`, `/digest` (+автодайджест), `/card`, `/ask` (эмбеддинги pgvector), `/topics`, `/phrase`, `/joke`, стриминг ответов, `/mood`/`/toxic` (отдельный NLP-контейнер).
-4. **Экономика «ювики»** — банк чата, `/balance`, `/transfer`, `/leaderboard`, идемпотентные транзакции.
-5. **Рынки ставок** — `/markets`, `/bet`, `/portfolio`, импорт с Polymarket/Manifold.
-6. **Mini App «Казино»** (SvelteKit, открывается deep-link'ом из чата) — все 5 игр (слоты, рулетка, блэкджек, кости, монетка) с живым обновлением баланса через SSE, ферма-кликер, гача, дуэли с мутом проигравшего, лидерборд/история/переводы.
-7. `.env.example` со всеми ключевыми переменными; `docker-compose.yml` + Dockerfile для всех сервисов.
-8. Документация для старта:
-   - `docs/deploy-vps-ubuntu.md`
-   - `docs/botfather-setup.md`
-   - `docs/backfill-setup.md`
-   - `docs/how-to-verify-phase1.md`
-9. Дополнительные материалы из рабочей папки:
-   - `docs/refscan/*.md` — заметки и разборы по архитектуре/данным;
-   - `docs/assets/screenshots/*.jpg` — свежие референс-скриншоты.
-10. Веб-прототип игрового интерфейса в `webapp/` (React/JSX-черновик, заменён на реальный SvelteKit-фронтенд в `miniapp/`).
-
-**Ещё не сделано:** nginx+HTTPS для продакшен-деплоя Mini App и админ-панель казино (Фаза 04.3), ежедневные механики «жертва дня»/номинации/лотерея/теги/AI-двойник (Фаза 5), платные соц-фичи/донаты/финальный релиз (Фаза 6).
-
-## Архитектурный принцип v2
-
-**Сначала сбор данных и целостность, потом фичи.**
-
-Важные решения:
-- сбор сообщений через middleware, чтобы команды не терялись;
-- explicit `allowed_updates` с поддержкой реакций;
-- append-only журнал экономики и идемпотентные денежные операции;
-- все фоновые задачи через APScheduler + очередь задач в PostgreSQL;
-- русский язык документации и простой стиль для входа в проект.
-
-## Структура проекта
-
-```text
-Yuvi-Bot-v2/
-├── bot/                 # Telegram bot (aiogram)
-├── api/                 # FastAPI backend для Mini App
-├── nlp/                 # FastAPI NLP сервис
-├── miniapp/             # SvelteKit фронтенд
-├── webapp/              # React/JSX прототип игрового UI
-├── common/              # Общие db/models/helpers
-├── migrations/          # Alembic
-├── docs/                # Документация проекта
-│   ├── refscan/         # Импортированные md-заметки из рабочей папки
-│   └── assets/screenshots/
-├── scripts/             # Вспомогательные скрипты
-├── docker-compose.yml
-├── .env.example
-├── uv.lock
-└── README.md
-```
-
-## Быстрый старт (локально)
-
-1. Скопируй переменные окружения:
-   ```bash
-   cp .env.example .env
-   ```
-2. Заполни обязательные поля в `.env`:
-   - `BOT_TOKEN`
-   - `DATABASE_URL`
-   - `REDIS_URL`
-3. Запусти стек:
-   ```bash
-   docker compose up --build
-   ```
-4. Проверь:
-   - API: `http://localhost:8002/health`
-   - NLP: `http://localhost:8001/health`
-   - Bot: команда `/health` в Telegram.
-
-## Переменные окружения
-
-Полный список: `.env.example`.
-
-Минимум для старта:
-- `BOT_TOKEN`
-- `CHAT_ID`
-- `DATABASE_URL`
-- `REDIS_URL`
-- `OPENAI_BASE_URL`
-- `OPENAI_API_KEY`
-
-## Roadmap разработки
+## Статус: 5 из 9 фаз готово (~56%)
 
 | Фаза | Что | Статус |
 |---|---|---|
@@ -121,15 +18,151 @@ Yuvi-Bot-v2/
 | 5 | Ежедневные ритуалы, теги, AI-двойник | ⏳ Позже |
 | 6 | Платные фичи, донаты, финальный релиз | ⏳ Позже |
 
+Бот не прототип — он реально работает в чате прямо сейчас: собирает 100% сообщений, отвечает на ~30 команд, считает экономику и открывает полноценный Mini App с 5 казино-играми.
+
+## Зачем этот репозиторий
+
+Главная цель — **надёжно собирать данные чата без потерь**, потому что вся статистика, AI-команды и экономика строятся поверх этих данных: если что-то другое сломается, сбор должен продолжаться.
+
+## Что умеет бот
+
+### Сбор данных (фундамент)
+
+- 100% сообщений через middleware (не catch-all — команды не теряются)
+- Реакции, реплаи/тред-цепочки, эмодзи, стикеры, медиа, форварды
+- Частотные словари слов и эмодзи
+- Backfill истории чата через личный Telegram-аккаунт (Pyrogram/Kurigram userbot)
+
+### Статистика
+
+`/mystats` `/chatstats` `/who` `/streak` `/peakday` `/words`
+
+### AI-команды (LLM через OpenCode Go)
+
+`/summary` `/digest` `/card` `/ask` `/topics` `/phrase` `/joke` `/mood` `/toxic`
+Ответы стримятся прямо в сообщение. Админ: `/model_show` `/model_list` `/model_set` `/prompt_show` `/prompt_set` `/prompt_reset`
+
+### Экономика «ювики»
+
+`/balance` `/transfer` `/leaderboard` `/economy` `/rules`
+Банк чата, append-only журнал транзакций, идемпотентные денежные операции.
+
+### Рынки ставок (parimutuel)
+
+`/markets` `/market` `/market_create` `/bet` `/portfolio`
+Импорт рынков с Polymarket/Manifold с авторезолюцией. Админ: `/market_resolve` `/market_cancel`
+
+### Дуэли
+
+`/duel` `/duelbot` `/duel_accept` `/duel_decline` `/duel_cancel`
+Ставки на исход, автоматический мут проигравшего. Админ: `/unmute`
+
+### Mini App «Казино» (открывается кнопкой в закреплённом сообщении чата)
+
+SvelteKit-приложение с живым обновлением баланса (SSE):
+- **Игры**: слоты (с анимированным барабаном), рулетка, блэкджек, кости, монетка
+- **Ферма**: тапалка → CP → конвертация в ювики, апгрейды, офлайн-накопление автокликером
+- **Гача**: роллы ×1/×10, коллекция персонажей R/SR/SSR/UR, pity-система, rate-up баннер
+- **Соц-экраны**: лидерборд, история операций, переводы, правила
+- Админ: `/farmwipe`
+
+### Служебное
+
+`/backfill` (админ, запуск загрузки истории)
+
+## Технологический стек
+
+| Блок | Стек |
+|---|---|
+| Bot | Python 3.11, aiogram 3.x (async) |
+| API | FastAPI |
+| NLP | FastAPI + transformers (CPU-контейнер, sentiment/toxicity) |
+| Данные | PostgreSQL + pgvector, Redis |
+| ORM и миграции | SQLAlchemy 2 (async), Alembic |
+| Mini App | SvelteKit 2 + TypeScript, nginx |
+| AI-провайдер | OpenCode Go (OpenAI-совместимый API) |
+| Деплой | docker-compose на VPS Ubuntu |
+
+## Архитектурный принцип
+
+**Сначала сбор данных и целостность, потом фичи.**
+
+Важные решения:
+- сбор сообщений через middleware, чтобы команды не терялись;
+- explicit `allowed_updates` с поддержкой реакций;
+- append-only журнал экономики и идемпотентные денежные операции (`ref_id`/`idem_key` + `SELECT ... FOR UPDATE`);
+- все фоновые задачи через APScheduler (без RQ/отдельного worker-контейнера);
+- русский язык документации и простой стиль для входа в проект.
+
+## Структура проекта
+
+```text
+Yuvi Bot v2/
+├── bot/                  # Telegram-бот (aiogram)
+│   ├── handlers/         # Обработчики команд
+│   ├── services/         # Бизнес-логика
+│   └── middleware/       # Сбор сообщений (OuterMiddleware)
+├── api/                  # FastAPI backend для Mini App
+│   └── routes/           # /economy, /games, /farm, /gacha, /duel, /markets, /stats
+├── nlp/                  # FastAPI NLP-сервис (sentiment/toxicity)
+├── miniapp/               # SvelteKit фронтенд Mini App
+│   └── src/routes/       # Хаб + игровые/соц-экраны
+├── webapp/                # Ранний React/JSX прототип (заменён на miniapp/)
+├── common/                # Общие db/models
+├── migrations/            # Alembic
+├── docs/                  # Документация проекта
+│   ├── refscan/           # Разбор архитектуры/данных эталонных репозиториев
+│   └── assets/screenshots/
+├── scripts/                # Вспомогательные скрипты (backfill, run-local.ps1)
+├── tests/                  # pytest — бизнес-логика бота/API
+├── docker-compose.yml
+├── .env.example
+└── README.md
+```
+
+## Быстрый старт (локально)
+
+1. Скопируй переменные окружения:
+   ```bash
+   cp .env.example .env
+   ```
+2. Заполни обязательные поля в `.env` (минимум): `BOT_TOKEN`, `CHAT_ID`, `DATABASE_URL`, `REDIS_URL`, `OPENAI_API_KEY`.
+3. Подними стек:
+   ```bash
+   docker compose up --build
+   ```
+   `docker-compose.yml` сам поднимает `postgres`+`redis`, применяет миграции (`migrations`-сервис) и запускает `bot`/`api`/`nlp`/`miniapp`.
+4. Проверь, что всё живо:
+   - API: `http://localhost:8002/docs`
+   - NLP: `http://localhost:8001/health`
+   - Mini App: `http://localhost:8003`
+   - Bot: любая команда из списка выше в Telegram-чате, где бот состоит.
+5. Для реального открытия Mini App из группы нужен HTTPS-туннель (ngrok/cloudflared) или продакшен-деплой с nginx (Фаза 4.3) — Telegram не открывает Mini App по обычному HTTP.
+
+Продакшен-деплой на VPS Ubuntu: `docs/deploy-vps-ubuntu.md`.
+
 ## Обязательные настройки Telegram
 
-Критично: **BotFather → Group Privacy = OFF**, иначе бот не увидит все сообщения и сбор статистики будет неполным.
+Критично: **BotFather → Group Privacy = OFF**, иначе бот не увидит все сообщения и сбор данных будет неполным.
 
-Подробно: `docs/botfather-setup.md`.
+Подробно, включая права на реакции и закреп сообщений: `docs/botfather-setup.md`.
+
+## Переменные окружения
+
+Полный список с комментариями: `.env.example`.
+
+## Backfill истории чата
+
+Bot API не отдаёт сообщения старше момента добавления бота — для загрузки истории нужен личный Telegram-аккаунт (`TG_API_ID`/`TG_API_HASH`, НЕ токен бота). Подробно: `docs/backfill-setup.md`.
+
+## Тесты
+
+```bash
+docker run --rm --network yuvibotv2_default --env-file .env -v "$(pwd)":/app -w /app yuvi-bot-dev:py311 pytest -q
+```
+
+Держим ~250+ pytest-тестов на бизнес-логику против живого Postgres/Redis (не моки).
 
 ## Для кого этот README
 
-README написан специально простым языком: чтобы даже при минимальном опыте можно было:
-- понять архитектуру;
-- поднять проект;
-- поэтапно развивать функциональность.
+Написан специально простым языком: чтобы даже при минимальном опыте программирования можно было понять архитектуру, поднять проект и развивать его дальше поэтапно.
