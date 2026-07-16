@@ -14,8 +14,10 @@ from bot.config import settings
 from bot.middleware.collector import CollectorMiddleware
 from bot.middleware.db_session import DbSessionMiddleware
 from bot.services.commands_service import setup_bot_commands
+from bot.services.pinned_menu_service import ensure_pinned_menu
 from bot.services.scheduler import get_scheduler
 from bot.services.scheduler import setup_jobs
+from common.db.session import SessionLocal
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +48,12 @@ async def run() -> None:
     dp = Dispatcher()
 
     await setup_bot_commands(bot)
+
+    # Короткая самодостаточная сессия только для авто-закрепа (D-01/D-02) —
+    # форма scheduler.py::register (сам открывает SessionLocal), в run() нет
+    # долгоживущей AsyncSession.
+    async with SessionLocal() as pinned_menu_session:
+        await ensure_pinned_menu(bot, pinned_menu_session, settings.chat_id)
 
     # Middleware регистрируется до подключения роутеров ниже: DbSession — для
     # каждого апдейта, Collector — только для message-апдейтов (DATA-01, команды
