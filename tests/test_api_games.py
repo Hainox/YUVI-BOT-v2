@@ -1,0 +1,206 @@
+"""Тесты POST /api/v1/games/coinflip (Task 2, games.py) — против живого Postgres.
+
+Тот же initData-хелпер и `_app_state`-фикстура, что и `test_api_economy.py`
+(независимая от `api/deps.py` сборка initData, monkeypatch членства).
+Денежная проверка идёт напрямую через `economy_service`/`SessionLocal()` —
+тот же engine, что использует сам роут (не `session`-фикстура conftest.py).
+
+IDOR-тест (T-04.2-02): в теле запроса намеренно НЕТ поля user_id в
+Pydantic-модели роута — но атакующий может ПОПЫТАТЬСЯ протащить чужой
+user_id как лишнее JSON-поле; тест доказывает, что баланс двигается только
+у пользователя из initData, а не у "жертвы" из тела запроса.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import hmac
+import json
+import time
+import uuid
+from unittest.mock import AsyncMock
+from urllib.parse import urlencode
+
+import pytest
+from httpx import ASGITransport
+from httpx import AsyncClient
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+from api import telegram_client
+from api.main import app
+from bot.config import settings
+from bot.services import economy_service
+from common.db.session import engine
+from common.db.session import SessionLocal
+from common.models.user import User
+
+CHAT_ID = -900301
+
+
+def _build_init_data(*, user_id: int, bot_token: str | None = None, tamper: bool = False) -> str:
+    if bot_token is None:
+        bot_token = settings.bot_token
+    fields = {
+        "auth_date": str(int(time.time())),
+        "query_id": "AAABBBCCC",
+        "user": json.dumps({"id": user_id, "first_name": "Тест"}),
+    }
+    data_check_string = "\n".join(f"{k}={v}" for k, v in sorted(fields.items()))
+    secret_key = hmac.new(b"WebAppData", bot_token.encode(), hashlib.sha256).digest()
+    computed_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
+
+    full = dict(fields)
+    full["hash"] = ("0" * len(computed_hash)) if tamper else computed_hash
+    return urlencode(full)
+
+
+async def _ensure_user(user_id: int, first_name: str = "Тест") -> None:
+    async with SessionLocal() as db_session:
+        stmt = (
+            pg_insert(User)
+            .values(id=user_id, first_name=first_name)
+            .on_conflict_do_nothing(index_elements=["id"])
+        )
+        await db_session.execute(stmt)
+        await db_session.commit()
+
+
+async def _get_balance(chat_id: int, user_id: int) -> int:
+    async with SessionLocal() as db_session:
+        return await economy_service.get_balance(db_session, chat_id, user_id)
+
+
+@pytest.fixture(autouse=True)
+def _reset_membership_cache():
+    telegram_client.reset_cache()
+    yield
+    telegram_client.reset_cache()
+
+
+@pytest.fixture(autouse=True)
+async def _fresh_engine_per_test():
+    """См. `test_api_economy.py::_fresh_engine_per_test` — тот же
+    процесс-глобальный engine, та же необходимость `dispose()` между тестами
+    с разными event loop'ами (pytest-asyncio, function-scoped loop)."""
+    await engine.dispose()
+    yield
+    await engine.dispose()
+
+
+@pytest.fixture(autouse=True)
+def _app_state():
+    app.state.http_client = AsyncMock()
+    app.state.redis = None
+    yield
+
+
+@pytest.mark.asyncio
+async def test_coinflip_valid_bet_returns_200_with_settled_result(monkeypatch):
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    user_id = 300101
+    await _ensure_user(user_id)
+    init_data = _build_init_data(user_id=user_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/games/coinflip",
+            params={"chat_id": CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={"bet": 20, "choice": "heads", "idem_key": str(uuid.uuid4())},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["game"] == "coinflip"
+    assert body["bet"] == 20
+    assert "payout" in body
+    assert "outcome" in body
+
+
+@pytest.mark.asyncio
+async def test_coinflip_missing_init_data_returns_401():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/games/coinflip",
+            params={"chat_id": CHAT_ID},
+            json={"bet": 20, "choice": "heads", "idem_key": str(uuid.uuid4())},
+        )
+
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_coinflip_forged_init_data_returns_401(monkeypatch):
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    init_data = _build_init_data(user_id=300102, tamper=True)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/games/coinflip",
+            params={"chat_id": CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={"bet": 20, "choice": "heads", "idem_key": str(uuid.uuid4())},
+        )
+
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_coinflip_bet_below_minimum_returns_400(monkeypatch):
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    user_id = 300103
+    await _ensure_user(user_id)
+    init_data = _build_init_data(user_id=user_id)
+    assert 1 < settings.casino_min_bet  # гарантирует, что bet=1 реально ниже минимума
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/games/coinflip",
+            params={"chat_id": CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={"bet": 1, "choice": "heads", "idem_key": str(uuid.uuid4())},
+        )
+
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_coinflip_ignores_foreign_user_id_in_body_idor(monkeypatch):
+    """T-04.2-02: user_id/chat_id берутся ТОЛЬКО из AuthContext — поддельный
+    user_id "жертвы" в теле запроса не должен сдвинуть ЕЁ баланс, только
+    баланс реального пользователя из initData (атакующего)."""
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    attacker_id = 300104
+    victim_id = 300105
+    await _ensure_user(attacker_id)
+    await _ensure_user(victim_id)
+    init_data = _build_init_data(user_id=attacker_id)
+
+    attacker_before = await _get_balance(CHAT_ID, attacker_id)
+    victim_before = await _get_balance(CHAT_ID, victim_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/games/coinflip",
+            params={"chat_id": CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={
+                "bet": 20,
+                "choice": "heads",
+                "idem_key": str(uuid.uuid4()),
+                "user_id": victim_id,  # атакующий пытается подставить чужой user_id
+            },
+        )
+
+    assert resp.status_code == 200
+
+    attacker_after = await _get_balance(CHAT_ID, attacker_id)
+    victim_after = await _get_balance(CHAT_ID, victim_id)
+
+    assert attacker_after != attacker_before  # ставка реально списана с атакующего
+    assert victim_after == victim_before  # жертва не затронута вовсе
