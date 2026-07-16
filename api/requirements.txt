@@ -12,4 +12,17 @@ redis==5.2.1
 # (Dockerfile.dev, which already has the full root requirements.txt), not
 # against this production image. Same pin as root requirements.txt.
 APScheduler==3.11.0
+# Transitive runtime dep of bot/services/markets_service.py (imported by
+# api/routes/markets.py, 04.2-07) -> bot/services/external_markets.py's
+# module-level `import aiohttp`. Same class of gap as APScheduler above —
+# `Dockerfile.dev`/root requirements.txt get it transitively via
+# aiogram==3.27.0 (which depends on aiohttp internally), but this
+# production api image's minimal requirements.txt never listed it
+# directly, so it was never caught by pytest (same container as
+# APScheduler's gap) and only surfaces when this specific production image
+# is actually rebuilt/started (found during 04.2-10's live container
+# rebuild, the last plan of this phase, needed for phase-final
+# verification). Version pinned to what aiogram==3.27.0 actually resolves
+# in the dev image (`python -c "import aiohttp; print(aiohttp.__version__)"`).
+aiohttp==3.13.5
 

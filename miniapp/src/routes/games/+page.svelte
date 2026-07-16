@@ -13,7 +13,7 @@
 
 	// Copy verbatim from 04-UI-SPEC.md/prototype — do not reword.
 	const tiles: Tile[] = [
-		{ title: 'Слот', desc: '3×5, 10 линий, до 1000×', accent: 'pink', href: '/games/slot' },
+		{ title: 'Слот', desc: '3×5, 10 линий, до 1000×', accent: 'pink', href: '/games/slots' },
 		{
 			title: 'Рулетка',
 			desc: 'европейское колесо, 0–36',

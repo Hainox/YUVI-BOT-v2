@@ -44,6 +44,7 @@ import pytest
 from httpx import ASGITransport
 from httpx import AsyncClient
 from sqlalchemy import select
+from sqlalchemy import update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from api import telegram_client
@@ -147,6 +148,29 @@ async def _ensure_user(user_id: int, first_name: str = "Тест") -> None:
 async def _get_balance(chat_id: int, user_id: int) -> int:
     async with SessionLocal() as db_session:
         return await economy_service.get_balance(db_session, chat_id, user_id)
+
+
+async def _topup(chat_id: int, user_id: int, min_balance: int = 1000) -> None:
+    """Тот же Rule-1 фикс, что и `tests/test_api_markets.py::_fund` (04.2-10,
+    см. deferred-items.md) — фиксированные `user_id`-литералы этого файла
+    против ДОЛГОЖИВУЩЕГО docker-compose Postgres-контейнера истощаются
+    накопительными списаниями по мере повторных прогонов ПОЛНОГО набора
+    тестов (особенно блэкджек-раздачи с детерминированным `double`, где
+    ставка списывается ДВАЖДЫ на заведомо проигрышной раздаче). Топит
+    баланс минимум до `min_balance` через `economy_service.credit` со
+    СВЕЖИМ `ref_id` (никогда не гасится идемпотентностью)."""
+    async with SessionLocal() as db_session:
+        balance = await economy_service.get_balance(db_session, chat_id, user_id)
+        if balance < min_balance:
+            await economy_service.credit(
+                db_session,
+                chat_id,
+                user_id,
+                min_balance - balance,
+                kind="test_topup",
+                ref_id=f"test_topup:{uuid.uuid4()}",
+            )
+            await db_session.commit()
 
 
 @pytest.fixture(autouse=True)
@@ -616,6 +640,7 @@ async def test_slots_valid_bet_returns_200_with_settled_result(monkeypatch):
     monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
     user_id = 300401
     await _ensure_user(user_id)
+    await _topup(SLOTS_CHAT_ID, user_id)
     init_data = _build_init_data(user_id=user_id)
 
     transport = ASGITransport(app=app)
@@ -659,6 +684,7 @@ async def test_slots_bet_below_minimum_returns_400(monkeypatch):
     monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
     user_id = 300402
     await _ensure_user(user_id)
+    await _topup(SLOTS_CHAT_ID, user_id)
     init_data = _build_init_data(user_id=user_id)
     assert 1 < settings.casino_min_bet
 
@@ -679,6 +705,7 @@ async def test_slots_bet_not_multiple_of_lines_returns_400(monkeypatch):
     monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
     user_id = 300403
     await _ensure_user(user_id)
+    await _topup(SLOTS_CHAT_ID, user_id)
     init_data = _build_init_data(user_id=user_id)
 
     transport = ASGITransport(app=app)
@@ -701,7 +728,9 @@ async def test_slots_ignores_foreign_user_id_in_body_idor(monkeypatch):
     attacker_id = 300404
     victim_id = 300405
     await _ensure_user(attacker_id)
+    await _topup(SLOTS_CHAT_ID, attacker_id)
     await _ensure_user(victim_id)
+    await _topup(SLOTS_CHAT_ID, victim_id)
     init_data = _build_init_data(user_id=attacker_id)
     idem_key = str(uuid.uuid4())
 
@@ -744,6 +773,7 @@ async def test_blackjack_start_valid_bet_returns_200_with_active_hand(monkeypatc
     monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["8", "4", "7", "5"]))
     user_id = 300501
     await _ensure_user(user_id)
+    await _topup(BLACKJACK_CHAT_ID, user_id)
     init_data = _build_init_data(user_id=user_id)
 
     transport = ASGITransport(app=app)
@@ -762,6 +792,8 @@ async def test_blackjack_start_valid_bet_returns_200_with_active_hand(monkeypatc
     assert body["player"] == ["8", "4"]
     assert "dealer_upcard" in body
     assert "id" in body
+
+    await _force_settle_leftover_game(body["id"])
 
 
 @pytest.mark.asyncio
@@ -782,6 +814,7 @@ async def test_blackjack_start_bet_below_minimum_returns_400(monkeypatch):
     monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
     user_id = 300502
     await _ensure_user(user_id)
+    await _topup(BLACKJACK_CHAT_ID, user_id)
     init_data = _build_init_data(user_id=user_id)
     assert 1 < settings.casino_min_bet
 
@@ -804,7 +837,9 @@ async def test_blackjack_start_ignores_foreign_user_id_in_body_idor(monkeypatch)
     attacker_id = 300503
     victim_id = 300504
     await _ensure_user(attacker_id)
+    await _topup(BLACKJACK_CHAT_ID, attacker_id)
     await _ensure_user(victim_id)
+    await _topup(BLACKJACK_CHAT_ID, victim_id)
     init_data = _build_init_data(user_id=attacker_id)
     idem_key = str(uuid.uuid4())
 
@@ -834,6 +869,10 @@ async def test_blackjack_start_ignores_foreign_user_id_in_body_idor(monkeypatch)
     victim_after = await _get_balance(BLACKJACK_CHAT_ID, victim_id)
     assert victim_after == victim_before
 
+    # Реальный RNG (без forced-колоды) — раздача обычно остаётся "active"
+    # (натурал редок, ~4.8%); cleanup безопасен как no-op, если уже settled.
+    await _force_settle_leftover_game(game_row.id)
+
 
 async def _start_fixed_hand(client, init_data: str, chat_id: int, pop_sequence: list[str]) -> int:
     """Хелпер: раздаёт детерминированную (не-натурал) раздачу через реальный
@@ -851,11 +890,31 @@ async def _start_fixed_hand(client, init_data: str, chat_id: int, pop_sequence: 
     return body["id"]
 
 
+async def _force_settle_leftover_game(game_id: int) -> None:
+    """Cleanup для тестов, которые НАМЕРЕННО оставляют раздачу блэкджека в
+    status="active" после своих assert'ов (проверяют форму именно активного
+    ответа). `casino_service.resolve_blackjack_timeouts` сканирует ВСЕ
+    активные раздачи ГЛОБАЛЬНО (не по chat_id) с истёкшим `turn_deadline` —
+    без этой уборки такая раздача осталась бы висеть с 60с (D-07) дедлайном
+    и, если полный прогон suite'а займёт больше минуты, попала бы в батч
+    `tests/test_blackjack_service.py`'s таймаут-тестов, раздувая их
+    `resolved_count` (тот же класс cross-test-полюции, что уже
+    задокументирован для `test_place_bet_closed_market_returns_409` в
+    `test_api_markets.py` — прямая ORM-правка статуса, без побочных
+    денежных эффектов)."""
+    async with SessionLocal() as cleanup_session:
+        await cleanup_session.execute(
+            update(CasinoGame).where(CasinoGame.id == game_id).values(status="settled")
+        )
+        await cleanup_session.commit()
+
+
 @pytest.mark.asyncio
 async def test_blackjack_action_hit_steps_hand_and_stays_active(monkeypatch):
     monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
     user_id = 300505
     await _ensure_user(user_id)
+    await _topup(BLACKJACK_CHAT_ID, user_id)
     init_data = _build_init_data(user_id=user_id)
 
     transport = ASGITransport(app=app)
@@ -876,12 +935,15 @@ async def test_blackjack_action_hit_steps_hand_and_stays_active(monkeypatch):
     assert body["status"] == "active"
     assert body["player"] == ["8", "4", "3"]
 
+    await _force_settle_leftover_game(game_id)
+
 
 @pytest.mark.asyncio
 async def test_blackjack_action_stand_settles_hand(monkeypatch):
     monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
     user_id = 300506
     await _ensure_user(user_id)
+    await _topup(BLACKJACK_CHAT_ID, user_id)
     init_data = _build_init_data(user_id=user_id)
 
     transport = ASGITransport(app=app)
@@ -911,6 +973,7 @@ async def test_blackjack_action_double_debits_second_stake_and_settles(monkeypat
     monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
     user_id = 300507
     await _ensure_user(user_id)
+    await _topup(BLACKJACK_CHAT_ID, user_id)
     init_data = _build_init_data(user_id=user_id)
     balance_before_double = None
 
@@ -953,6 +1016,7 @@ async def test_blackjack_action_double_after_hit_returns_400(monkeypatch):
     monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
     user_id = 300508
     await _ensure_user(user_id)
+    await _topup(BLACKJACK_CHAT_ID, user_id)
     init_data = _build_init_data(user_id=user_id)
 
     transport = ASGITransport(app=app)
@@ -978,12 +1042,15 @@ async def test_blackjack_action_double_after_hit_returns_400(monkeypatch):
 
     assert double_resp.status_code == 400
 
+    await _force_settle_leftover_game(game_id)
+
 
 @pytest.mark.asyncio
 async def test_blackjack_action_invalid_action_value_returns_400(monkeypatch):
     monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
     user_id = 300509
     await _ensure_user(user_id)
+    await _topup(BLACKJACK_CHAT_ID, user_id)
     init_data = _build_init_data(user_id=user_id)
 
     transport = ASGITransport(app=app)
@@ -999,6 +1066,8 @@ async def test_blackjack_action_invalid_action_value_returns_400(monkeypatch):
         )
 
     assert resp.status_code == 400
+
+    await _force_settle_leftover_game(game_id)
 
 
 @pytest.mark.asyncio
@@ -1026,7 +1095,9 @@ async def test_blackjack_action_on_foreign_game_returns_404_idor(monkeypatch):
     attacker_id = 300510
     victim_id = 300511
     await _ensure_user(attacker_id)
+    await _topup(BLACKJACK_CHAT_ID, attacker_id)
     await _ensure_user(victim_id)
+    await _topup(BLACKJACK_CHAT_ID, victim_id)
     attacker_init_data = _build_init_data(user_id=attacker_id)
     victim_init_data = _build_init_data(user_id=victim_id)
 
@@ -1059,6 +1130,8 @@ async def test_blackjack_action_on_foreign_game_returns_404_idor(monkeypatch):
     victim_balance_after = await _get_balance(BLACKJACK_CHAT_ID, victim_id)
     assert victim_balance_after == victim_balance_before
 
+    await _force_settle_leftover_game(victim_game_id)
+
 
 @pytest.mark.asyncio
 async def test_blackjack_action_on_settled_game_replays_stored_result(monkeypatch):
@@ -1068,6 +1141,7 @@ async def test_blackjack_action_on_settled_game_replays_stored_result(monkeypatc
     monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
     user_id = 300512
     await _ensure_user(user_id)
+    await _topup(BLACKJACK_CHAT_ID, user_id)
     init_data = _build_init_data(user_id=user_id)
 
     transport = ASGITransport(app=app)
