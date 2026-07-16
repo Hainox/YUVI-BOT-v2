@@ -257,3 +257,55 @@ async def roll(session: AsyncSession, chat_id: int, user_id: int, count: int, re
 
     await session.commit()
     return {"cost": cost, "results": results}
+
+
+# --- get_collection (04.2-05: read-only, GACHA-01/03 UI) ---------------------
+
+
+async def get_collection(session: AsyncSession, chat_id: int, user_id: int) -> dict:
+    """Read-путь коллекции для Mini App (GACHA-01/03): персонажи
+    пользователя, обогащённые из `gacha_catalog.CATALOG` (сам каталог — в
+    коде, не в БД, join против него невозможен — enrichment в Python после
+    SELECT), плюс текущий `pity_ssr`/`pity_ur` (та же строка `clicker_farms`,
+    что использует `roll`, переиспользуем `clicker_service._get_or_create_farm`
+    вместо дублирования upsert+`FOR UPDATE`, Pattern 7) и id активного
+    rate-up баннера (`settings_service.get_setting`). Чистый SELECT — не
+    пишет ничего, кроме идемпотентного get-or-create строки фермы (тот же
+    паттерн, что уже установлен `clicker_service.get_farm_state` для
+    чистых read-путей)."""
+    rows = (
+        await session.execute(
+            select(GachaCollection).where(
+                GachaCollection.chat_id == chat_id,
+                GachaCollection.user_id == user_id,
+            )
+        )
+    ).scalars().all()
+
+    characters = []
+    for row in rows:
+        char = gacha_catalog.CATALOG.get(row.char_id)
+        if char is None:
+            continue
+        characters.append(
+            {
+                "char_id": row.char_id,
+                "name": char.name,
+                "tier": char.tier,
+                "role": char.role,
+                "stars": row.stars,
+                "copies": row.copies,
+            }
+        )
+
+    farm = await clicker_service._get_or_create_farm(session, chat_id, user_id)
+    await session.commit()
+
+    banner = await settings_service.get_setting(session, chat_id, GACHA_BANNER_KEY, "")
+
+    return {
+        "characters": characters,
+        "pity_ssr": farm.pity_ssr,
+        "pity_ur": farm.pity_ur,
+        "banner": banner,
+    }

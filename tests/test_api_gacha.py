@@ -134,6 +134,15 @@ async def test_roll_count1_valid_returns_200(monkeypatch):
     monkeypatch.setattr(gacha_service, "_rng", _ForcedRng(random_value=0.0, choice_index=0))
     user_id = 500201
     await _ensure_user(user_id)
+    # Top-up с уникальным ref_id на каждый запуск (не фиксированным) —
+    # HTTP-тесты коммитят напрямую в живой Postgres (в отличие от
+    # `session`-фикстуры conftest.py), повторные прогоны набора тестов
+    # против того же контейнера иначе постепенно исчерпали бы фиксированный
+    # стартовый бонус (economy_start_bonus=1000) этого user_id, т.к.
+    # каждый прогон тратит реальные ювики новым (случайным) ref_id ролла
+    # (тот же класс non-determinism, что уже найден и исправлен в
+    # test_api_farm.py::_seed_farm_cp, 04.2-04).
+    await _top_up(CHAT_ID, user_id, 5000, str(uuid.uuid4()))
     init_data = _build_init_data(user_id=user_id)
 
     transport = ASGITransport(app=app)
@@ -158,7 +167,7 @@ async def test_roll_count10_valid_returns_200(monkeypatch):
     monkeypatch.setattr(gacha_service, "_rng", _ForcedRng(random_value=0.0, cycle=True))
     user_id = 500202
     await _ensure_user(user_id)
-    await _top_up(CHAT_ID, user_id, 5000, "test_roll10_topup")
+    await _top_up(CHAT_ID, user_id, 5000, str(uuid.uuid4()))  # see comment above (unique per run)
     init_data = _build_init_data(user_id=user_id)
 
     transport = ASGITransport(app=app)
@@ -214,6 +223,7 @@ async def test_roll_replay_same_ref_id_is_idempotent(monkeypatch):
     monkeypatch.setattr(gacha_service, "_rng", _ForcedRng(random_value=0.0, choice_index=0))
     user_id = 500204
     await _ensure_user(user_id)
+    await _top_up(CHAT_ID, user_id, 5000, str(uuid.uuid4()))  # see comment above (unique per run)
     init_data = _build_init_data(user_id=user_id)
     ref_id = str(uuid.uuid4())
 
@@ -251,6 +261,7 @@ async def test_roll_ignores_foreign_user_id_in_body_idor(monkeypatch):
     victim_id = 500206
     await _ensure_user(attacker_id)
     await _ensure_user(victim_id)
+    await _top_up(CHAT_ID, attacker_id, 5000, str(uuid.uuid4()))  # unique per run, see above
     init_data = _build_init_data(user_id=attacker_id)
 
     victim_before = await _get_balance(CHAT_ID, victim_id)
