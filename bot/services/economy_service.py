@@ -341,6 +341,64 @@ async def get_leaderboard(session: AsyncSession, chat_id: int, limit: int = 10) 
     ]
 
 
+# Kinds whose user_id IS NULL leg is a pure bank-side bookkeeping mirror of a
+# money movement already recorded (under the SAME kind) against a real user
+# row — hidden from the transaction feed to avoid duplicate/noise rows on a
+# chat-wide (user_id=None) query (04.2-RESEARCH.md Pitfall 6, "*_to_bank/
+# *_from_bank mirrors"). Filtering is scoped to `kind IN HIDDEN_KINDS AND
+# user_id IS NULL` (not kind alone) — several of these kinds ALSO carry a
+# real per-user leg (e.g. market_create_fee is logged once against the
+# creator who paid it, and once against the bank via the same kind string);
+# that per-user leg must stay visible. Domain/read-shape decision, not part
+# of the money-moving contract — economy_service still logs every leg via
+# _log_tx exactly as before.
+HIDDEN_KINDS: frozenset[str] = frozenset(
+    {
+        "transfer_fee",
+        "market_create_fee",
+        "market_import_fee",
+        "market_resolution_fee",
+    }
+)
+
+
+async def get_transactions(
+    session: AsyncSession,
+    chat_id: int,
+    user_id: int | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[dict]:
+    """Лента транзакций (для /history) — прямой SELECT по `EconomyTx`, тот же
+    паттерн, что `get_leaderboard`. Чистое чтение, НЕ коммитит и не пишет
+    ни строки — `_log_tx`/`_credit`/`_guarded_debit` здесь не вызываются.
+
+    `chat_id` — обязательный фильтр; `user_id` — опциональный (None = вся
+    лента чата). `HIDDEN_KINDS` служебные банковские зеркала (`user_id IS
+    NULL`) исключаются всегда, независимо от `user_id`-фильтра."""
+    stmt = select(EconomyTx).where(EconomyTx.chat_id == chat_id)
+    if user_id is not None:
+        stmt = stmt.where(EconomyTx.user_id == user_id)
+    stmt = stmt.where(
+        ~(EconomyTx.kind.in_(HIDDEN_KINDS) & EconomyTx.user_id.is_(None))
+    )
+    stmt = stmt.order_by(EconomyTx.created_at.desc()).limit(limit).offset(offset)
+
+    result = await session.execute(stmt)
+    return [
+        {
+            "id": row.id,
+            "user_id": row.user_id,
+            "amount": row.amount,
+            "kind": row.kind,
+            "ref_id": row.ref_id,
+            "note": row.note,
+            "created_at": row.created_at,
+        }
+        for row in result.scalars().all()
+    ]
+
+
 async def get_chat_summary(session: AsyncSession, chat_id: int) -> dict:
     """Сводка по экономике чата (D-06, для /economy): банк, сумма в обороте,
     число открытых рынков. НЕ дублирует /leaderboard и /rules."""
