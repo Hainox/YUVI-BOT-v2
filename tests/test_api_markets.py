@@ -31,6 +31,7 @@ import pytest
 from httpx import ASGITransport
 from httpx import AsyncClient
 from sqlalchemy import select
+from sqlalchemy import update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from api import telegram_client
@@ -340,6 +341,19 @@ async def test_place_bet_closed_market_returns_409(monkeypatch):
         )
 
     assert resp.status_code == 409
+
+    # Cleanup: this market intentionally sits at status="open" with
+    # closes_at in the past (needed to trigger MarketClosed via place_bet's
+    # OR-condition) — left as-is it would pollute markets_service.
+    # auto_close_expired's GLOBAL (not chat-scoped) count on the next full
+    # test-suite run, the same class of live-Postgres cross-test pollution
+    # already documented/fixed for test_api_farm.py/test_api_gacha.py
+    # (04.2-04/04.2-05 Rule 1 fixes).
+    async with SessionLocal() as cleanup_session:
+        await cleanup_session.execute(
+            update(Market).where(Market.id == market_id).values(status="cancelled")
+        )
+        await cleanup_session.commit()
 
 
 @pytest.mark.asyncio
