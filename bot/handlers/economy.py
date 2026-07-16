@@ -15,12 +15,11 @@ import math
 from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
 from bot.services import economy_service
-from common.models.user import User
+from bot.services.target_resolution_service import resolve_target
 
 router = Router()
 
@@ -49,41 +48,6 @@ def _parse_transfer_args(message: Message) -> tuple[str | None, int | None]:
     amount = int(amount_token) if amount_token.isdigit() else None
     target_arg = tokens[0] if len(tokens) >= 2 else None
     return target_arg, amount
-
-
-async def _resolve_by_username_or_id(session: AsyncSession, arg: str) -> tuple[int, str] | None:
-    """Резолвит `@username` или числовой id через таблицу users (аналог card.py)."""
-    if arg.startswith("@"):
-        stmt = select(User.id, User.first_name).where(User.username == arg[1:])
-    elif arg.lstrip("-").isdigit():
-        stmt = select(User.id, User.first_name).where(User.id == int(arg))
-    else:
-        return None
-
-    row = (await session.execute(stmt)).first()
-    if row is None:
-        return None
-    return row.id, row.first_name or str(row.id)
-
-
-async def _resolve_transfer_target(
-    message: Message, session: AsyncSession, target_arg: str | None
-) -> tuple[int, str] | None:
-    """Резолв получателя `/transfer`: reply > text_mention entity > @username/id-аргумент."""
-    if message.reply_to_message is not None and message.reply_to_message.from_user is not None:
-        user = message.reply_to_message.from_user
-        return user.id, user.first_name or str(user.id)
-
-    if message.entities:
-        for entity in message.entities:
-            if entity.type == "text_mention" and entity.user is not None:
-                user = entity.user
-                return user.id, user.first_name or str(user.id)
-
-    if target_arg is not None:
-        return await _resolve_by_username_or_id(session, target_arg)
-
-    return None
 
 
 # --- Чистые форматтеры (юнит-тестируемые без message/session) ------------
@@ -173,7 +137,7 @@ async def transfer_command(message: Message, session: AsyncSession) -> None:
         return
 
     target_arg, amount = _parse_transfer_args(message)
-    target = await _resolve_transfer_target(message, session, target_arg)
+    target = await resolve_target(message, session, target_arg)
 
     if target is None:
         await message.answer(

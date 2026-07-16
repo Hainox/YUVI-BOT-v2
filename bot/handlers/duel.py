@@ -33,7 +33,6 @@ from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import ChatPermissions
 from aiogram.types import Message
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.services import admin_service
@@ -41,7 +40,7 @@ from bot.services import duel_constants
 from bot.services import duel_service
 from bot.services import economy_service
 from bot.services.scheduler import get_scheduler
-from common.models.user import User
+from bot.services.target_resolution_service import resolve_target
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +80,10 @@ async def _lift_mute(bot: Bot, chat_id: int, user_id: int) -> None:
     await bot.send_sticker(chat_id, UNMUTE_STICKER_ID)
 
 
-# --- Разбор входа + резолв цели (форма economy.py::_resolve_transfer_target) --
+# --- Разбор входа + резолв цели -----------------------------------------
+# `resolve_target` живёт в bot/services/target_resolution_service.py (WR-04,
+# 04.2-REVIEW: раньше был продублирован byte-for-byte в economy.py/duel.py/
+# farm_admin.py, теперь shared).
 
 
 def _display_name(message: Message) -> str:
@@ -135,41 +137,6 @@ def _parse_single_target_arg(message: Message) -> str | None:
     return token or None
 
 
-async def _resolve_by_username_or_id(session: AsyncSession, arg: str) -> tuple[int, str] | None:
-    if arg.startswith("@"):
-        stmt = select(User.id, User.first_name).where(User.username == arg[1:])
-    elif arg.lstrip("-").isdigit():
-        stmt = select(User.id, User.first_name).where(User.id == int(arg))
-    else:
-        return None
-
-    row = (await session.execute(stmt)).first()
-    if row is None:
-        return None
-    return row.id, row.first_name or str(row.id)
-
-
-async def _resolve_target(
-    message: Message, session: AsyncSession, target_arg: str | None
-) -> tuple[int, str] | None:
-    """Резолв цели: reply > text_mention entity > @username/id-аргумент
-    (форма economy.py::_resolve_transfer_target)."""
-    if message.reply_to_message is not None and message.reply_to_message.from_user is not None:
-        user = message.reply_to_message.from_user
-        return user.id, user.first_name or str(user.id)
-
-    if message.entities:
-        for entity in message.entities:
-            if entity.type == "text_mention" and entity.user is not None:
-                user = entity.user
-                return user.id, user.first_name or str(user.id)
-
-    if target_arg is not None:
-        return await _resolve_by_username_or_id(session, target_arg)
-
-    return None
-
-
 # --- Хендлеры -----------------------------------------------------------
 
 
@@ -186,7 +153,7 @@ async def duel_command(message: Message, session: AsyncSession) -> None:
         )
         return
 
-    target = await _resolve_target(message, session, target_arg)
+    target = await resolve_target(message, session, target_arg)
     if target is None:
         await message.answer(
             "Ответьте на сообщение соперника командой /duel <ставка> "
@@ -359,7 +326,7 @@ async def unmute_command(message: Message, session: AsyncSession, bot: Bot) -> N
         return
 
     target_arg = _parse_single_target_arg(message)
-    target = await _resolve_target(message, session, target_arg)
+    target = await resolve_target(message, session, target_arg)
     if target is None:
         await message.answer(
             "Использование: /unmute (ответом на сообщение замученного) или /unmute @username"
