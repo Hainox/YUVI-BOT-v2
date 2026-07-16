@@ -13,14 +13,17 @@ conftest.py (её join-savepoint режим не нужен здесь, роут
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
+import os
 import time
 from unittest.mock import AsyncMock
 from urllib.parse import urlencode
 
 import pytest
+import redis.asyncio as redis_asyncio
 from httpx import ASGITransport
 from httpx import AsyncClient
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -34,6 +37,19 @@ from common.db.session import SessionLocal
 from common.models.user import User
 
 CHAT_ID = -900201
+_REDIS_URL = os.environ["REDIS_URL"]
+
+
+async def _await_message(pubsub, overall_timeout: float = 6.0):
+    """Ждёт первое НЕ-subscribe-подтверждение сообщение до overall_timeout —
+    та же форма, что `test_api_events.py::_await_message`."""
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + overall_timeout
+    while loop.time() < deadline:
+        message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+        if message is not None:
+            return message
+    return None
 
 
 def _build_init_data(*, user_id: int, bot_token: str | None = None, tamper: bool = False) -> str:
@@ -218,6 +234,61 @@ async def test_post_transfer_moves_money_and_ignores_foreign_from_user_in_body(m
     assert resp.status_code == 200
     assert await _get_balance(chat_id, sender) == 1000 - 100
     assert await _get_balance(chat_id, attacker) == 1000  # untouched
+
+
+@pytest.mark.asyncio
+async def test_post_transfer_publishes_balance_to_both_sender_and_recipient(monkeypatch):
+    """WR-02 (04.2-REVIEW): transfer_with_fee credits to_user_id too, so the
+    recipient's SSE balance channel must also be fed — previously only the
+    sender's balance was re-published, leaving the recipient's Mini App tab
+    stale until they triggered their own action. Uses a live Redis pub/sub
+    (same pattern as test_api_events.py) to prove real delivery, not just
+    that publish_balance was called."""
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    chat_id = -900205
+    sender, receiver = 222140, 222141
+    await _ensure_user(sender)
+    await _ensure_user(receiver)
+    await _get_balance(chat_id, sender)
+    await _get_balance(chat_id, receiver)
+    init_data = _build_init_data(user_id=sender)
+
+    redis_client = redis_asyncio.from_url(_REDIS_URL)
+    app.state.redis = redis_client
+    try:
+        # Both publish_balance calls target the SAME per-chat channel
+        # (`bal:{chat_id}`) — subscribers are filtered by user_id in the
+        # payload downstream (api/routes/events.py), not by channel. So one
+        # subscription receives BOTH messages, in publish order.
+        async with redis_client.pubsub() as sub:
+            await sub.subscribe(f"bal:{chat_id}")
+            await asyncio.sleep(0.1)  # дать серверу зарегистрировать подписку
+
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                resp = await client.post(
+                    "/api/v1/transfer",
+                    params={"chat_id": chat_id},
+                    headers={"X-Telegram-Init-Data": init_data},
+                    json={"to_user_id": receiver, "amount": 100, "ref_id": "test_api_transfer_sse"},
+                )
+
+            assert resp.status_code == 200
+
+            first_message = await _await_message(sub)
+            assert first_message is not None
+            second_message = await _await_message(sub)
+            assert second_message is not None
+
+            payloads = [json.loads(first_message["data"]), json.loads(second_message["data"])]
+            user_ids = {p["user_id"] for p in payloads}
+            assert user_ids == {sender, receiver}
+
+            receiver_payload = next(p for p in payloads if p["user_id"] == receiver)
+            assert receiver_payload["balance"] == await _get_balance(chat_id, receiver)
+    finally:
+        await redis_client.aclose()
+        app.state.redis = None
 
 
 @pytest.mark.asyncio

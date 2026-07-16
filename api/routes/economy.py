@@ -29,11 +29,13 @@ from __future__ import annotations
 from fastapi import APIRouter
 from fastapi import Depends
 from fastapi import HTTPException
+from fastapi import Request
 from pydantic import BaseModel
 from pydantic import Field
 
 from api.deps import AuthContext
 from api.deps import require_membership
+from bot.services import balance_events
 from bot.services import economy_service
 from common.db.session import SessionLocal
 
@@ -61,7 +63,7 @@ async def get_leaderboard(auth: AuthContext = Depends(require_membership)) -> li
 
 @router.post("/api/v1/transfer")
 async def post_transfer(
-    body: TransferBody, auth: AuthContext = Depends(require_membership)
+    body: TransferBody, request: Request, auth: AuthContext = Depends(require_membership)
 ) -> dict:
     async with SessionLocal() as session:
         try:
@@ -72,6 +74,17 @@ async def post_transfer(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         balance = await economy_service.get_balance(session, auth.chat_id, auth.user_id)
+        await balance_events.publish_balance(request.app.state.redis, auth.chat_id, auth.user_id, balance)
+
+        # WR-02 (04.2-REVIEW): transfer_with_fee also credits to_user_id — the
+        # recipient's balance genuinely changes, so it must be published too
+        # (same "publish to every affected user" pattern as duel.py's
+        # post_accept_duel, which publishes for both winner_id and loser_id).
+        recipient_balance = await economy_service.get_balance(session, auth.chat_id, body.to_user_id)
+        await balance_events.publish_balance(
+            request.app.state.redis, auth.chat_id, body.to_user_id, recipient_balance
+        )
+
         return {"status": "ok", "balance": balance}
 
 
