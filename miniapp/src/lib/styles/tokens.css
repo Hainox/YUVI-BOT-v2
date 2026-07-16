@@ -1,0 +1,330 @@
+/* ─────────────────────────────────────────────────────────────────────
+   Design tokens + shared component primitives for the Mini App.
+   Source: 04.2-UI-SPEC.md (Design System/Spacing/Typography/Color),
+   ported verbatim in visual language from webapp/webapp.css + slot.css
+   (the locked, already-approved React prototype).
+   ───────────────────────────────────────────────────────────────────── */
+
+@import url('https://fonts.googleapis.com/css2?family=Bangers&family=Anton&family=Russo+One&family=Mochiy+Pop+One&family=Zen+Maru+Gothic:wght@500;700;900&display=swap');
+
+:root {
+	/* Color — dominant/secondary/accent/destructive (04.2-UI-SPEC.md §Color) */
+	--bg-dominant: #0d0a18;
+	--bg-secondary-1: #1a1726;
+	--bg-secondary-2: #1c1827;
+	--border-secondary: #2a2438;
+	--divider: #25202f;
+
+	--accent-pink: #ff5b8d;
+	--accent-cyan: #7be6ff;
+	--accent-yellow: #ffd84a;
+
+	--destructive: #ff3838;
+	--destructive-text: #ff7570;
+	--destructive-bg: #2a1212;
+
+	--text-primary: #f5f3ff;
+	--text-secondary: #e4e2ec;
+	--text-muted: #807d92;
+	--text-locked: #6d6985;
+	--text-locked-desc: #5b5870;
+
+	/* Balance-card hero gradient — one-off "money surface", not part of the
+	   3-color accent system, reused verbatim on Statistics dashboard header. */
+	--balance-gradient: linear-gradient(135deg, #5fb8f3 0%, #4990d8 100%);
+
+	/* Spacing scale (strict 4px multiples) */
+	--space-xs: 4px;
+	--space-sm: 8px;
+	--space-md: 16px;
+	--space-lg: 24px;
+	--space-xl: 32px;
+	--space-2xl: 48px;
+	--space-3xl: 64px;
+
+	/* Typography — enforced 4-size scale: 13 / 17 / 32 / 64 */
+	--font-body-size: 13px;
+	--font-label-size: 13px;
+	--font-heading-size: 17px;
+	--font-display-size: 32px;
+	--font-hero-size: 64px;
+
+	--font-chrome: 'Russo One', system-ui, -apple-system, sans-serif;
+	--font-numeric: 'Anton', system-ui, -apple-system, sans-serif;
+	--font-shout: 'Bangers', system-ui, -apple-system, sans-serif;
+	--font-body: 'Zen Maru Gothic', system-ui, -apple-system, sans-serif;
+	--font-jp: 'Mochiy Pop One', system-ui, -apple-system, sans-serif;
+}
+
+html,
+body {
+	height: 100%;
+	width: 100%;
+	margin: 0;
+	padding: 0;
+	background: var(--bg-dominant);
+	overflow-x: hidden;
+	-webkit-tap-highlight-color: transparent;
+	color: var(--text-secondary);
+	font-family: var(--font-chrome);
+}
+
+* {
+	box-sizing: border-box;
+}
+
+.webapp-root {
+	min-height: 100vh;
+	width: 100%;
+	max-width: 520px;
+	margin: 0 auto;
+	background: var(--bg-dominant);
+	position: relative;
+}
+
+/* Telegram safe-area contract (core.telegram.org/bots/webapps):
+   --tg-viewport-stable-height for layout height — NOT --tg-viewport-height,
+   which "jitters" while a BottomSheet is being dragged. */
+.screen {
+	padding-top: max(var(--tg-content-safe-area-inset-top, 0px), env(safe-area-inset-top));
+	padding-bottom: max(var(--tg-content-safe-area-inset-bottom, 0px), env(safe-area-inset-bottom));
+	min-height: var(--tg-viewport-stable-height, 100vh);
+}
+
+/* ─── loading / error (locked pattern, reused by every screen) ────────── */
+.screen-loading {
+	min-height: 100vh;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	color: var(--text-muted);
+	font-size: var(--font-body-size);
+	letter-spacing: 0.12em;
+	text-transform: uppercase;
+}
+.screen-loading span {
+	animation: tokens-pulse 1.4s ease-in-out infinite;
+}
+@keyframes tokens-pulse {
+	0%,
+	100% {
+		opacity: 0.4;
+	}
+	50% {
+		opacity: 1;
+	}
+}
+
+.screen-error {
+	min-height: 100vh;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	padding: var(--space-lg);
+	text-align: center;
+	gap: var(--space-sm);
+}
+.screen-error h2 {
+	margin: 0;
+	font-size: var(--font-display-size);
+	color: var(--destructive-text);
+	font-family: var(--font-chrome);
+}
+.screen-error .err-msg {
+	font-family: ui-monospace, monospace;
+	font-size: 12px;
+	color: #aaa;
+	background: var(--bg-secondary-1);
+	padding: var(--space-sm) 12px;
+	border-radius: 6px;
+	word-break: break-all;
+	max-width: 100%;
+}
+.screen-error .err-hint {
+	color: #888;
+	font-size: var(--font-body-size);
+	max-width: 320px;
+	line-height: 1.5;
+	font-family: var(--font-body);
+}
+.screen-error button {
+	background: #2a6fdb;
+	color: #fff;
+	border: none;
+	border-radius: 8px;
+	padding: 10px 24px;
+	font-family: inherit;
+	font-weight: 700;
+	font-size: var(--font-body-size);
+	cursor: pointer;
+	margin-top: var(--space-sm);
+}
+
+/* ─── balance card — reused on hub header, portfolio header, stats header ── */
+.balance-card {
+	background: var(--balance-gradient);
+	padding: 18px 20px 20px;
+	border-radius: 14px;
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	color: #fff;
+	box-shadow: 0 4px 20px rgba(60, 130, 220, 0.25);
+}
+.bc-handle {
+	font-size: var(--font-label-size);
+	font-weight: 700;
+	opacity: 0.9;
+	letter-spacing: 0.02em;
+}
+.bc-amount {
+	display: flex;
+	align-items: baseline;
+	gap: 10px;
+	margin-top: 2px;
+}
+.bc-val {
+	font-family: var(--font-numeric);
+	font-size: 38px; /* legacy locked exception (04.2-UI-SPEC.md Typography) — balance readout only */
+	font-weight: 900;
+	line-height: 1;
+	letter-spacing: -0.02em;
+}
+.bc-unit {
+	font-size: var(--font-label-size);
+	opacity: 0.85;
+	text-transform: lowercase;
+	letter-spacing: 0.04em;
+}
+.bc-bank {
+	font-size: var(--font-label-size);
+	opacity: 0.85;
+	margin-top: var(--space-xs);
+}
+.bc-bank strong {
+	font-weight: 900;
+	opacity: 1;
+}
+
+/* ─── feature-card — the tappable tile primitive (hub grid + sub-hubs) ──── */
+.feature-grid {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	gap: 10px;
+}
+.feature-card {
+	background: var(--bg-secondary-2);
+	border: 1px solid var(--border-secondary);
+	border-radius: 14px;
+	padding: 16px 14px;
+	display: flex;
+	flex-direction: column;
+	gap: var(--space-xs);
+	text-align: left;
+	cursor: pointer;
+	font-family: inherit;
+	color: inherit;
+	position: relative;
+	transition:
+		background 0.15s,
+		transform 0.1s,
+		border-color 0.15s;
+	min-height: 88px;
+}
+.feature-card:hover:not(:disabled) {
+	background: #221d30;
+	border-color: #3a3148;
+}
+.feature-card:active:not(:disabled) {
+	transform: scale(0.985);
+}
+.feature-card:disabled {
+	cursor: not-allowed;
+}
+
+.fc-title {
+	font-family: var(--font-chrome);
+	font-size: var(--font-heading-size);
+	font-weight: 700;
+	color: var(--text-primary);
+}
+.fc-desc {
+	font-size: 12px;
+	color: var(--text-muted);
+	line-height: 1.4;
+	letter-spacing: 0.01em;
+	font-family: var(--font-body);
+}
+.fc-chev {
+	position: absolute;
+	top: 14px;
+	right: 14px;
+	color: #4a4361;
+	font-size: 22px;
+	line-height: 1;
+}
+.fc-locked .fc-title {
+	color: var(--text-locked);
+}
+.fc-locked .fc-desc {
+	color: var(--text-locked-desc);
+	font-style: italic;
+}
+.fc-locked {
+	opacity: 0.55;
+}
+
+.fc-pink .fc-title {
+	color: var(--accent-pink);
+}
+.fc-cyan .fc-title {
+	color: var(--accent-cyan);
+}
+.fc-yellow .fc-title {
+	color: var(--accent-yellow);
+}
+
+/* ─── chip — bet-amount picker primitive (reused by every game screen) ──── */
+.chip {
+	background: #fff;
+	border: 2px solid #111;
+	font-family: var(--font-numeric);
+	font-size: var(--font-label-size);
+	font-weight: 900;
+	padding: var(--space-xs) 6px;
+	cursor: pointer;
+	box-shadow: 2px 2px 0 #111;
+	transition: transform 0.08s;
+	color: #111;
+	letter-spacing: 0.04em;
+	border-radius: 6px;
+}
+.chip:hover:not(:disabled) {
+	transform: translate(-1px, -1px);
+	box-shadow: 3px 3px 0 #111;
+}
+.chip:active:not(:disabled) {
+	transform: translate(1px, 1px);
+	box-shadow: 0 0 0 #111;
+}
+.chip:disabled {
+	opacity: 0.4;
+	cursor: not-allowed;
+}
+.chip-on {
+	background: var(--accent-yellow);
+	transform: translate(1px, 1px);
+	box-shadow: 0 0 0 #111;
+}
+.chip-all {
+	background: var(--accent-pink);
+	color: #fff;
+}
+
+/* ─── locked accessibility minimum: every tappable element ≥44px hit area ── */
+button,
+.feature-card,
+.chip {
+	min-height: 44px;
+}

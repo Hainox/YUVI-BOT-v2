@@ -2,12 +2,14 @@ FROM node:22-alpine AS build
 
 WORKDIR /app
 
-RUN mkdir -p /app/build
-COPY miniapp/index.html /app/build/index.html
+COPY miniapp/package.json miniapp/package-lock.json ./
+RUN npm ci
+
+COPY miniapp/ ./
+RUN npm run build
 
 FROM nginx:alpine
 COPY miniapp/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/build /usr/share/nginx/html
 
 EXPOSE 80
-
