@@ -317,6 +317,85 @@ async def test_get_chat_summary_fields(session):
     assert summary["open_markets_count"] == 1
 
 
+# --- get_transactions (04.2-08, Pitfall 6: history-feed read) --------------
+
+
+@pytest.mark.asyncio
+async def test_get_transactions_orders_desc_and_filters_by_user(session):
+    chat_id = -100700020
+    u1, u2 = 800100, 800101
+    await _ensure_user(session, u1)
+    await _ensure_user(session, u2)
+    await economy_service.get_balance(session, chat_id, u1)  # start_bonus tx
+    await economy_service.get_balance(session, chat_id, u2)
+
+    assert await economy_service.credit(session, chat_id, u1, 50, "test_credit", "test_tx_u1_a")
+    assert await economy_service.credit(session, chat_id, u1, 30, "test_credit", "test_tx_u1_b")
+    assert await economy_service.credit(session, chat_id, u2, 20, "test_credit", "test_tx_u2_a")
+    await session.commit()
+
+    rows = await economy_service.get_transactions(session, chat_id, user_id=u1)
+
+    assert len(rows) == 3  # start_bonus + 2 credits, none belonging to u2
+    assert all(row["user_id"] == u1 for row in rows)
+    created_ats = [row["created_at"] for row in rows]
+    assert created_ats == sorted(created_ats, reverse=True)
+    assert {row["kind"] for row in rows} == {"start_bonus", "test_credit"}
+
+
+@pytest.mark.asyncio
+async def test_get_transactions_pagination(session):
+    chat_id = -100700021
+    user_id = 800110
+    await _ensure_user(session, user_id)
+    await economy_service.get_balance(session, chat_id, user_id)
+    for i in range(5):
+        assert await economy_service.credit(
+            session, chat_id, user_id, 1, "test_credit", f"test_tx_page_{i}"
+        )
+    await session.commit()
+
+    page1 = await economy_service.get_transactions(session, chat_id, user_id=user_id, limit=2, offset=0)
+    page2 = await economy_service.get_transactions(session, chat_id, user_id=user_id, limit=2, offset=2)
+
+    assert len(page1) == 2
+    assert len(page2) == 2
+    assert {row["id"] for row in page1}.isdisjoint({row["id"] for row in page2})
+
+
+@pytest.mark.asyncio
+async def test_get_transactions_hides_bank_mirror_kinds_in_chatwide_feed(session):
+    chat_id = -100700022
+    sender, receiver = 800120, 800121
+    await _ensure_user(session, sender)
+    await _ensure_user(session, receiver)
+    await economy_service.get_balance(session, chat_id, sender)
+    await economy_service.get_balance(session, chat_id, receiver)
+
+    await economy_service.transfer_with_fee(session, chat_id, sender, receiver, 100, "test_tx_hidden_fee")
+
+    # user_id=None -> chat-wide feed; the transfer_fee bank-only mirror leg
+    # (user_id IS NULL) must be filtered, while the meaningful transfer_out/
+    # transfer_in legs (real user_id) stay visible.
+    rows = await economy_service.get_transactions(session, chat_id, user_id=None, limit=100)
+
+    kinds = [row["kind"] for row in rows]
+    assert "transfer_fee" not in kinds
+    assert "transfer_out" in kinds
+    assert "transfer_in" in kinds
+
+
+@pytest.mark.asyncio
+async def test_get_transactions_is_read_only_no_writes():
+    """Статическая проверка: get_transactions не трогает _log_tx/_credit/
+    _guarded_debit ни в каком виде — чистое чтение (Pitfall 6)."""
+    source = inspect.getsource(economy_service.get_transactions)
+    assert "_log_tx(" not in source
+    assert "_credit(" not in source
+    assert "_guarded_debit(" not in source
+    assert "session.commit()" not in source
+
+
 # --- append-only инвариант (ECON-03) ----------------------------------------
 
 

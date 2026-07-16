@@ -149,3 +149,167 @@ async def test_get_me_forged_init_data_returns_401(monkeypatch):
         )
 
     assert resp.status_code == 401
+
+
+# --- GET /leaderboard, POST /transfer, GET /economy, GET /history (04.2-08) -
+
+
+@pytest.mark.asyncio
+async def test_get_leaderboard_returns_rankings(monkeypatch):
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    chat_id = -900202
+    user_id = 222110
+    await _ensure_user(user_id)
+    await _get_balance(chat_id, user_id)
+    init_data = _build_init_data(user_id=user_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(
+            "/api/v1/leaderboard",
+            params={"chat_id": chat_id},
+            headers={"X-Telegram-Init-Data": init_data},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert isinstance(body, list)
+    assert any(row["user_id"] == user_id for row in body)
+
+
+@pytest.mark.asyncio
+async def test_get_leaderboard_unauthenticated_returns_401():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/v1/leaderboard", params={"chat_id": -900202})
+
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_post_transfer_moves_money_and_ignores_foreign_from_user_in_body(monkeypatch):
+    """T-04.2-02 (IDOR): a foreign `from_user_id` smuggled into the body must
+    have zero effect — `from_user` is taken exclusively from AuthContext."""
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    chat_id = -900203
+    sender, receiver, attacker = 222120, 222121, 222122
+    await _ensure_user(sender)
+    await _ensure_user(receiver)
+    await _ensure_user(attacker)
+    await _get_balance(chat_id, sender)
+    await _get_balance(chat_id, receiver)
+    await _get_balance(chat_id, attacker)
+    init_data = _build_init_data(user_id=sender)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/transfer",
+            params={"chat_id": chat_id},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={
+                "to_user_id": receiver,
+                "amount": 100,
+                "ref_id": "test_api_transfer_1",
+                "from_user_id": attacker,  # IDOR probe - must be silently ignored
+            },
+        )
+
+    assert resp.status_code == 200
+    assert await _get_balance(chat_id, sender) == 1000 - 100
+    assert await _get_balance(chat_id, attacker) == 1000  # untouched
+
+
+@pytest.mark.asyncio
+async def test_post_transfer_insufficient_funds_returns_400(monkeypatch):
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    chat_id = -900204
+    sender, receiver = 222130, 222131
+    await _ensure_user(sender)
+    await _ensure_user(receiver)
+    await _get_balance(chat_id, sender)
+    await _get_balance(chat_id, receiver)
+    init_data = _build_init_data(user_id=sender)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/transfer",
+            params={"chat_id": chat_id},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={"to_user_id": receiver, "amount": 999_999, "ref_id": "test_api_transfer_insufficient"},
+        )
+
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_post_transfer_unauthenticated_returns_401():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/transfer",
+            params={"chat_id": -900204},
+            json={"to_user_id": 1, "amount": 10, "ref_id": "test_api_transfer_401"},
+        )
+
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_get_economy_returns_chat_summary(monkeypatch):
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    chat_id = -900205
+    user_id = 222140
+    await _ensure_user(user_id)
+    await _get_balance(chat_id, user_id)
+    init_data = _build_init_data(user_id=user_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(
+            "/api/v1/economy",
+            params={"chat_id": chat_id},
+            headers={"X-Telegram-Init-Data": init_data},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "bank_balance" in body
+    assert "total_in_circulation" in body
+    assert "open_markets_count" in body
+
+
+@pytest.mark.asyncio
+async def test_get_history_returns_auth_users_transactions(monkeypatch):
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    chat_id = -900206
+    user_id, other_id = 222150, 222151
+    await _ensure_user(user_id)
+    await _ensure_user(other_id)
+    await _get_balance(chat_id, user_id)
+    await _get_balance(chat_id, other_id)
+    init_data = _build_init_data(user_id=user_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(
+            "/api/v1/history",
+            params={"chat_id": chat_id},
+            headers={"X-Telegram-Init-Data": init_data},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert isinstance(body, list)
+    assert len(body) >= 1
+    assert all(row["user_id"] == user_id for row in body)
+
+
+@pytest.mark.asyncio
+async def test_get_history_unauthenticated_returns_401():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/v1/history", params={"chat_id": -900206})
+
+    assert resp.status_code == 401
