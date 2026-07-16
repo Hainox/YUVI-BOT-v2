@@ -20,6 +20,7 @@ import hashlib
 import hmac
 import json
 import time
+import uuid
 from datetime import date
 from datetime import timedelta
 from unittest.mock import AsyncMock
@@ -149,7 +150,13 @@ async def test_stats_dashboard_composes_all_sections_for_active_user(monkeypatch
     """Активный пользователь: все 4 секции дашборда заполнены реальными
     данными из casino_games/daily_stats/economy_tx/clicker_farms."""
     monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
-    chat_id = CHAT_ID
+    # chat_id уникален для каждого прогона теста (не фиксированная константа)
+    # — дашборд агрегирует SUM/COUNT по casino_games/daily_stats/economy_tx,
+    # так что повторный прогон против одного и того же живого Postgres с
+    # фиксированным chat_id накапливал бы строки прошлых прогонов и ломал
+    # точные assert-ы на количество раундов/сообщений.
+    run_id = uuid.uuid4().hex
+    chat_id = -900301 - (int(run_id[:8], 16) % 1_000_000)
     user_id = 222201
     other_id = 222202
     await _ensure_user(user_id)
@@ -158,8 +165,12 @@ async def test_stats_dashboard_composes_all_sections_for_active_user(monkeypatch
     await _get_balance(chat_id, other_id)
 
     # Игровая статистика: 2 раунда, один проигрыш, один крупный выигрыш.
-    await _seed_casino_round(chat_id, user_id, "coinflip", bet=100, payout=0, idem_key="stats-test-1")
-    await _seed_casino_round(chat_id, user_id, "dice", bet=100, payout=500, idem_key="stats-test-2")
+    await _seed_casino_round(
+        chat_id, user_id, "coinflip", bet=100, payout=0, idem_key=f"stats-test-1-{run_id}"
+    )
+    await _seed_casino_round(
+        chat_id, user_id, "dice", bet=100, payout=500, idem_key=f"stats-test-2-{run_id}"
+    )
 
     # Активность чата: 3-дневная серия, включая сегодня.
     today = date.today()
@@ -170,7 +181,7 @@ async def test_stats_dashboard_composes_all_sections_for_active_user(monkeypatch
     await _seed_daily_stat(chat_id, other_id, today, 1000)
 
     # Ферма: конвертация CP в ювики.
-    await _seed_farm_convert_tx(chat_id, user_id, 42, ref_id="stats-test-farm-1")
+    await _seed_farm_convert_tx(chat_id, user_id, 42, ref_id=f"stats-test-farm-1-{run_id}")
 
     init_data = _build_init_data(user_id=user_id)
     transport = ASGITransport(app=app)
