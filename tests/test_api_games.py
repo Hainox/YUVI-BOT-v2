@@ -9,6 +9,25 @@ IDOR-тест (T-04.2-02): в теле запроса намеренно НЕТ 
 Pydantic-модели роута — но атакующий может ПОПЫТАТЬСЯ протащить чужой
 user_id как лишнее JSON-поле; тест доказывает, что баланс двигается только
 у пользователя из initData, а не у "жертвы" из тела запроса.
+
+--- POST /api/v1/games/slots и /games/blackjack (Task 1/2, 04.2-10) ---------
+
+Слоты — стейтлес (как coinflip/dice/roulette), тесты той же формы.
+Блэкджек — стейтфул (game_id из start-ответа переиспользуется в /action).
+Детерминированная колода форсируется тем же `_FixedDeckRng`-стабом, что и
+`tests/test_blackjack_service.py` (локальная копия — та же причина, что и
+`_ForcedRollRng` выше: тесты этого файла не импортируют друг у друга
+приватные тестовые классы между модулями).
+
+Действие на ЧУЖОЙ game_id (`blackjack_action`) возвращает `CasinoError`
+("раздача не найдена") — не `GameNotActive`: SELECT в `blackjack_action`
+фильтрует ПО `user_id`, так что раздача другого игрока структурно
+неотличима от несуществующей (IDOR закрыт структурно, не через отдельную
+403-ветку). Действие на УЖЕ SETTLED раздаче — НЕ ошибка: `blackjack_action`
+использует статус-переход "active"->"settled" как гард идемпотентности
+(T-04.1-09, `04.1-03-SUMMARY.md`) и возвращает сохранённый исход 200-м
+ответом (повторный no-op), а не 409 — это уже протестированное и
+задокументированное поведение сервиса, роут его не переопределяет.
 """
 
 from __future__ import annotations
@@ -51,6 +70,11 @@ DICE_FRESH_BANK_CHAT_ID = -900304
 ROULETTE_CHAT_ID = -900305
 ROULETTE_FRESH_BANK_CHAT_ID = -900306
 
+# Отдельные chat_id для слотов/блэкджека (Task 1/2, 04.2-10) — та же изоляция
+# банка/баланса, что у остальных игр этого файла, новый диапазон.
+SLOTS_CHAT_ID = -900307
+BLACKJACK_CHAT_ID = -900308
+
 
 class _ForcedWinRng:
     """Форсирует детерминированный выигрыш coinflip (см. test_casino_service.py::
@@ -75,6 +99,21 @@ class _ForcedRollRng:
 
     def randint(self, a: int, b: int) -> int:
         return self._forced_value
+
+
+class _FixedDeckRng:
+    """Локальная копия `tests/test_blackjack_service.py::_FixedDeckRng` —
+    `shuffle(deck)` переставляет колоду так, чтобы `deck.pop()` (берёт с
+    КОНЦА) отдавал карты строго в порядке `pop_sequence`."""
+
+    def __init__(self, pop_sequence: list[str]):
+        self._pop_sequence = pop_sequence
+
+    def shuffle(self, deck: list[str]) -> None:
+        remaining = list(deck)
+        for card in self._pop_sequence:
+            remaining.remove(card)
+        deck[:] = remaining + list(reversed(self._pop_sequence))
 
 
 def _build_init_data(*, user_id: int, bot_token: str | None = None, tamper: bool = False) -> str:
@@ -567,3 +606,497 @@ async def test_roulette_win_on_empty_bank_reports_bank_capped(monkeypatch):
     # payout (20 * 2 = 40) не влезает, capped-выплата == ставке.
     assert body["payout"] == 20
     assert body["bank_capped"] is True
+
+
+# --- POST /api/v1/games/slots (Task 1/2, 04.2-10) -----------------------------
+
+
+@pytest.mark.asyncio
+async def test_slots_valid_bet_returns_200_with_settled_result(monkeypatch):
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    user_id = 300401
+    await _ensure_user(user_id)
+    init_data = _build_init_data(user_id=user_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/games/slots",
+            params={"chat_id": SLOTS_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={"bet": 100, "idem_key": str(uuid.uuid4())},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["game"] == "slots"
+    assert body["bet"] == 100
+    assert "payout" in body
+    assert len(body["outcome"]["grid"]) == 3  # 3 строки
+    assert all(len(row) == 5 for row in body["outcome"]["grid"])  # 5 столбцов
+    assert "wins" in body["outcome"]
+    assert "freespins" in body["outcome"]
+    assert "scatter" in body["outcome"]
+
+
+@pytest.mark.asyncio
+async def test_slots_missing_init_data_returns_401():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/games/slots",
+            params={"chat_id": SLOTS_CHAT_ID},
+            json={"bet": 100, "idem_key": str(uuid.uuid4())},
+        )
+
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_slots_bet_below_minimum_returns_400(monkeypatch):
+    """bet=1 нарушает ОБА ограничения play_slots: ниже casino_min_bet И не
+    кратно slot_engine.TOTAL_LINES (10) — оба пути ведут к InvalidBet->400."""
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    user_id = 300402
+    await _ensure_user(user_id)
+    init_data = _build_init_data(user_id=user_id)
+    assert 1 < settings.casino_min_bet
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/games/slots",
+            params={"chat_id": SLOTS_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={"bet": 1, "idem_key": str(uuid.uuid4())},
+        )
+
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_slots_bet_not_multiple_of_lines_returns_400(monkeypatch):
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    user_id = 300403
+    await _ensure_user(user_id)
+    init_data = _build_init_data(user_id=user_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/games/slots",
+            params={"chat_id": SLOTS_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            # 25 >= casino_min_bet, но не кратно 10 (TOTAL_LINES)
+            json={"bet": 25, "idem_key": str(uuid.uuid4())},
+        )
+
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_slots_ignores_foreign_user_id_in_body_idor(monkeypatch):
+    """T-04.2-02: та же IDOR-защита, что и у coinflip/dice/roulette выше."""
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    attacker_id = 300404
+    victim_id = 300405
+    await _ensure_user(attacker_id)
+    await _ensure_user(victim_id)
+    init_data = _build_init_data(user_id=attacker_id)
+    idem_key = str(uuid.uuid4())
+
+    victim_before = await _get_balance(SLOTS_CHAT_ID, victim_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/games/slots",
+            params={"chat_id": SLOTS_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={
+                "bet": 100,
+                "idem_key": idem_key,
+                "user_id": victim_id,  # атакующий пытается подставить чужой user_id
+            },
+        )
+
+    assert resp.status_code == 200
+
+    async with SessionLocal() as verify_session:
+        game_row = (
+            await verify_session.execute(select(CasinoGame).where(CasinoGame.idem_key == idem_key))
+        ).scalar_one()
+    assert game_row.user_id == attacker_id
+
+    victim_after = await _get_balance(SLOTS_CHAT_ID, victim_id)
+    assert victim_after == victim_before
+
+
+# --- POST /api/v1/games/blackjack (start) + /blackjack/{id}/action -----------
+# (Task 1/2, 04.2-10) ---------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_blackjack_start_valid_bet_returns_200_with_active_hand(monkeypatch):
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    # 8+4 = 12 (не натурал) — раздача остаётся "active", удобно проверить
+    # ровно форму start-ответа без немедленного settle.
+    monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["8", "4", "7", "5"]))
+    user_id = 300501
+    await _ensure_user(user_id)
+    init_data = _build_init_data(user_id=user_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/games/blackjack",
+            params={"chat_id": BLACKJACK_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={"bet": 100, "idem_key": str(uuid.uuid4())},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "active"
+    assert body["bet"] == 100
+    assert body["player"] == ["8", "4"]
+    assert "dealer_upcard" in body
+    assert "id" in body
+
+
+@pytest.mark.asyncio
+async def test_blackjack_start_missing_init_data_returns_401():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/games/blackjack",
+            params={"chat_id": BLACKJACK_CHAT_ID},
+            json={"bet": 100, "idem_key": str(uuid.uuid4())},
+        )
+
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_blackjack_start_bet_below_minimum_returns_400(monkeypatch):
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    user_id = 300502
+    await _ensure_user(user_id)
+    init_data = _build_init_data(user_id=user_id)
+    assert 1 < settings.casino_min_bet
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/games/blackjack",
+            params={"chat_id": BLACKJACK_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={"bet": 1, "idem_key": str(uuid.uuid4())},
+        )
+
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_blackjack_start_ignores_foreign_user_id_in_body_idor(monkeypatch):
+    """T-04.2-02: та же IDOR-защита, что и у остальных игр этого файла."""
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    attacker_id = 300503
+    victim_id = 300504
+    await _ensure_user(attacker_id)
+    await _ensure_user(victim_id)
+    init_data = _build_init_data(user_id=attacker_id)
+    idem_key = str(uuid.uuid4())
+
+    victim_before = await _get_balance(BLACKJACK_CHAT_ID, victim_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/games/blackjack",
+            params={"chat_id": BLACKJACK_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={
+                "bet": 100,
+                "idem_key": idem_key,
+                "user_id": victim_id,  # атакующий пытается подставить чужой user_id
+            },
+        )
+
+    assert resp.status_code == 200
+
+    async with SessionLocal() as verify_session:
+        game_row = (
+            await verify_session.execute(select(CasinoGame).where(CasinoGame.idem_key == idem_key))
+        ).scalar_one()
+    assert game_row.user_id == attacker_id
+
+    victim_after = await _get_balance(BLACKJACK_CHAT_ID, victim_id)
+    assert victim_after == victim_before
+
+
+async def _start_fixed_hand(client, init_data: str, chat_id: int, pop_sequence: list[str]) -> int:
+    """Хелпер: раздаёт детерминированную (не-натурал) раздачу через реальный
+    HTTP start-роут, возвращает `game_id` из ответа. `casino_service._rng`
+    ДОЛЖЕН быть замонкипатчен `_FixedDeckRng(pop_sequence)` ДО вызова."""
+    resp = await client.post(
+        "/api/v1/games/blackjack",
+        params={"chat_id": chat_id},
+        headers={"X-Telegram-Init-Data": init_data},
+        json={"bet": 100, "idem_key": str(uuid.uuid4())},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "active"
+    return body["id"]
+
+
+@pytest.mark.asyncio
+async def test_blackjack_action_hit_steps_hand_and_stays_active(monkeypatch):
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    user_id = 300505
+    await _ensure_user(user_id)
+    init_data = _build_init_data(user_id=user_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # player=[8,4]=12, dealer=[7,5]=12; hit добирает "3" -> player=[8,4,3]=15 (не bust)
+        monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["8", "4", "7", "5", "3"]))
+        game_id = await _start_fixed_hand(client, init_data, BLACKJACK_CHAT_ID, [])
+
+        resp = await client.post(
+            f"/api/v1/games/blackjack/{game_id}/action",
+            params={"chat_id": BLACKJACK_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={"action": "hit"},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "active"
+    assert body["player"] == ["8", "4", "3"]
+
+
+@pytest.mark.asyncio
+async def test_blackjack_action_stand_settles_hand(monkeypatch):
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    user_id = 300506
+    await _ensure_user(user_id)
+    init_data = _build_init_data(user_id=user_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # player=[8,4]=12, dealer=[7,5]=12 -> stand доигрывает дилера: +"9" -> 21, дилер стоп.
+        # player(12) < dealer(21) -> "lose".
+        monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["8", "4", "7", "5", "9"]))
+        game_id = await _start_fixed_hand(client, init_data, BLACKJACK_CHAT_ID, [])
+
+        resp = await client.post(
+            f"/api/v1/games/blackjack/{game_id}/action",
+            params={"chat_id": BLACKJACK_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={"action": "stand"},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "settled"
+    assert body["dealer"] == ["7", "5", "9"]
+    assert body["outcome"]["result"] == "lose"
+    assert body["payout"] == 0
+
+
+@pytest.mark.asyncio
+async def test_blackjack_action_double_debits_second_stake_and_settles(monkeypatch):
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    user_id = 300507
+    await _ensure_user(user_id)
+    init_data = _build_init_data(user_id=user_id)
+    balance_before_double = None
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # player=[8,4]=12, dealer=[7,5]=12; double добирает РОВНО одну карту
+        # "2" -> player=[8,4,2]=14 (не bust), затем дилер доигрывает "6" -> 18.
+        # player(14) < dealer(18) -> "lose", ставка была удвоена (списана дважды).
+        monkeypatch.setattr(
+            casino_service, "_rng", _FixedDeckRng(["8", "4", "7", "5", "2", "6"])
+        )
+        game_id = await _start_fixed_hand(client, init_data, BLACKJACK_CHAT_ID, [])
+        balance_before_double = await _get_balance(BLACKJACK_CHAT_ID, user_id)
+
+        resp = await client.post(
+            f"/api/v1/games/blackjack/{game_id}/action",
+            params={"chat_id": BLACKJACK_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={"action": "double"},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "settled"
+    assert body["player"] == ["8", "4", "2"]
+    assert body["dealer"] == ["7", "5", "6"]
+    assert body["outcome"]["result"] == "lose"
+    assert body["payout"] == 0
+
+    balance_after_double = await _get_balance(BLACKJACK_CHAT_ID, user_id)
+    # Проигрыш (payout=0) после удвоения списывает ВТОРУЮ ставку (100) сверх
+    # уже списанной стартовой — баланс падает ещё на 100.
+    assert balance_after_double == balance_before_double - 100
+
+
+@pytest.mark.asyncio
+async def test_blackjack_action_double_after_hit_returns_400(monkeypatch):
+    """double требует РОВНО двухкарточную раздачу — после hit (3 карты)
+    попытка double должна упасть InvalidBet->400."""
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    user_id = 300508
+    await _ensure_user(user_id)
+    init_data = _build_init_data(user_id=user_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["8", "4", "7", "5", "3"]))
+        game_id = await _start_fixed_hand(client, init_data, BLACKJACK_CHAT_ID, [])
+
+        hit_resp = await client.post(
+            f"/api/v1/games/blackjack/{game_id}/action",
+            params={"chat_id": BLACKJACK_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={"action": "hit"},
+        )
+        assert hit_resp.status_code == 200
+        assert hit_resp.json()["status"] == "active"
+
+        double_resp = await client.post(
+            f"/api/v1/games/blackjack/{game_id}/action",
+            params={"chat_id": BLACKJACK_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={"action": "double"},
+        )
+
+    assert double_resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_blackjack_action_invalid_action_value_returns_400(monkeypatch):
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    user_id = 300509
+    await _ensure_user(user_id)
+    init_data = _build_init_data(user_id=user_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["8", "4", "7", "5"]))
+        game_id = await _start_fixed_hand(client, init_data, BLACKJACK_CHAT_ID, [])
+
+        resp = await client.post(
+            f"/api/v1/games/blackjack/{game_id}/action",
+            params={"chat_id": BLACKJACK_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={"action": "surrender"},
+        )
+
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_blackjack_action_missing_init_data_returns_401():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/games/blackjack/999999/action",
+            params={"chat_id": BLACKJACK_CHAT_ID},
+            json={"action": "stand"},
+        )
+
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_blackjack_action_on_foreign_game_returns_404_idor(monkeypatch):
+    """T-04.2-02 (блэкджек): чужой user_id в body невозможен вовсе (его нет
+    в Pydantic-модели), но НАСТОЯЩАЯ IDOR-проверка здесь — attacker не может
+    подействовать на game_id ЖЕРТВЫ, используя СВОЙ initData. SELECT в
+    `blackjack_action` фильтрует по user_id из AuthContext -> чужая раздача
+    структурно неотличима от несуществующей -> CasinoError -> 404. Раздача
+    жертвы и её баланс должны остаться нетронутыми."""
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    attacker_id = 300510
+    victim_id = 300511
+    await _ensure_user(attacker_id)
+    await _ensure_user(victim_id)
+    attacker_init_data = _build_init_data(user_id=attacker_id)
+    victim_init_data = _build_init_data(user_id=victim_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["8", "4", "7", "5"]))
+        victim_game_id = await _start_fixed_hand(
+            client, victim_init_data, BLACKJACK_CHAT_ID, []
+        )
+        victim_balance_before = await _get_balance(BLACKJACK_CHAT_ID, victim_id)
+
+        resp = await client.post(
+            f"/api/v1/games/blackjack/{victim_game_id}/action",
+            params={"chat_id": BLACKJACK_CHAT_ID},
+            headers={"X-Telegram-Init-Data": attacker_init_data},
+            json={"action": "stand"},
+        )
+
+    assert resp.status_code == 404
+
+    async with SessionLocal() as verify_session:
+        victim_game = (
+            await verify_session.execute(
+                select(CasinoGame).where(CasinoGame.id == victim_game_id)
+            )
+        ).scalar_one()
+    assert victim_game.status == "active"  # жертва не задета вовсе
+    assert victim_game.user_id == victim_id
+
+    victim_balance_after = await _get_balance(BLACKJACK_CHAT_ID, victim_id)
+    assert victim_balance_after == victim_balance_before
+
+
+@pytest.mark.asyncio
+async def test_blackjack_action_on_settled_game_replays_stored_result(monkeypatch):
+    """T-04.1-09 (уже протестировано/задокументировано в 04.1-03): действие
+    на уже settled раздаче — идемпотентный no-op, роут возвращает 200 с
+    сохранённым исходом, а не ошибку. Деньги не двигаются повторно."""
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    user_id = 300512
+    await _ensure_user(user_id)
+    init_data = _build_init_data(user_id=user_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["8", "4", "7", "5", "9"]))
+        game_id = await _start_fixed_hand(client, init_data, BLACKJACK_CHAT_ID, [])
+
+        first = await client.post(
+            f"/api/v1/games/blackjack/{game_id}/action",
+            params={"chat_id": BLACKJACK_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={"action": "stand"},
+        )
+        assert first.status_code == 200
+        assert first.json()["status"] == "settled"
+        balance_after_settle = await _get_balance(BLACKJACK_CHAT_ID, user_id)
+
+        second = await client.post(
+            f"/api/v1/games/blackjack/{game_id}/action",
+            params={"chat_id": BLACKJACK_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={"action": "stand"},
+        )
+
+    assert second.status_code == 200
+    body = second.json()
+    assert body["status"] == "settled"
+    assert body["outcome"] == first.json()["outcome"]
+    assert body["payout"] == first.json()["payout"]
+
+    balance_after_replay = await _get_balance(BLACKJACK_CHAT_ID, user_id)
+    assert balance_after_replay == balance_after_settle  # деньги не двинулись повторно
