@@ -5,4 +5,11 @@ sqlalchemy[asyncio]==2.0.41
 asyncpg==0.30.0
 httpx==0.28.1
 redis==5.2.1
+# Transitive runtime dep of bot/services/casino_service.py (imported by
+# api/routes/games.py) — module-level `from apscheduler.schedulers.asyncio
+# import AsyncIOScheduler`. Missing since 04.2-01 added games.py; the gap
+# was never caught by pytest because tests run inside yuvi-bot-dev:py311
+# (Dockerfile.dev, which already has the full root requirements.txt), not
+# against this production image. Same pin as root requirements.txt.
+APScheduler==3.11.0
 
