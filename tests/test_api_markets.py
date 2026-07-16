@@ -77,10 +77,38 @@ async def _ensure_user(user_id: int, first_name: str = "Тест") -> None:
         await db_session.commit()
 
 
-async def _fund(user_id: int) -> None:
-    """Заводит кошелёк (стартовый бонус economy_start_bonus) в CHAT_ID."""
+async def _fund(user_id: int, min_balance: int = 1000) -> None:
+    """Заводит кошелёк (стартовый бонус `economy_start_bonus` при первом
+    обращении) И топит баланс минимум до `min_balance`, если он уже ниже
+    (Rule 1 fix, 04.2-10 — см. `deferred-items.md`).
+
+    Тесты этого файла используют ФИКСИРОВАННЫЕ литералы `user_id` против
+    ДОЛГОЖИВУЩЕГО docker-compose Postgres-контейнера (тот же engine, что
+    использует сам роут, не транзакционная `session`-фикстура conftest.py
+    с автоматическим rollback). `economy_service.get_balance` выдаёт
+    `economy_start_bonus` ТОЛЬКО один раз на (chat_id, user_id) — повторные
+    прогоны ПОЛНОГО набора тестов против одного и того же контейнера
+    накапливают реальные списания на одних и тех же ID (комиссия создания
+    рынка `market_create_fee`, ставки), со временем истощая стартовый
+    бонус ниже сумм, которые тесты пытаются поставить — не баг кода
+    04.2-07/04.2-10, чисто изоляция тестовых фикстур (подтверждено
+    `git stash`-бисекцией в 04.2-08, см. `deferred-items.md`).
+
+    `economy_service.credit` идемпотентен по `ref_id` — используем СВЕЖИЙ
+    `ref_id` (`uuid4()`) на каждый вызов, поэтому пополнение реально
+    применяется КАЖДЫЙ прогон, а не гасится идемпотентным no-op."""
     async with SessionLocal() as db_session:
-        await economy_service.get_balance(db_session, CHAT_ID, user_id)
+        balance = await economy_service.get_balance(db_session, CHAT_ID, user_id)
+        if balance < min_balance:
+            await economy_service.credit(
+                db_session,
+                CHAT_ID,
+                user_id,
+                min_balance - balance,
+                kind="test_topup",
+                ref_id=f"test_topup:{uuid.uuid4()}",
+            )
+            await db_session.commit()
 
 
 async def _seed_open_market(creator_id: int) -> int:

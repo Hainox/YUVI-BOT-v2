@@ -47,6 +47,31 @@ POST /games/dice и POST /games/roulette (04.2-03) — тот же тонкий 
 всю валидацию/RNG/settle-логику (04.1-01), роут только парсит тело,
 прокидывает `auth.user_id`/`auth.chat_id`, маппит исключения на HTTP и
 публикует баланс.
+
+POST /games/slots (04.2-10) — тот же тонкий стейтлес-паттерн, что и
+coinflip/dice/roulette: `casino_service.play_slots` (04.1-02) уже несёт всю
+RNG/paytable/фриспин-логику, роут только прокидывает `bet`/`idem_key`.
+`bank_capped` НЕ вычисляется для слотов (в отличие от coinflip/dice/roulette
+выше) — в отличие от их фиксированной формулы множителя, "честная" выплата
+слота зависит от конкретной выпавшей сетки (линии + доигранные фриспины) и
+известна ТОЛЬКО внутри `casino_service.play_slots.compute()` до капа банком;
+роут её не видит (`_settle` возвращает наружу только уже капнутый `payout`).
+Экспонирование этого числа потребовало бы трогать общее settle-ядро ради
+одного UI-флага — то самое, чего докстринг `_settle` явно просит избегать;
+оставлено как осознанный, задокументированный пробел (не тихий баг), не
+входящий в must_haves этого плана.
+
+POST /games/blackjack (start) + POST /games/blackjack/{game_id}/action
+(04.2-10) — стейтфул-раздача (04.1-03): `game_id` из start-ответа
+переиспользуется в /action; `user_id` — ТОЛЬКО из `AuthContext`, `game_id` —
+ТОЛЬКО из пути (T-04.2-02, IDOR). `casino_service.blackjack_action`
+фильтрует SELECT по `(id, user_id)` — попытка подействовать на чужую
+раздачу структурно неотличима от несуществующей: `CasinoError` -> 404
+(НЕ 403 — намеренно, не палим существование чужой раздачи). Действие на уже
+`settled` раздаче — НЕ ошибка (T-04.1-09, уже протестировано/задокументировано
+в `04.1-03-SUMMARY.md`): статус-переход "active"->"settled" сам служит
+гардом идемпотентности, `blackjack_action` возвращает сохранённый исход
+200-м ответом (повторный no-op) — роут это поведение не переопределяет.
 """
 
 from __future__ import annotations
@@ -86,6 +111,20 @@ class RouletteBet(BaseModel):
     bet_type: str
     bet_value: int | str
     idem_key: str
+
+
+class SlotsBet(BaseModel):
+    bet: int = Field(ge=1)
+    idem_key: str
+
+
+class BlackjackBet(BaseModel):
+    bet: int = Field(ge=1)
+    idem_key: str
+
+
+class BlackjackActionBody(BaseModel):
+    action: str  # 'hit' | 'stand' | 'double' — валидируется casino_service.blackjack_action
 
 
 # bet_type -> "честный" (без D-06 капа) множитель выплаты, для bank_capped
@@ -213,3 +252,97 @@ async def _play_roulette(session, auth: AuthContext, body: RouletteBet) -> dict:
     return await casino_service.play_roulette(
         session, auth.chat_id, auth.user_id, body.bet, body.bet_type, body.bet_value, body.idem_key
     )
+
+
+@router.post("/api/v1/games/slots")
+async def post_slots(
+    body: SlotsBet, request: Request, auth: AuthContext = Depends(require_membership)
+) -> dict:
+    async with SessionLocal() as session:
+        try:
+            result = await _play_slots(session, auth, body)
+        except casino_service.DuplicateRound:
+            try:
+                result = await _play_slots(session, auth, body)
+            except casino_service.DuplicateRound as exc:
+                raise HTTPException(status_code=409, detail="round in progress, retry") from exc
+        except casino_service.GameNotActive as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except (casino_service.InvalidBet, economy_service.InsufficientFunds) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        balance = await economy_service.get_balance(session, auth.chat_id, auth.user_id)
+        await balance_events.publish_balance(
+            request.app.state.redis, auth.chat_id, auth.user_id, balance
+        )
+        result["user_balance_after"] = balance
+
+        return result
+
+
+async def _play_slots(session, auth: AuthContext, body: SlotsBet) -> dict:
+    return await casino_service.play_slots(session, auth.chat_id, auth.user_id, body.bet, body.idem_key)
+
+
+@router.post("/api/v1/games/blackjack")
+async def post_blackjack_start(
+    body: BlackjackBet, request: Request, auth: AuthContext = Depends(require_membership)
+) -> dict:
+    async with SessionLocal() as session:
+        try:
+            result = await _start_blackjack(session, auth, body)
+        except casino_service.DuplicateRound:
+            try:
+                result = await _start_blackjack(session, auth, body)
+            except casino_service.DuplicateRound as exc:
+                raise HTTPException(status_code=409, detail="round in progress, retry") from exc
+        except casino_service.GameNotActive as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except (casino_service.InvalidBet, economy_service.InsufficientFunds) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        balance = await economy_service.get_balance(session, auth.chat_id, auth.user_id)
+        await balance_events.publish_balance(
+            request.app.state.redis, auth.chat_id, auth.user_id, balance
+        )
+        result["user_balance_after"] = balance
+
+        return result
+
+
+async def _start_blackjack(session, auth: AuthContext, body: BlackjackBet) -> dict:
+    return await casino_service.start_blackjack(
+        session, auth.chat_id, auth.user_id, body.bet, body.idem_key
+    )
+
+
+@router.post("/api/v1/games/blackjack/{game_id}/action")
+async def post_blackjack_action(
+    game_id: int,
+    body: BlackjackActionBody,
+    request: Request,
+    auth: AuthContext = Depends(require_membership),
+) -> dict:
+    async with SessionLocal() as session:
+        try:
+            result = await casino_service.blackjack_action(
+                session, auth.chat_id, game_id, auth.user_id, body.action
+            )
+        except casino_service.GameNotActive as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except (casino_service.InvalidBet, economy_service.InsufficientFunds) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except casino_service.CasinoError as exc:
+            # game_id не найден ДЛЯ ЭТОГО user_id (T-04.2-02 IDOR — SELECT в
+            # blackjack_action фильтрует по user_id, чужая раздача структурно
+            # неотличима от несуществующей) — 404, не 403 (не палим факт
+            # существования чужой раздачи).
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        balance = await economy_service.get_balance(session, auth.chat_id, auth.user_id)
+        await balance_events.publish_balance(
+            request.app.state.redis, auth.chat_id, auth.user_id, balance
+        )
+        result["user_balance_after"] = balance
+
+        return result
