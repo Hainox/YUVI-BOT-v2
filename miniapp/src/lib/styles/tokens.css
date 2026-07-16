@@ -23,6 +23,13 @@
 	--destructive-text: #ff7570;
 	--destructive-bg: #2a1212;
 
+	/* Win/lose color-grade pair (mirrors the destructive trio) — used by
+	   casino game screens to color-correct the outcome state, e.g. slots
+	   result badge/reel glow. Not part of the 3-color accent system. */
+	--positive: #2ee06a;
+	--positive-text: #6dffa0;
+	--positive-bg: #0f2a18;
+
 	--text-primary: #f5f3ff;
 	--text-secondary: #e4e2ec;
 	--text-muted: #807d92;

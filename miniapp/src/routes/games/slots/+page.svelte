@@ -1,12 +1,14 @@
 <script lang="ts">
 	// Slot ("Azumanga") — server-side port of webapp/slot-machine.jsx +
-	// slot-reel.jsx (04.2-10). Server is the SOLE source of truth for the
-	// grid/wins/freespins (D-03/T-04.1-01, slot_engine.py) — this screen
-	// only animates a generic reel-spin CSS effect, then reveals whatever
-	// POST /games/slots actually returned. No client-side RNG, no
-	// client-side win computation (SLOT_SYMBOLS/SLOT_PAYLINES in lib/
-	// slotData.ts are rendering metadata only — name/tint/cell-highlighting,
-	// never probability/payout).
+	// slot-reel.jsx (04.2-10, polished per user request). Server is the SOLE
+	// source of truth for the grid/wins/freespins (D-03/T-04.1-01,
+	// slot_engine.py) — this screen only animates a cosmetic reel-drum
+	// spin (random filler symbols scrolling, landing on whatever
+	// POST /games/slots actually returned) and a win/lose color-grade
+	// flash. No client-side RNG affects payout, no client-side win
+	// computation (SLOT_SYMBOLS/SLOT_PAYLINES in lib/slotData.ts are
+	// rendering metadata only — name/tint/cell-highlighting, filler
+	// symbols during the spin are cosmetic noise, never probability/payout).
 	import { apiFetch, ApiError } from '$lib/api';
 	import { haptic } from '$lib/tg';
 	import { SLOT_SYMBOLS, SLOT_PAYLINES, symbolSrc } from '$lib/slotData';
@@ -15,6 +17,12 @@
 	const SPIN_BASE_MS = 700;
 	const SPIN_PER_COL_MS = 140;
 	const REVEAL_DELAY_MS = SPIN_BASE_MS + SPIN_PER_COL_MS * 4 + 80;
+
+	// Visual drum: FILLER_ROWS of cosmetic random symbols scroll past before
+	// the strip settles on the real final 3 rows for that column. Row count
+	// is fixed so the CSS translateY(%) landing position never changes.
+	const FILLER_ROWS = 9;
+	const STRIP_ROWS = FILLER_ROWS + 3;
 
 	type SlotWin = { line_index: number; symbol: string; count: number; payout: number };
 	type SlotResult = {
@@ -27,16 +35,34 @@
 	let bet = $state(BET_CHIPS[0]);
 	let spinning = $state(false);
 	let grid = $state<string[][]>(_placeholderGrid());
+	let reelStrips = $state<string[][]>(_stripsFromGrid(grid));
 	let wins = $state<SlotWin[]>([]);
 	let freespins = $state(0);
 	let scatterCount = $state(0);
 	let lastPayout = $state<number | null>(null);
 	let activeWinIdx = $state(0);
 	let error = $state<string | null>(null);
+	let outcomeTint = $state<'win' | 'lose' | null>(null);
 
 	function _placeholderGrid(): string[][] {
 		const ids = Object.keys(SLOT_SYMBOLS);
 		return [0, 1, 2].map((r) => [0, 1, 2, 3, 4].map((c) => ids[(r * 5 + c) % ids.length]));
+	}
+
+	function _randomSymbolId(): string {
+		const ids = Object.keys(SLOT_SYMBOLS);
+		return ids[Math.floor(Math.random() * ids.length)];
+	}
+
+	// Builds one column's scroll strip: FILLER_ROWS cosmetic random symbols
+	// followed by the real 3 final symbols (top-to-bottom) for that column.
+	function _buildStrip(finalCol: string[]): string[] {
+		const filler = Array.from({ length: FILLER_ROWS }, _randomSymbolId);
+		return [...filler, ...finalCol];
+	}
+
+	function _stripsFromGrid(g: string[][]): string[][] {
+		return [0, 1, 2, 3, 4].map((col) => _buildStrip([g[0][col], g[1][col], g[2][col]]));
 	}
 
 	const highlightCells = $derived.by(() => {
@@ -66,8 +92,13 @@
 		wins = [];
 		lastPayout = null;
 		scatterCount = 0;
+		outcomeTint = null;
 		spinning = true;
 		haptic('spin');
+		// Kick the drum off immediately with cosmetic filler so the player
+		// sees motion the instant they tap — the strip's tail (last 3 rows)
+		// still shows the previous grid until the real result lands below.
+		reelStrips = _stripsFromGrid(grid);
 
 		let res: SlotResult;
 		try {
@@ -82,6 +113,11 @@
 			return;
 		}
 
+		// Real result is known — swap the strip tails to the true final
+		// symbols. The CSS translateY animation keeps running uninterrupted
+		// (row count/position never changed), so this never causes a jump.
+		reelStrips = _stripsFromGrid(res.outcome.grid);
+
 		window.setTimeout(() => {
 			grid = res.outcome.grid;
 			wins = res.outcome.wins;
@@ -89,6 +125,7 @@
 			scatterCount = res.outcome.scatter;
 			lastPayout = res.payout;
 			spinning = false;
+			outcomeTint = res.payout > 0 ? 'win' : 'lose';
 			haptic('reel-stop');
 
 			if (scatterCount >= 3) {
@@ -114,22 +151,39 @@
 		<div class="slot-freespins-pill">✦ {freespins} фриспинов доиграно автоматически</div>
 	{/if}
 
-	<div class="slot-reels {spinning ? 'slot-spinning' : ''}">
+	<div
+		class="slot-reels {spinning ? 'slot-spinning' : ''} {outcomeTint === 'win'
+			? 'slot-reels-win'
+			: ''} {outcomeTint === 'lose' ? 'slot-reels-lose' : ''}"
+	>
 		{#each [0, 1, 2, 3, 4] as col (col)}
-			<div class="slot-col" style={`--col-delay: ${col * SPIN_PER_COL_MS}ms`}>
-				{#each [0, 1, 2] as row (row)}
-					{@const symId = grid[row][col]}
-					{@const sym = SLOT_SYMBOLS[symId]}
-					{@const hit = highlightCells.has(`${row}:${col}`)}
-					<div class="slot-cell {hit ? 'slot-cell-hit' : ''}" style={`--tint: ${sym?.tint ?? '#333'}`}>
-						<img src={symbolSrc(symId)} alt={sym?.name ?? symId} draggable="false" />
-						{#if sym?.role === 'wild'}<span class="slot-badge slot-badge-wild">WILD</span>{/if}
-						{#if sym?.role === 'scatter'}<span class="slot-badge slot-badge-scatter"
-								>SCATTER</span
-							>{/if}
+			{#if spinning}
+				<div class="slot-col-viewport" style={`--col-delay: ${col * SPIN_PER_COL_MS}ms`}>
+					<div class="slot-reel-strip">
+						{#each reelStrips[col] as symId, i (i)}
+							{@const sym = SLOT_SYMBOLS[symId]}
+							<div class="slot-cell slot-cell-strip" style={`--tint: ${sym?.tint ?? '#333'}`}>
+								<img src={symbolSrc(symId)} alt="" draggable="false" />
+							</div>
+						{/each}
 					</div>
-				{/each}
-			</div>
+				</div>
+			{:else}
+				<div class="slot-col">
+					{#each [0, 1, 2] as row (row)}
+						{@const symId = grid[row][col]}
+						{@const sym = SLOT_SYMBOLS[symId]}
+						{@const hit = highlightCells.has(`${row}:${col}`)}
+						<div class="slot-cell {hit ? 'slot-cell-hit' : ''}" style={`--tint: ${sym?.tint ?? '#333'}`}>
+							<img src={symbolSrc(symId)} alt={sym?.name ?? symId} draggable="false" />
+							{#if sym?.role === 'wild'}<span class="slot-badge slot-badge-wild">WILD</span>{/if}
+							{#if sym?.role === 'scatter'}<span class="slot-badge slot-badge-scatter"
+									>SCATTER</span
+								>{/if}
+						</div>
+					{/each}
+				</div>
+			{/if}
 		{/each}
 	</div>
 
@@ -234,7 +288,25 @@
 		   it never collides with Telegram's own edge-swipe-to-close gesture. */
 		margin: 0 2px;
 		overflow: hidden;
+		transition:
+			border-color 0.25s ease-out,
+			box-shadow 0.25s ease-out;
 	}
+	/* Win/lose color-grade flash on the whole board (cleared on next spin
+	   since outcomeTint resets to null in spin()). */
+	.slot-reels-win {
+		border-color: var(--positive);
+		box-shadow:
+			0 0 0 2px var(--positive),
+			0 0 26px rgba(46, 224, 106, 0.35);
+	}
+	.slot-reels-lose {
+		border-color: var(--destructive);
+		box-shadow:
+			0 0 0 2px var(--destructive),
+			0 0 20px rgba(255, 56, 56, 0.22);
+	}
+
 	.slot-col {
 		display: flex;
 		flex-direction: column;
@@ -280,22 +352,49 @@
 		background: #ff5b8d;
 		color: #1a0f12;
 	}
-	.slot-spinning .slot-cell {
-		animation: reelBlur 900ms ease-in-out;
+
+	/* Real scrolling reel/drum: a fixed 3-cell-tall viewport (matches the
+	   static column's height so nothing jumps on the spin<->idle switch)
+	   clips a taller strip of FILLER_ROWS+3 symbols. Each column's strip
+	   animates via CSS translateY(%) — percentages are relative to the
+	   strip's OWN height, so the math is independent of actual pixel size. */
+	.slot-col-viewport {
+		position: relative;
+		overflow: hidden;
+		aspect-ratio: 1 / 3;
+		flex: 1;
+		min-width: 0;
+		border-radius: 8px;
+	}
+	.slot-reel-strip {
+		display: flex;
+		flex-direction: column;
+		position: absolute;
+		inset: 0;
+		/* STRIP_ROWS visible rows stacked = STRIP_ROWS/3 × viewport height */
+		height: calc(100% * 12 / 3);
+		animation: slotReelSpin 700ms cubic-bezier(0.16, 0.86, 0.32, 1) both;
 		animation-delay: var(--col-delay);
 	}
-	@keyframes reelBlur {
+	.slot-cell-strip {
+		flex: 0 0 calc(100% / 12);
+		aspect-ratio: 1;
+		border-radius: 0;
+		border: none;
+	}
+	/* Lands on translateY(-75%): with a 12-row strip that reveals exactly
+	   the last 3 rows (the real final symbols) inside the 3-row viewport.
+	   Slight overshoot past -75% then eases back — the "mechanical settle"
+	   feel of a real slot drum stopping. */
+	@keyframes slotReelSpin {
 		0% {
-			filter: blur(0);
 			transform: translateY(0);
 		}
-		45% {
-			filter: blur(4px);
-			transform: translateY(-6px);
+		72% {
+			transform: translateY(-80%);
 		}
 		100% {
-			filter: blur(0);
-			transform: translateY(0);
+			transform: translateY(-75%);
 		}
 	}
 
@@ -306,7 +405,7 @@
 		font-size: var(--font-body-size);
 	}
 	.slot-ticker-win {
-		color: var(--accent-pink);
+		color: var(--positive-text);
 		font-weight: 700;
 	}
 	.slot-ticker-scatter {
@@ -319,16 +418,21 @@
 	}
 
 	.slot-result {
+		align-self: center;
 		text-align: center;
 		font-family: var(--font-numeric);
 		font-size: var(--font-display-size);
 		font-weight: 900;
+		padding: 2px 16px;
+		border-radius: 10px;
 	}
 	.slot-win {
-		color: var(--accent-pink);
+		color: var(--positive-text);
+		background: var(--positive-bg);
 	}
 	.slot-lose {
 		color: var(--destructive-text);
+		background: var(--destructive-bg);
 	}
 
 	.slot-error {
