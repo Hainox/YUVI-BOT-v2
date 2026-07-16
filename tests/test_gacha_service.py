@@ -378,3 +378,69 @@ async def test_roll_idempotent_on_ref_id(session, monkeypatch):
     assert second["replay"] is True
     assert second["results"] == []
     assert await _get_user_balance(session, chat_id, user_id) == balance_after_first
+
+
+# --- get_collection (04.2-05: read-only, catalog-enriched) -------------------
+
+
+@pytest.mark.asyncio
+async def test_get_collection_empty_for_new_user(session):
+    chat_id = -100910010
+    user_id = 910010
+    await _ensure_user(session, user_id)
+
+    result = await gacha_service.get_collection(session, chat_id, user_id)
+
+    assert result["characters"] == []
+    assert result["pity_ssr"] == 0
+    assert result["pity_ur"] == 0
+    assert result["banner"] == ""
+
+
+@pytest.mark.asyncio
+async def test_get_collection_returns_catalog_enriched_rows(session, monkeypatch):
+    chat_id = -100910011
+    user_id = 910011
+    await _ensure_user(session, user_id)
+    await _fund(session, chat_id, user_id)
+
+    monkeypatch.setattr(gacha_service, "_rng", _ForcedRng(random_value=0.0, choice_index=0))
+    await gacha_service.roll(session, chat_id, user_id, 1, "test_get_collection_seed")
+
+    result = await gacha_service.get_collection(session, chat_id, user_id)
+
+    assert len(result["characters"]) == 1
+    char = result["characters"][0]
+    expected = gacha_catalog.chars_of_tier("SR")[0]
+    assert char["char_id"] == expected.char_id
+    assert char["name"] == expected.name
+    assert char["tier"] == "SR"
+    assert char["role"] == expected.role
+    assert char["stars"] == 1
+    assert char["copies"] == 1
+
+
+@pytest.mark.asyncio
+async def test_get_collection_reports_pity_and_banner(session, monkeypatch):
+    chat_id = -100910012
+    user_id = 910012
+    await _ensure_user(session, user_id)
+    await _fund(session, chat_id, user_id)
+
+    banner_char = gacha_catalog.chars_of_tier("UR")[0]
+    settings_service.clear_cache()
+    await settings_service.set_setting(
+        session, chat_id, gacha_service.GACHA_BANNER_KEY, banner_char.char_id, updated_by_tg_id=1
+    )
+    await session.commit()
+
+    monkeypatch.setattr(gacha_service, "_rng", _ForcedRng(random_value=0.0, choice_index=0))
+    await gacha_service.roll(session, chat_id, user_id, 1, "test_get_collection_pity_seed")
+
+    result = await gacha_service.get_collection(session, chat_id, user_id)
+
+    assert result["pity_ssr"] == 1  # SR-roll increments both counters (D-03)
+    assert result["pity_ur"] == 1
+    assert result["banner"] == banner_char.char_id
+
+    settings_service.clear_cache()
