@@ -38,6 +38,9 @@ const raw: TelegramWebApp | undefined =
 export const inTelegram = !!(raw && raw.initData);
 export const initData = inTelegram ? raw!.initData : '';
 export const user: TgUser | null = inTelegram ? (raw!.initDataUnsafe?.user ?? null) : null;
+export const startParam: string | undefined = inTelegram
+	? raw!.initDataUnsafe?.start_param
+	: undefined;
 
 export function init(): void {
 	if (!inTelegram) return;
