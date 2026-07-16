@@ -18,6 +18,7 @@ import logging
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramForbiddenError
 from aiogram.types import InlineKeyboardButton
 from aiogram.types import InlineKeyboardMarkup
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -61,7 +62,15 @@ async def ensure_pinned_menu(bot: Bot, session: AsyncSession, chat_id: int) -> N
     message = await bot.send_message(
         chat_id, _PINNED_MESSAGE_TEXT, reply_markup=keyboard, parse_mode="HTML"
     )
-    await bot.pin_chat_message(chat_id, message.message_id, disable_notification=True)
+    try:
+        await bot.pin_chat_message(chat_id, message.message_id, disable_notification=True)
+    except (TelegramBadRequest, TelegramForbiddenError):
+        logger.warning(
+            "ensure_pinned_menu: pin_chat_message failed for chat_id=%s (missing "
+            "'Pin Messages' permission?) — message sent but left unpinned, per "
+            "docs/botfather-setup.md",
+            chat_id,
+        )
     await settings_service.set_setting(
         session, chat_id, PINNED_MESSAGE_KEY, str(message.message_id), updated_by_tg_id=bot_user.id
     )

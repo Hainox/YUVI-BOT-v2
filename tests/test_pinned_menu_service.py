@@ -82,3 +82,33 @@ async def test_ensure_pinned_menu_reposts_when_chat_lookup_fails(session):
 
     bot.send_message.assert_awaited_once()
     bot.pin_chat_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_ensure_pinned_menu_survives_missing_pin_permission(session):
+    """TelegramBadRequest/TelegramForbiddenError на pin_chat_message (боту не
+    выдали право «Закреплять сообщения») — сообщение уже отправлено, поэтому
+    ошибка закрепа логируется и проглатывается, а не падает наружу и не роняет
+    запуск бота (CR-01)."""
+    from aiogram.exceptions import TelegramBadRequest
+
+    settings_service.clear_cache()
+    chat_id = -800204
+    bot = _make_bot(pinned_message_id=None)
+    bot.pin_chat_message.side_effect = TelegramBadRequest(
+        method=AsyncMock(), message="not enough rights to pin a message"
+    )
+
+    # Не должно поднимать исключение наружу.
+    await pinned_menu_service.ensure_pinned_menu(bot, session, chat_id)
+
+    bot.send_message.assert_awaited_once()
+    bot.pin_chat_message.assert_awaited_once()
+
+    # message_id всё равно сохраняется, т.к. сообщение было отправлено (просто
+    # осталось незакреплённым) — иначе бот будет пытаться заново постить его
+    # при каждом рестарте.
+    stored = await settings_service.get_setting(
+        session, chat_id, pinned_menu_service.PINNED_MESSAGE_KEY, default=""
+    )
+    assert stored == "555555"
