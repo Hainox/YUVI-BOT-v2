@@ -382,6 +382,7 @@ async def test_get_open_markets_and_detail_and_portfolio(session):
     assert len(open_markets) == 1
     assert open_markets[0]["id"] == market.id
     assert open_markets[0]["options_count"] == 2
+    assert open_markets[0]["total_pool"] == 100
 
     detail = await markets_service.get_market_detail(session, chat_id, market.id)
     assert detail["total_pool"] == 100

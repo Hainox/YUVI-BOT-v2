@@ -359,7 +359,13 @@ async def place_bet(
 
 
 async def get_open_markets(session: AsyncSession, chat_id: int) -> list[dict]:
-    """Открытые рынки чата для `/markets`, отсортированы по ближайшему закрытию."""
+    """Открытые рынки чата для `/markets`, отсортированы по ближайшему закрытию.
+
+    `total_pool` (сумма пулов всех вариантов) добавлена для Mini App списка
+    рынков (04.2-07, D-04 — UI-SPEC требует показывать суммарный пул в
+    строке списка) — чисто аддитивное read-only поле, `/markets`-форматтер
+    (`bot/handlers/markets.py::format_markets_list`) его не использует и не
+    ломается от лишнего ключа."""
     rows = (
         await session.execute(
             select(
@@ -367,6 +373,7 @@ async def get_open_markets(session: AsyncSession, chat_id: int) -> list[dict]:
                 Market.question,
                 Market.closes_at,
                 func.count(MarketOption.id).label("options_count"),
+                func.coalesce(func.sum(MarketOption.pool), 0).label("total_pool"),
             )
             .join(MarketOption, MarketOption.market_id == Market.id)
             .where(Market.chat_id == chat_id, Market.status == "open")
@@ -379,6 +386,7 @@ async def get_open_markets(session: AsyncSession, chat_id: int) -> list[dict]:
             "id": row.id,
             "question": row.question,
             "closes_at": row.closes_at,
+            "total_pool": row.total_pool,
             "options_count": row.options_count,
         }
         for row in rows
@@ -388,7 +396,13 @@ async def get_open_markets(session: AsyncSession, chat_id: int) -> list[dict]:
 async def get_market_detail(session: AsyncSession, chat_id: int, market_id: int) -> dict:
     """Детали рынка для `/market <id>`: варианты с пулами и долями (%),
     статус, суммарный пул. Поднимает `MarketNotFound`, если рынка нет
-    в этом чате."""
+    в этом чате.
+
+    `winning_option_id`/каждого `option["id"]` добавлены для Mini App детали
+    рынка (04.2-07, D-04 — UI-SPEC требует Hero-tier reveal выигравшего
+    варианта после резолюции) — чисто аддитивные read-only поля, `/market`
+    -форматтер (`bot/handlers/markets.py::format_market_detail`) их не
+    использует и не ломается от лишних ключей."""
     market = (
         await session.execute(
             select(Market).where(Market.chat_id == chat_id, Market.id == market_id)
@@ -412,8 +426,10 @@ async def get_market_detail(session: AsyncSession, chat_id: int, market_id: int)
         "status": market.status,
         "closes_at": market.closes_at,
         "total_pool": total_pool,
+        "winning_option_id": market.winning_option_id,
         "options": [
             {
+                "id": option.id,
                 "position": option.position,
                 "label": option.label,
                 "pool": option.pool,
