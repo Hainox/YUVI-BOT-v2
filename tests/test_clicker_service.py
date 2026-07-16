@@ -24,7 +24,9 @@ from sqlalchemy import select
 from sqlalchemy import update
 
 from bot.services import clicker_service
+from bot.services import gacha_catalog
 from common.models.clicker_farm import ClickerFarm
+from common.models.gacha_collection import GachaCollection
 from common.models.user import User
 
 
@@ -261,3 +263,111 @@ async def test_upgrade_rejected_insufficient_cp(session):
     farm = await _get_farm(session, chat_id, user_id)
     assert farm.cp == 0
     assert farm.tap_level == 1
+
+
+# --- wipe_farm (FARM-03: /farmwipe backend) ------------------------------
+
+
+@pytest.mark.asyncio
+async def test_wipe_farm_resets_tap_auto_cp(session):
+    chat_id = -100910010
+    user_id = 910010
+    await _ensure_user(session, user_id)
+    await clicker_service.get_farm_state(session, chat_id, user_id)
+    await _set_farm(session, chat_id, user_id, cp=5000, tap_level=7, auto_level=3)
+
+    state = await clicker_service.wipe_farm(session, chat_id, user_id)
+
+    assert state["cp"] == 0
+    assert state["tap_level"] == 1
+    assert state["auto_level"] == 0
+
+    farm = await _get_farm(session, chat_id, user_id)
+    assert farm.cp == 0
+    assert farm.tap_level == 1
+    assert farm.auto_level == 0
+
+
+@pytest.mark.asyncio
+async def test_wipe_farm_creates_farm_if_missing(session):
+    """Ферма ещё не существует (нет ни одного обращения) — wipe_farm всё
+    равно должен успешно вернуть чистое состояние (get-or-create, форма
+    остальных публичных функций clicker_service)."""
+    chat_id = -100910011
+    user_id = 910011
+    await _ensure_user(session, user_id)
+
+    state = await clicker_service.wipe_farm(session, chat_id, user_id)
+
+    assert state["cp"] == 0
+    assert state["tap_level"] == 1
+    assert state["auto_level"] == 0
+
+
+# --- GACHA-02: доход фермы от собранных worker-персонажей -----------------
+
+
+async def _grant_char(session, chat_id: int, user_id: int, char_id: str, stars: int = 1) -> None:
+    session.add(
+        GachaCollection(chat_id=chat_id, user_id=user_id, char_id=char_id, stars=stars, copies=stars)
+    )
+    await session.flush()
+
+
+@pytest.mark.asyncio
+async def test_worker_collection_increases_cp_per_sec_offline_accrual(session):
+    """GACHA-02: пользователь с собранным worker-персонажем накапливает
+    БОЛЬШЕ CP за оффлайн-период, чем пользователь с пустой коллекцией —
+    доказывает реальную связь коллекции с доходом фермы (не заглушка)."""
+    chat_id = -100910012
+    with_worker_id = 910012
+    empty_collection_id = 910013
+    await _ensure_user(session, with_worker_id)
+    await _ensure_user(session, empty_collection_id)
+    await clicker_service.get_farm_state(session, chat_id, with_worker_id)
+    await clicker_service.get_farm_state(session, chat_id, empty_collection_id)
+
+    worker_char = next(
+        c for c in gacha_catalog.CATALOG.values() if c.role == "worker" and c.tier == "SR"
+    )
+    await _grant_char(session, chat_id, with_worker_id, worker_char.char_id, stars=1)
+
+    elapsed_seconds = 200
+    past = datetime.utcnow() - timedelta(seconds=elapsed_seconds)
+    await _set_farm(session, chat_id, with_worker_id, auto_level=0, last_accrued_at=past)
+    await _set_farm(session, chat_id, empty_collection_id, auto_level=0, last_accrued_at=past)
+
+    state_with_worker = await clicker_service.get_farm_state(session, chat_id, with_worker_id)
+    state_empty = await clicker_service.get_farm_state(session, chat_id, empty_collection_id)
+
+    assert state_with_worker["cp"] > state_empty["cp"]
+    assert state_empty["cp"] == 0  # auto_level=0, пустая коллекция -> без дохода вовсе
+
+    expected_rate = clicker_service.WORKER_TIER_CP_PER_SEC[worker_char.tier] * gacha_catalog.star_mult(1)
+    expected_gain = int(expected_rate * elapsed_seconds)
+    assert state_with_worker["cp"] == expected_gain
+    assert state_with_worker["cp_per_sec"] == pytest.approx(expected_rate)
+
+
+@pytest.mark.asyncio
+async def test_heroine_role_does_not_contribute_farm_income(session):
+    """GACHA-02: heroine-тир персонажи (role="heroine") НЕ участвуют в
+    доходе фермы — только worker."""
+    chat_id = -100910013
+    user_id = 910014
+    await _ensure_user(session, user_id)
+    await clicker_service.get_farm_state(session, chat_id, user_id)
+
+    heroine_char = next(
+        c for c in gacha_catalog.CATALOG.values() if c.role == "heroine" and c.tier == "SR"
+    )
+    await _grant_char(session, chat_id, user_id, heroine_char.char_id, stars=1)
+
+    elapsed_seconds = 200
+    past = datetime.utcnow() - timedelta(seconds=elapsed_seconds)
+    await _set_farm(session, chat_id, user_id, auto_level=0, last_accrued_at=past)
+
+    state = await clicker_service.get_farm_state(session, chat_id, user_id)
+
+    assert state["cp"] == 0
+    assert state["cp_per_sec"] == 0
