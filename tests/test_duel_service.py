@@ -163,6 +163,33 @@ async def test_create_below_min_bet_raises(session):
     assert duels == []
 
 
+@pytest.mark.asyncio
+async def test_create_self_duel_raises_and_does_not_escrow(session):
+    """WR-01 (04.2-REVIEW): opponent_id == challenger_id must be rejected at
+    the service layer (previously only guarded client-side in
+    bot/handlers/duel.py, so the Mini App API had no protection at all)."""
+    chat_id = -100910005
+    challenger_id = 910005
+    await _ensure_user(session, challenger_id)
+    balance_before = await _fund(session, chat_id, challenger_id)
+
+    with pytest.raises(duel_service.DuelError):
+        await duel_service.create_duel(
+            session,
+            chat_id,
+            challenger_id,
+            challenger_id,
+            100,
+            "test_create_duel_self",
+        )
+
+    assert await _get_user_balance(session, chat_id, challenger_id) == balance_before
+    duels = (
+        await session.execute(select(Duel).where(Duel.challenger_id == challenger_id))
+    ).scalars().all()
+    assert duels == []
+
+
 # --- accept_duel (coinflip + 5% fee, D-04) -----------------------------------
 
 

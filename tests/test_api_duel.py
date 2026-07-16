@@ -222,6 +222,36 @@ async def test_create_duel_replay_same_ref_id_returns_400(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_create_duel_self_challenge_returns_400(monkeypatch):
+    """WR-01 (04.2-REVIEW): challenging yourself via the Mini App API must be
+    rejected by the shared service layer (bot/handlers/duel.py's client-side
+    check is only a UX fast-path — the real guard now lives in
+    duel_service.create_duel so both entry points inherit it)."""
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    challenger_id = 940110
+    await _ensure_user(challenger_id)
+    init_data = _build_init_data(user_id=challenger_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/duel",
+            params={"chat_id": CREATE_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={"opponent_id": challenger_id, "stake": 20, "ref_id": str(uuid.uuid4())},
+        )
+
+    assert resp.status_code == 400
+    async with SessionLocal() as db_session:
+        count = (
+            await db_session.execute(
+                select(Duel).where(Duel.chat_id == CREATE_CHAT_ID, Duel.challenger_id == challenger_id)
+            )
+        ).scalars().all()
+    assert count == []  # ставка не должна была списаться / дуэль не создана
+
+
+@pytest.mark.asyncio
 async def test_create_duel_ignores_challenger_id_in_body_idor(monkeypatch):
     """IDOR: CreateDuelBody не содержит challenger_id вовсе — поддельное
     поле в JSON молча игнорируется, дуэль всегда создаётся от лица
