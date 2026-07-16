@@ -37,6 +37,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.services import admin_service
+from bot.services import duel_constants
 from bot.services import duel_service
 from bot.services import economy_service
 from bot.services.scheduler import get_scheduler
@@ -46,37 +47,16 @@ logger = logging.getLogger(__name__)
 
 router = Router()
 
-# Claude's Discretion (04.1-CONTEXT.md): плейсхолдер file_id — доменная деталь,
-# не денежная. Заменить на реальные стикеры проекта в любой момент без
-# изменений в логике мута.
-MUTE_STICKER_ID = "CAACAgIAAxkBAAEL_duel_mute_placeholder_sticker_id"
-UNMUTE_STICKER_ID = "CAACAgIAAxkBAAEL_duel_unmute_placeholder_sticker_id"
+# 04.2-06: MUTE_STICKER_ID/UNMUTE_STICKER_ID и permission-словари живут
+# в bot/services/duel_constants.py (общий модуль, переиспользуется
+# api/duel_mute.py для httpx-мута из Mini App accept, T-04.2-11) — здесь
+# только строим aiogram ChatPermissions из тех же плейн-dict литералов,
+# без дублирования.
+MUTE_STICKER_ID = duel_constants.MUTE_STICKER_ID
+UNMUTE_STICKER_ID = duel_constants.UNMUTE_STICKER_ID
 
-_MUTE_PERMISSIONS = ChatPermissions(
-    can_send_messages=False,
-    can_send_audios=False,
-    can_send_documents=False,
-    can_send_photos=False,
-    can_send_videos=False,
-    can_send_video_notes=False,
-    can_send_voice_notes=False,
-    can_send_polls=False,
-    can_send_other_messages=False,
-    can_add_web_page_previews=False,
-)
-
-_UNMUTE_PERMISSIONS = ChatPermissions(
-    can_send_messages=True,
-    can_send_audios=True,
-    can_send_documents=True,
-    can_send_photos=True,
-    can_send_videos=True,
-    can_send_video_notes=True,
-    can_send_voice_notes=True,
-    can_send_polls=True,
-    can_send_other_messages=True,
-    can_add_web_page_previews=True,
-)
+_MUTE_PERMISSIONS = ChatPermissions(**duel_constants.MUTE_PERMISSIONS)
+_UNMUTE_PERMISSIONS = ChatPermissions(**duel_constants.UNMUTE_PERMISSIONS)
 
 
 # --- Мут/размут (побочный эффект хендлера, D-01/D-02) ------------------------
