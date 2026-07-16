@@ -24,6 +24,7 @@ from urllib.parse import urlencode
 import pytest
 from httpx import ASGITransport
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from api import telegram_client
@@ -32,6 +33,7 @@ from bot.config import settings
 from bot.services import economy_service
 from common.db.session import engine
 from common.db.session import SessionLocal
+from common.models.casino_game import CasinoGame
 from common.models.user import User
 
 CHAT_ID = -900301
@@ -179,8 +181,8 @@ async def test_coinflip_ignores_foreign_user_id_in_body_idor(monkeypatch):
     await _ensure_user(attacker_id)
     await _ensure_user(victim_id)
     init_data = _build_init_data(user_id=attacker_id)
+    idem_key = str(uuid.uuid4())
 
-    attacker_before = await _get_balance(CHAT_ID, attacker_id)
     victim_before = await _get_balance(CHAT_ID, victim_id)
 
     transport = ASGITransport(app=app)
@@ -192,15 +194,24 @@ async def test_coinflip_ignores_foreign_user_id_in_body_idor(monkeypatch):
             json={
                 "bet": 20,
                 "choice": "heads",
-                "idem_key": str(uuid.uuid4()),
+                "idem_key": idem_key,
                 "user_id": victim_id,  # атакующий пытается подставить чужой user_id
             },
         )
 
     assert resp.status_code == 200
 
-    attacker_after = await _get_balance(CHAT_ID, attacker_id)
-    victim_after = await _get_balance(CHAT_ID, victim_id)
+    # Прямая проверка: раунд реально записан за атакующего (initData), а не
+    # за "жертву" из тела запроса — не полагаемся на дельту баланса (payout
+    # может быть урезан D-06 капом банка до net-0 на выигрыше, это не баг,
+    # а корректное поведение _settle/pay_from_bank).
+    async with SessionLocal() as verify_session:
+        game_row = (
+            await verify_session.execute(
+                select(CasinoGame).where(CasinoGame.idem_key == idem_key)
+            )
+        ).scalar_one()
+    assert game_row.user_id == attacker_id
 
-    assert attacker_after != attacker_before  # ставка реально списана с атакующего
+    victim_after = await _get_balance(CHAT_ID, victim_id)
     assert victim_after == victim_before  # жертва не затронута вовсе

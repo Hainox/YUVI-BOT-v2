@@ -1,18 +1,39 @@
 from __future__ import annotations
 
+import importlib
+import pkgutil
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import httpx
 import redis.asyncio as redis
+from fastapi import APIRouter
 from fastapi import FastAPI
 from fastapi import Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from api import routes as routes_package
 from api.deps import InvalidInitData
-from api.routes import events
 from bot.config import settings
+
+
+def _discover_routers() -> list[APIRouter]:
+    """Импортирует все модули `api.routes` и собирает их атрибуты `router`
+    (форма `bot/main.py::_discover_routers`). Детерминированный порядок
+    (sorted по имени модуля) — регистрация воспроизводима между запусками.
+    Каждый новый `api/routes/*.py` с `router = APIRouter()` подключается
+    автоматически, без правки этого файла."""
+    routers: list[APIRouter] = []
+    module_infos = sorted(
+        pkgutil.iter_modules(routes_package.__path__), key=lambda m: m.name
+    )
+    for module_info in module_infos:
+        module = importlib.import_module(f"{routes_package.__name__}.{module_info.name}")
+        router = getattr(module, "router", None)
+        if isinstance(router, APIRouter):
+            routers.append(router)
+    return routers
 
 
 @asynccontextmanager
@@ -45,11 +66,12 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[settings.mini_app_frontend_origin],
     allow_credentials=True,
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST"],
     allow_headers=["X-Telegram-Init-Data"],
 )
 
-app.include_router(events.router)
+for _router in _discover_routers():
+    app.include_router(_router)
 
 
 @app.exception_handler(InvalidInitData)
