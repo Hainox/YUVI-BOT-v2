@@ -384,3 +384,49 @@ async def test_get_history_unauthenticated_returns_401():
         resp = await client.get("/api/v1/history", params={"chat_id": -900206})
 
     assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_get_history_negative_limit_returns_422(monkeypatch):
+    """WR-03 (04.2-REVIEW): a negative limit used to reach
+    `.limit(limit).offset(offset)` unvalidated and blow up as an uncaught
+    500 (Postgres rejects a negative LIMIT at the SQL level). Now rejected
+    by FastAPI's own Query(ge=1) validation with a clean 422 before it ever
+    reaches the service layer."""
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    user_id = 222152
+    await _ensure_user(user_id)
+    await _get_balance(-900207, user_id)
+    init_data = _build_init_data(user_id=user_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(
+            "/api/v1/history",
+            params={"chat_id": -900207, "limit": -1},
+            headers={"X-Telegram-Init-Data": init_data},
+        )
+
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_get_history_oversized_limit_returns_422(monkeypatch):
+    """WR-03 (04.2-REVIEW): an unbounded limit (no ceiling) used to be
+    accepted as-is, allowing an unbounded result set per call. Now capped
+    at le=200."""
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    user_id = 222153
+    await _ensure_user(user_id)
+    await _get_balance(-900208, user_id)
+    init_data = _build_init_data(user_id=user_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(
+            "/api/v1/history",
+            params={"chat_id": -900208, "limit": 999_999_999},
+            headers={"X-Telegram-Init-Data": init_data},
+        )
+
+    assert resp.status_code == 422

@@ -29,6 +29,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 from fastapi import Depends
 from fastapi import HTTPException
+from fastapi import Query
 from fastapi import Request
 from pydantic import BaseModel
 from pydantic import Field
@@ -96,7 +97,9 @@ async def get_economy(auth: AuthContext = Depends(require_membership)) -> dict:
 
 @router.get("/api/v1/history")
 async def get_history(
-    limit: int = 50, offset: int = 0, auth: AuthContext = Depends(require_membership)
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    auth: AuthContext = Depends(require_membership),
 ) -> list[dict]:
     async with SessionLocal() as session:
         return await economy_service.get_transactions(
