@@ -30,6 +30,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from api import telegram_client
 from api.main import app
 from bot.config import settings
+from bot.services import casino_service
 from bot.services import economy_service
 from common.db.session import engine
 from common.db.session import SessionLocal
@@ -37,6 +38,22 @@ from common.models.casino_game import CasinoGame
 from common.models.user import User
 
 CHAT_ID = -900301
+# Отдельный chat_id ТОЛЬКО для bank_capped-теста ниже — гарантирует чистый
+# нулевой chat_bank (не смешивается с балансом банка, накопленным другими
+# тестами этого файла в CHAT_ID).
+FRESH_BANK_CHAT_ID = -900302
+
+
+class _ForcedWinRng:
+    """Форсирует детерминированный выигрыш coinflip (см. test_casino_service.py::
+    _ForcedRng) — `_rng.choice(["heads", "tails"])` внутри `play_coinflip.compute()`
+    всегда возвращает то же значение, что и `choice` в теле запроса."""
+
+    def __init__(self, forced_result: str):
+        self._forced_result = forced_result
+
+    def choice(self, seq):
+        return self._forced_result
 
 
 def _build_init_data(*, user_id: int, bot_token: str | None = None, tamper: bool = False) -> str:
@@ -215,3 +232,36 @@ async def test_coinflip_ignores_foreign_user_id_in_body_idor(monkeypatch):
 
     victim_after = await _get_balance(CHAT_ID, victim_id)
     assert victim_after == victim_before  # жертва не затронута вовсе
+
+
+@pytest.mark.asyncio
+async def test_coinflip_win_on_empty_bank_reports_bank_capped(monkeypatch):
+    """Регрессия по реальному инциденту живой Telegram-верификации 04.2-02:
+    первый раунд в чате со свежим (нулевым) chat_bank выиграл по RNG, но
+    D-06 (`pay_from_bank`) урезал выплату до размера самой ставки — баланс
+    игрока не изменился, хотя раунд был выигран (1000 -> 1000). Без явного
+    флага это выглядит для игрока как "баланс не обновился после победы".
+    Роут теперь обязан вернуть `bank_capped: true` в этом случае."""
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    monkeypatch.setattr(casino_service, "_rng", _ForcedWinRng("heads"))
+    user_id = 300106
+    await _ensure_user(user_id)
+    init_data = _build_init_data(user_id=user_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/games/coinflip",
+            params={"chat_id": FRESH_BANK_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={"bet": 20, "choice": "heads", "idem_key": str(uuid.uuid4())},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["outcome"]["won"] is True
+    # Банк чата стартовал с 0, был пополнен ровно ставкой (20) самим же
+    # раундом до выплаты — честный payout (20 * 1.98 = 39) не влезает,
+    # capped-выплата == ставке.
+    assert body["payout"] == 20
+    assert body["bank_capped"] is True

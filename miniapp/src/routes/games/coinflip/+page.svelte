@@ -20,6 +20,10 @@
 		bet: number;
 		payout: number;
 		outcome: { result: 'heads' | 'tails'; won: boolean };
+		// D-06: chat_bank couldn't cover the full bet*1.98 payout, so the win
+		// was capped (in the worst case down to exactly `bet`, i.e. balance
+		// doesn't change even though the round was won) — see api/routes/games.py.
+		bank_capped?: boolean;
 	};
 
 	let bet = $state(BET_CHIPS[0]);
@@ -86,6 +90,12 @@
 			<div class="cf-result-text">
 				{result.outcome.won ? `+${result.payout}¥` : `−${result.bet}¥`}
 			</div>
+			{#if result.bank_capped}
+				<div class="cf-capped-note">
+					банк чата почти пуст — выплата урезана до {result.payout}¥ (не полные ×1.98).
+					Баланс наверху мог не измениться, если урезанная выплата = твоей ставке.
+				</div>
+			{/if}
 		</div>
 	{/if}
 
@@ -184,6 +194,13 @@
 	}
 	.cf-lose .cf-result-text {
 		color: var(--destructive-text);
+	}
+	.cf-capped-note {
+		margin-top: var(--space-sm);
+		font-size: 12px;
+		line-height: 1.4;
+		color: var(--accent-yellow);
+		font-family: var(--font-body);
 	}
 
 	.cf-error {

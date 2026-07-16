@@ -25,6 +25,18 @@ test_coinflip_ignores_foreign_user_id_in_body_idor`).
 после реального выигрыша/проигрыша. Ответ также несёт `user_balance_after`,
 чтобы `lib/api.ts`'s balance-sniffing на клиенте сработал мгновенно, не
 дожидаясь SSE round-trip (см. 04.2-RESEARCH.md `lib/api.ts` Code Example).
+
+`bank_capped` (bool, coinflip-only): D-06 (`economy_service.pay_from_bank`)
+урезает выплату до текущего остатка `chat_bank` — на свежем чате с пустым
+банком выигрыш по факту RNG может выплатить МЕНЬШЕ честного
+`bet * COINFLIP_MULT` (в худшем случае вплоть до `bet`, т.е. баланс
+игрока не меняется вовсе, хотя раунд был выигран). Без явного флага это
+выглядит для игрока как "баланс не обновился после победы" (реальный
+инцидент верификации 04.2-02: /me до и после раунда — 1000 и 1000, банк
+чата был 0, весь выигрыш ушёл на компенсацию собственной же ставки).
+Флаг вычисляется ЗДЕСЬ (роут), не в `casino_service.py` — модуль settle-ядра
+общий для будущих dice/roulette/slots с другими формулами мультипликатора,
+трогать его ради одного UI-флага одной игры не нужно.
 """
 
 from __future__ import annotations
@@ -74,6 +86,12 @@ async def post_coinflip(
             request.app.state.redis, auth.chat_id, auth.user_id, balance
         )
         result["user_balance_after"] = balance
+
+        outcome = result.get("outcome") or {}
+        if outcome.get("won"):
+            fair_payout = int(result["bet"] * casino_service.COINFLIP_MULT)
+            result["bank_capped"] = result["payout"] < fair_payout
+
         return result
 
 
