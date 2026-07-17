@@ -25,6 +25,7 @@
 		{ title: 'Статистика', desc: 'баланс, стрик, большие выигрыши', accent: 'cyan', href: '/stats' },
 		{ title: 'Перевод', desc: 'закинь другу ювиков', href: '/transfer' },
 		{ title: 'Правила', desc: 'как это всё работает', href: '/rules' },
+		{ title: 'Фидбек', desc: 'баг, идея или жалоба — админы увидят', href: '/feedback' },
 		{ title: 'Магазин', desc: 'скоро', locked: 'скоро' },
 		{ title: 'Теги', desc: 'скоро', locked: 'скоро' }
 	];
