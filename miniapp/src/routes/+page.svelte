@@ -1,9 +1,13 @@
 <script lang="ts">
 	// Hub — the casino home (04.2-UI-SPEC.md Hub Tile Inventory, D-04/D-05).
 	// Same feature-card primitive/2-col grid as the Phase-4 prototype
-	// (webapp/menu.jsx), extended from 6 to the final 13-tile set. The
-	// persistent balance card itself lives in +layout.svelte, not here.
+	// (webapp/menu.jsx), extended from 6 to the final 13-tile set, and now
+	// 15 with the Фидбек/Админ tiles from 04.3-UI-SPEC.md §"1. Hub tile
+	// additions". The persistent balance card itself lives in +layout.svelte,
+	// not here.
 	import { goto } from '$app/navigation';
+	import { onMount } from 'svelte';
+	import { apiFetch } from '$lib/api';
 
 	type Tile = {
 		title: string;
@@ -13,7 +17,26 @@
 		href?: string;
 	};
 
-	const tiles: Tile[] = [
+	// Admin tile gating is cosmetic only (04.3-UI-SPEC.md "Admin tile gating"):
+	// hides the tile from non-admins as a UX nicety. The real boundary is
+	// require_admin on every /api/v1/admin/* route, re-checked server-side
+	// independently of this flag.
+	let isAdmin = $state(false);
+
+	onMount(async () => {
+		try {
+			const me = await apiFetch<{ is_admin: boolean }>('/api/v1/me');
+			isAdmin = me.is_admin;
+		} catch {
+			// Dedicated call, separate from +layout.svelte's own /me fetch — on
+			// any failure (network hiccup, non-admin's already-handled 403/401
+			// elsewhere) just keep the tile hidden rather than surfacing a
+			// second error state on top of the layout's own error screen.
+			isAdmin = false;
+		}
+	});
+
+	const baseTiles: Tile[] = [
 		{ title: 'Игры', desc: 'слоты · рулетка · блэкджек · кости · монетка', accent: 'pink', href: '/games' },
 		{ title: 'Ферма', desc: 'тапай, копи CP, качай апгрейды', accent: 'cyan', href: '/farm' },
 		{ title: 'Гача', desc: 'крути баннер, собирай тир-лист', accent: 'yellow', href: '/gacha' },
@@ -25,10 +48,21 @@
 		{ title: 'Статистика', desc: 'баланс, стрик, большие выигрыши', accent: 'cyan', href: '/stats' },
 		{ title: 'Перевод', desc: 'закинь другу ювиков', href: '/transfer' },
 		{ title: 'Правила', desc: 'как это всё работает', href: '/rules' },
-		{ title: 'Фидбек', desc: 'баг, идея или жалоба — админы увидят', href: '/feedback' },
+		{ title: 'Фидбек', desc: 'баг, идея или жалоба — админы увидят', href: '/feedback' }
+	];
+
+	const adminTile: Tile = {
+		title: 'Админ',
+		desc: 'баланс банка, аналитика, заявки',
+		href: '/admin'
+	};
+
+	const lockedTiles: Tile[] = [
 		{ title: 'Магазин', desc: 'скоро', locked: 'скоро' },
 		{ title: 'Теги', desc: 'скоро', locked: 'скоро' }
 	];
+
+	let tiles = $derived([...baseTiles, ...(isAdmin ? [adminTile] : []), ...lockedTiles]);
 
 	function open(tile: Tile) {
 		if (tile.locked || !tile.href) return;
