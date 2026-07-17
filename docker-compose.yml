@@ -67,6 +67,38 @@ services:
     ports:
       - "8003:80"
 
+  # HTTPS edge for the Mini App (DEPLOY-05, D-01/D-02). Only activated when
+  # the user sets COMPOSE_PROFILES=https in .env — absent from a default
+  # `docker compose up`, so local/dev stays byte-for-byte plain HTTP on
+  # miniapp:8003 (unchanged above). When active, terminates TLS in front of
+  # the existing miniapp/api containers (neither is modified). Wrapper script
+  # (nginx/docker-entrypoint-wrapper.sh) is a no-op (sleep infinity) whenever
+  # DOMAIN is empty, so even an explicit `--profile https up` without a real
+  # domain configured cannot crash-loop or bind ports incorrectly.
+  nginx-https:
+    image: jonasal/nginx-certbot:6.2.0-nginx1.31.2
+    restart: unless-stopped
+    profiles: ["https"]
+    environment:
+      DOMAIN: ${DOMAIN}
+      CERTBOT_EMAIL: ${CERTBOT_EMAIL}
+      # Let's Encrypt STAGING environment has much higher rate limits — keep
+      # this on (1) while testing, switch to 0 only for the real prod issuance
+      # (docs/deploy-vps-ubuntu.md §5, T-04.3-10).
+      STAGING: ${STAGING:-1}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - nginx_https_secrets:/etc/letsencrypt
+      - ./nginx/https.conf.template:/etc/nginx/templates/https.conf.template:ro
+      - ./nginx/docker-entrypoint-wrapper.sh:/docker-entrypoint-wrapper.sh:ro
+    entrypoint: ["/bin/sh", "/docker-entrypoint-wrapper.sh"]
+    depends_on:
+      - miniapp
+      - api
+
 volumes:
   pgdata:
+  nginx_https_secrets:
 

@@ -1,0 +1,7 @@
+# Shell scripts must always use LF line endings — they are executed inside
+# Linux containers (Docker). CRLF line endings break the shebang line
+# ("/bin/sh^M": bad interpreter) and can break `set -e`/command parsing.
+# Without this, Windows checkouts with core.autocrlf=true would silently
+# convert these files to CRLF and crash the nginx-https container at startup
+# (Rule 3 — blocking issue, found while adding the first .sh file to this repo).
+*.sh text eol=lf
