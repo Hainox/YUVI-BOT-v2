@@ -34,6 +34,7 @@ from fastapi import Request
 from pydantic import BaseModel
 from pydantic import Field
 
+from api import telegram_client
 from api.deps import AuthContext
 from api.deps import require_membership
 from bot.services import balance_events
@@ -53,7 +54,14 @@ class TransferBody(BaseModel):
 async def get_me(auth: AuthContext = Depends(require_membership)) -> dict:
     async with SessionLocal() as session:
         balance = await economy_service.get_balance(session, auth.chat_id, auth.user_id)
-    return {"balance": balance}
+    return {
+        "balance": balance,
+        # is_admin (CASINO-03) reuses auth.status already fetched by
+        # require_membership above — zero extra getChatMember call. Cosmetic
+        # client-side hub-tile gate only; every /api/v1/admin/* route
+        # independently re-validates via require_admin server-side.
+        "is_admin": telegram_client.is_admin_status(auth.status),
+    }
 
 
 @router.get("/api/v1/leaderboard")
