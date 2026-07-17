@@ -14,6 +14,7 @@ import hashlib
 import hmac
 import json
 import time
+import uuid
 from unittest.mock import AsyncMock
 from urllib.parse import urlencode
 
@@ -84,13 +85,21 @@ def _app_state():
 @pytest.mark.asyncio
 async def test_author_from_auth_context(monkeypatch):
     """T-04.3-01 (IDOR): a foreign user_id/chat_id smuggled into the body
-    must have zero effect — author is taken exclusively from AuthContext."""
+    must have zero effect — author is taken exclusively from AuthContext.
+
+    Text carries a unique uuid token — these HTTP-level tests commit
+    directly to a live Postgres (no transaction rollback, same as
+    test_api_economy.py), so re-running the suite against the same
+    container must not find a leftover row from a prior run (same
+    non-determinism class already fixed in test_api_farm.py::_seed_farm_cp
+    and test_api_gacha.py's uuid4 ref_id, per STATE.md Phase 04.2-04/05)."""
     monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
     user_id = 330201
     attacker_id = 330299
     await _ensure_user(user_id)
     await _ensure_user(attacker_id)
     init_data = _build_init_data(user_id=user_id)
+    unique_text = f"нашёл баг {uuid.uuid4()}"
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -100,7 +109,7 @@ async def test_author_from_auth_context(monkeypatch):
             headers={"X-Telegram-Init-Data": init_data},
             json={
                 "category": "bug",
-                "text": "нашёл баг",
+                "text": unique_text,
                 "user_id": attacker_id,
                 "chat_id": -1,
             },
@@ -112,7 +121,7 @@ async def test_author_from_auth_context(monkeypatch):
         from bot.services import feedback_service
 
         rows = await feedback_service.list_feedback(session, CHAT_ID)
-    matching = [row for row in rows if row["text"] == "нашёл баг"]
+    matching = [row for row in rows if row["text"] == unique_text]
     assert len(matching) == 1
     assert matching[0]["user_id"] == user_id
 
