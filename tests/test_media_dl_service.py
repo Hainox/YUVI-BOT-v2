@@ -297,7 +297,9 @@ async def test_charge_only_on_success(session, monkeypatch):
     bot_mock3 = AsyncMock()
     await media_dl.on_media_url(message3, session, bot_mock3)
 
-    assert await _count_tx(session, chat_id3, "mediadl_charge") == 1
+    # debit_to_bank логирует 2 строки на один успешный вызов (нога игрока +
+    # нога банка, тот же kind="mediadl_charge") — economy_service.py::debit_to_bank.
+    assert await _count_tx(session, chat_id3, "mediadl_charge") == 2
     assert (
         await _get_user_balance(session, chat_id3, user_id3)
         == settings.economy_start_bonus - settings.mediadl_cost
@@ -311,7 +313,7 @@ async def test_charge_only_on_success(session, monkeypatch):
     bot_mock3_retry = AsyncMock()
     await media_dl.on_media_url(message3_retry, session, bot_mock3_retry)
 
-    assert await _count_tx(session, chat_id3, "mediadl_charge") == 1
+    assert await _count_tx(session, chat_id3, "mediadl_charge") == 2
     assert (
         await _get_user_balance(session, chat_id3, user_id3)
         == settings.economy_start_bonus - settings.mediadl_cost
