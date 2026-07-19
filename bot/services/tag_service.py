@@ -9,7 +9,15 @@ custom_title` напрямую.
 UNIQUE(chat_id, user_id) WHERE status='active' из миграции 0008 гарантирует
 не больше одной active-строки на юзера) — та же форма, что
 `duel_service._get_duel_for_update`/`markets_service.place_bet` (row-lock
-перед мутацией, T-05-06).
+перед мутацией, T-05-06). Этот `FOR UPDATE` защищает только строку, которая
+УЖЕ существует на момент SELECT — он НЕ сериализует гонку, где на момент
+SELECT ни одной active-строки ещё нет (05-REVIEW.md CR-01, напр. rental
+vs nomination или гонка с регулярным `active_titles_expire`). Поэтому
+`grant_title`/`expire_due` дополнительно оборачивают SELECT+мутацию в
+SAVEPOINT (`session.begin_nested()`) и ловят `IntegrityError` от частичного
+UNIQUE — та же идемпотентная дисциплина, что `economy_service` использует
+для денег, только здесь конфликт разрешается перечитыванием состояния и
+повтором state machine один раз, а не молчаливым no-op.
 
 Pitfall 1 (verified aiogram 3.27.0): `set_chat_administrator_custom_title`
 работает ТОЛЬКО на админах, реально promoted этим ботом — `grant_title`
@@ -42,6 +50,7 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.exceptions import TelegramForbiddenError
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
@@ -149,42 +158,67 @@ async def grant_title(
     транзакцию завершает вызывающий."""
     validated_title = _validate_title(title)
 
-    existing = (
-        await session.execute(
-            select(ActiveTitle)
-            .where(
-                ActiveTitle.chat_id == chat_id,
-                ActiveTitle.user_id == user_id,
-                ActiveTitle.status == "active",
+    # CR-01 (05-REVIEW.md): `SELECT ... FOR UPDATE` только что ниже блокирует
+    # строку, которая УЖЕ существует — если в момент нашего SELECT ни одной
+    # active-строки нет (или конкурентная транзакция как раз меняет статус
+    # строки, на которой мы заблокированы), наш INSERT ниже может столкнуться
+    # с частичным UNIQUE(chat_id, user_id) WHERE status='active', который
+    # только что зафиксировала выигравшая гонку транзакция. Оборачиваем
+    # SELECT+INSERT в SAVEPOINT (форма economy_service: begin_nested() +
+    # except IntegrityError) и при конфликте перечитываем актуальное
+    # состояние ОДИН раз — тот же дух, что и идемпотентные примитивы
+    # economy_service, только тут мы не "уже применено, no-op", а
+    # "перезапустить решение state machine с свежими данными".
+    for attempt in range(2):
+        try:
+            async with session.begin_nested():
+                existing = (
+                    await session.execute(
+                        select(ActiveTitle)
+                        .where(
+                            ActiveTitle.chat_id == chat_id,
+                            ActiveTitle.user_id == user_id,
+                            ActiveTitle.status == "active",
+                        )
+                        .with_for_update()
+                    )
+                ).scalar_one_or_none()
+
+                new_status = "active"
+                if existing is not None:
+                    if existing.source == "victim" and source == "rental":
+                        # Номинант в приоритете — новая аренда рождается подвешенной,
+                        # активный тег номинанта не трогаем (D-07).
+                        new_status = "suspended"
+                    else:
+                        # victim поверх active rental, либо любой другой конфликт —
+                        # существующая строка подвешивается (не удаляется), новая активна.
+                        existing.status = "suspended"
+                        new_status = "active"
+
+                row = ActiveTitle(
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    tg_user_id=user_id,  # users.id == Telegram user id в этом проекте
+                    title=validated_title,
+                    source=source,
+                    price_paid=price_paid,
+                    expires_at=expires_at,
+                    status=new_status,
+                )
+                session.add(row)
+                await session.flush()
+            break
+        except IntegrityError:
+            if attempt == 1:
+                raise
+            logger.info(
+                "grant_title: гонка за active-строку (chat_id=%s, user_id=%s) — "
+                "перечитываем состояние и повторяем один раз",
+                chat_id,
+                user_id,
             )
-            .with_for_update()
-        )
-    ).scalar_one_or_none()
-
-    new_status = "active"
-    if existing is not None:
-        if existing.source == "victim" and source == "rental":
-            # Номинант в приоритете — новая аренда рождается подвешенной,
-            # активный тег номинанта не трогаем (D-07).
-            new_status = "suspended"
-        else:
-            # victim поверх active rental, либо любой другой конфликт —
-            # существующая строка подвешивается (не удаляется), новая активна.
-            existing.status = "suspended"
-            new_status = "active"
-
-    row = ActiveTitle(
-        chat_id=chat_id,
-        user_id=user_id,
-        tg_user_id=user_id,  # users.id == Telegram user id в этом проекте
-        title=validated_title,
-        source=source,
-        price_paid=price_paid,
-        expires_at=expires_at,
-        status=new_status,
-    )
-    session.add(row)
-    await session.flush()
+            continue
 
     if new_status == "active":
         await _promote_and_set_title(bot, chat_id, user_id, validated_title)
@@ -251,11 +285,33 @@ async def expire_due(bot: Bot, session: AsyncSession) -> int:
             )
         ).scalar_one_or_none()
 
-        if suspended is not None:
-            suspended.status = "active"
-            # Pitfall 3: титул не переживает demote/promote сам по себе —
-            # повторный set_chat_administrator_custom_title обязателен.
-            await _promote_and_set_title(bot, suspended.chat_id, suspended.user_id, suspended.title)
+        if suspended is None:
+            continue
+
+        # CR-01: тот же класс гонки, что и в grant_title — конкурентный
+        # grant_title мог уже выдать новую active-строку этому же
+        # (chat_id, user_id) между нашим SELECT due_rows и этим моментом.
+        # SAVEPOINT + except IntegrityError не роняет весь тик (и не
+        # откатывает уже обработанные строки due_rows): если восстановление
+        # конфликтует с частичным UNIQUE(chat_id, user_id) WHERE
+        # status='active', grant_title уже согласовал состояние сам (см. его
+        # собственный retry) — здесь просто пропускаем это восстановление.
+        try:
+            async with session.begin_nested():
+                suspended.status = "active"
+                await session.flush()
+        except IntegrityError:
+            logger.info(
+                "expire_due: восстановление suspended->active для chat_id=%s user_id=%s "
+                "столкнулось с конкурентным grant_title, пропускаем",
+                row.chat_id,
+                row.user_id,
+            )
+            continue
+
+        # Pitfall 3: титул не переживает demote/promote сам по себе —
+        # повторный set_chat_administrator_custom_title обязателен.
+        await _promote_and_set_title(bot, suspended.chat_id, suspended.user_id, suspended.title)
 
     return processed
 
