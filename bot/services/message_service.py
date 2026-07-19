@@ -13,10 +13,12 @@ from dataclasses import dataclass
 from zoneinfo import ZoneInfo
 
 from aiogram.types import Message
+from sqlalchemy import func
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from bot.services import profanity_service
 from common.models.daily_stat import DailyStat
 from common.models.message import Message as MessageModel
 from common.models.message_edit import MessageEdit
@@ -122,15 +124,33 @@ async def save_message(session: AsyncSession, event: Message) -> bool:
         return False
 
     stat_date = event.date.astimezone(MSK).date()
+    # AWARDS-01 (05-06): +4 колонки daily_stats в ТОМ ЖЕ upsert, что
+    # message_count — метрики номинаций /awards считаются инкрементно на
+    # записи, никаких COUNT(*) по messages на query-time (RESEARCH.md
+    # Anti-Pattern). text_or_caption покрывает и подпись медиа-сообщений.
+    text_or_caption = event.text or event.caption or ""
     daily_stat_stmt = pg_insert(DailyStat).values(
         chat_id=event.chat.id,
         user_id=user.id,
         stat_date=stat_date,
         message_count=1,
+        profanity_count=profanity_service.count_profanity(text_or_caption),
+        photo_count=1 if event.content_type.value == "photo" else 0,
+        forward_count=1 if event.forward_origin is not None else 0,
+        longest_msg_len=len(text_or_caption),
     )
     daily_stat_stmt = daily_stat_stmt.on_conflict_do_update(
         index_elements=["chat_id", "user_id", "stat_date"],
-        set_={"message_count": DailyStat.message_count + daily_stat_stmt.excluded.message_count},
+        set_={
+            "message_count": DailyStat.message_count + daily_stat_stmt.excluded.message_count,
+            "profanity_count": DailyStat.profanity_count
+            + daily_stat_stmt.excluded.profanity_count,
+            "photo_count": DailyStat.photo_count + daily_stat_stmt.excluded.photo_count,
+            "forward_count": DailyStat.forward_count + daily_stat_stmt.excluded.forward_count,
+            "longest_msg_len": func.greatest(
+                DailyStat.longest_msg_len, daily_stat_stmt.excluded.longest_msg_len
+            ),
+        },
     )
     await session.execute(daily_stat_stmt)
     return True
