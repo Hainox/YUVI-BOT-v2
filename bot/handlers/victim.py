@@ -8,7 +8,11 @@ bot/handlers/economy.py через `victim_service.is_active_victim`).
 Тонкий хендлер: вся пик/денежная логика — в victim_service (уже коммитит
 приз), Telegram-тег — defensive-эффект ПОСЛЕ этого коммита (форма мута
 дуэли: test_duel_accept_handler_survives_mute_failure — деньги уже
-двинулись, сбой Telegram API не должен ронять флоу /victim).
+двинулись, сбой Telegram API не должен ронять флоу /victim). Broad
+`except Exception` вокруг grant_title+commit покрывает не только
+Telegram-side сбои, но и DB-уровневые (WR-05, 05-REVIEW.md) — на любой
+из них сессия явно откатывается (`session.rollback()`), а не полагается
+на неявную подчистку при закрытии сессии.
 """
 
 from __future__ import annotations
@@ -71,6 +75,14 @@ async def victim_command(message: Message, session: AsyncSession, bot: Bot) -> N
         )
         await session.commit()
     except Exception:  # noqa: BLE001 - defensive, форма мута дуэли: приз уже выплачен
+        # WR-05 (05-REVIEW.md): grant_title может упасть на DB-уровне (не
+        # только на Telegram API — тот вообще не трогает сессию), оставляя
+        # Postgres-транзакцию в aborted-состоянии. Раньше здесь не было
+        # явного rollback — код полагался на то, что DbSessionMiddleware
+        # закроет сессию и неявно подчистит после возврата хендлера, вместо
+        # явной rollback-дисциплины, которой в проекте следуют для
+        # DB-уровневых исключений.
+        await session.rollback()
         logger.exception(
             "victim_command: не удалось выдать тег chat_id=%s user_id=%s",
             message.chat.id,

@@ -28,6 +28,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 import bot.handlers.victim as victim_handlers
 from bot.services import daily_pick_service
@@ -308,5 +309,43 @@ async def test_victim_handler_grants_tag(session, bot, monkeypatch):
     assert call.args[3] == uid
     assert call.kwargs["source"] == "victim"
     assert call.kwargs["expires_at"] is not None
+
+
+# --- WR-05 (05-REVIEW.md): explicit rollback on DB-уровневой ошибке grant_title --
+
+
+@pytest.mark.asyncio
+async def test_victim_handler_rolls_back_session_on_grant_title_db_error(session, bot, monkeypatch):
+    """grant_title может упасть DB-уровневой ошибкой (не только Telegram
+    API, который вообще не трогает сессию) — раньше except-блок в
+    bot/handlers/victim.py не делал явный session.rollback(), полагаясь на
+    неявную подчистку при закрытии сессии вместо явной rollback-дисциплины,
+    принятой в проекте для DB-уровневых исключений. Проверяем, что
+    session.rollback() реально вызывается (не просто "хендлер не упал")."""
+    chat_id = -1009004010
+    uid = 9004010
+    await _ensure_user(session, uid, "Жертва")
+    await _fund(session, chat_id, uid)
+    await _seed_daily_stat(session, chat_id, uid)
+    await economy_service.credit_bank(
+        session, chat_id, 10_000, kind="test_seed", ref_id="test_victim_handler_rollback_seed"
+    )
+    await session.commit()
+
+    monkeypatch.setattr(daily_pick_service, "_rng", _ForcedChoiceRng(uid))
+    monkeypatch.setattr(
+        victim_handlers.tag_service,
+        "grant_title",
+        AsyncMock(side_effect=IntegrityError("insert", {}, Exception("boom"))),
+    )
+
+    rollback_mock = AsyncMock(wraps=session.rollback)
+    monkeypatch.setattr(session, "rollback", rollback_mock)
+
+    message = _fake_message(chat_id, uid, "Жертва", "/victim")
+    await victim_handlers.victim_command(message, session, bot)
+
+    rollback_mock.assert_awaited_once()
+    message.answer.assert_awaited_once()
 
     message.answer.assert_awaited_once()
