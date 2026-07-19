@@ -1,5 +1,5 @@
 """POST /api/v1/feedback (member) + GET/PATCH /api/v1/admin/feedback (admin)
-— CASINO-03, D-04/D-05.
+— CASINO-03, D-04/D-05; закрытие с наградой (FEEDBACK-01, D-14, T-06-14).
 
 `author` (user_id/chat_id) берётся ИСКЛЮЧИТЕЛЬНО из `AuthContext`
 (`require_membership`), никогда из тела запроса (IDOR, T-04.3-01) — та же
@@ -8,7 +8,10 @@
 JSON-теле (например поддельный `user_id`) Pydantic молча игнорирует.
 
 Admin-роуты гейтятся `require_admin` (живой `getChatMember`, НЕ
-`BOT_ADMIN_IDS`) — T-04.3-02.
+`BOT_ADMIN_IDS`) — T-04.3-02. `resolved=true` в PATCH зовёт `feedback_service.
+close` — ЕДИНАЯ точка выдачи денежной награды автору при закрытии заявки
+(симметрично `bot/handlers/feedback_bot.py`'s `submit`-путь); `resolved=false`
+использует `set_resolved` без денежных последствий.
 """
 
 from __future__ import annotations
@@ -63,9 +66,14 @@ async def patch_admin_feedback(
     feedback_id: int, body: ResolveBody, auth: AuthContext = Depends(require_admin)
 ) -> dict:
     async with SessionLocal() as session:
-        toggled = await feedback_service.set_resolved(
-            session, auth.chat_id, feedback_id, body.resolved
-        )
+        if body.resolved:
+            # D-14: закрытие из админки — награда автору (bug->500/idea->300,
+            # complaint/other->0), идемпотентно (rewarded_at guard в close()).
+            toggled = await feedback_service.close(session, auth.chat_id, feedback_id)
+        else:
+            toggled = await feedback_service.set_resolved(
+                session, auth.chat_id, feedback_id, False
+            )
         if not toggled:
             raise HTTPException(status_code=404, detail="feedback not found")
         await session.commit()
