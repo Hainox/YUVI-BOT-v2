@@ -18,9 +18,12 @@ mean-reversion тик AMM-пула фермы CP<->ювик (amm_mean_reversion,
 10м, D-03) через clicker_service.register_amm_tick (план 04.1-05), демот
 просроченных Telegram custom_title + восстановление подвешенной аренды
 (active_titles_expire, interval 5м, D-07/D-10) через
-tag_service.register_title_expiry (план 05-03), и автопост /awards
+tag_service.register_title_expiry (план 05-03), автопост /awards
 (awards_daily_autopost, cron ~23:55 МСК, AWARDS-01/02) через
-awards_service.register_daily_autopost (план 05-06). Импорты
+awards_service.register_daily_autopost (план 05-06), и проактивный
+сброс/анонс лотереи «Yuvi_Yuvi дня» (lottery_daily_reset, cron 00:00 МСК,
+LOTTERY-01, UX-safety-net поверх day_msk из Pitfall 4) через
+lottery_service.register_daily_reset (план 05-05). Импорты
 ленивые (внутри функции), чтобы модули, ещё не существующие на момент
 плана 01 (пустой setup_jobs), не ломали import bot.main до их появления.
 """
@@ -60,8 +63,10 @@ def setup_jobs(bot: Bot) -> None:
     mean-reversion тик AMM-пула фермы (план 04.1-05, amm_mean_reversion,
     interval 10м, D-03), демот просроченных Telegram custom_title +
     восстановление подвешенной аренды (план 05-03, active_titles_expire,
-    interval 5м, D-07/D-10) и автопост /awards (план 05-06,
-    awards_daily_autopost, cron ~23:55 МСК, AWARDS-01/02). Ленивые импорты —
+    interval 5м, D-07/D-10), автопост /awards (план 05-06,
+    awards_daily_autopost, cron ~23:55 МСК, AWARDS-01/02) и сброс/анонс
+    ежедневной лотереи (план 05-05, lottery_daily_reset, cron 00:00 МСК,
+    LOTTERY-01). Ленивые импорты —
     эти модули появились в более поздних планах, чем изначальный (пустой)
     setup_jobs плана 01.
     """
@@ -70,6 +75,7 @@ def setup_jobs(bot: Bot) -> None:
     from bot.services import clicker_service
     from bot.services import digest_service
     from bot.services import embed_worker
+    from bot.services import lottery_service
     from bot.services import markets_service
     from bot.services import nlp_classifier
     from bot.services import tag_service
@@ -83,6 +89,7 @@ def setup_jobs(bot: Bot) -> None:
     clicker_service.register_amm_tick(scheduler)
     tag_service.register_title_expiry(scheduler, bot)
     awards_service.register_daily_autopost(scheduler, bot)
+    lottery_service.register_daily_reset(scheduler, bot)
 
     async def _digest_job() -> None:
         await digest_service.run_daily_digest(bot)
