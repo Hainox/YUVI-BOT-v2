@@ -21,6 +21,10 @@ class Feedback(Base):
     Плоские String-колонны для category — та же конвенция, что
     `CasinoGame.game`/`status`, `EconomyTx.kind`: НИКАКОГО native Postgres
     ENUM (расширение набора категорий — просто код-константа, не ALTER TYPE).
+
+    reward/rewarded_at (фаза 6, D-14) — аудит и идемпотентность-якорь награды
+    close(): rewarded_at IS NOT NULL означает, что награда уже выдана, повторный
+    close() — no-op. Обе колонки nullable, заполняются только планом 06-05.
     """
 
     __tablename__ = "feedback"
@@ -32,3 +36,5 @@ class Feedback(Base):
     text: Mapped[str] = mapped_column(Text, nullable=False)
     resolved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    reward: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    rewarded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

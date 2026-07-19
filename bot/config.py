@@ -93,6 +93,23 @@ class Settings(BaseSettings):
     steam_id64: str = Field(default="", alias="STEAM_ID64")
     twin_max_output_tokens: int = Field(default=300, alias="TWIN_MAX_OUTPUT_TOKENS")
 
+    # --- Платные фичи, донаты, медиа, фидбек (фаза 6) ---
+    # Соцмагазин (D-01/A1): цены сбалансированы относительно casino_min_bet=10,
+    # жертва дня=228, старт экономики=1000 — не копия эталонных 50/150/300.
+    social_poke_cost: int = Field(default=50, alias="SOCIAL_POKE_COST")
+    social_hug_cost: int = Field(default=50, alias="SOCIAL_HUG_COST")
+    social_joke_order_cost: int = Field(default=150, alias="SOCIAL_JOKE_ORDER_COST")
+    social_roast_cost: int = Field(default=250, alias="SOCIAL_ROAST_COST")
+    # Скачивание медиа через self-hosted cobalt (D-05).
+    cobalt_api_url: str = Field(default="http://cobalt:9000/", alias="COBALT_API_URL")
+    mediadl_cost: int = Field(default=50, alias="MEDIADL_COST")
+    mediadl_max_mb: int = Field(default=48, alias="MEDIADL_MAX_MB")
+    # Telegram Stars → ювики (D-09).
+    stars_to_juvik_rate: int = Field(default=10, alias="STARS_TO_JUVIK_RATE")
+    # Награда автору фидбека при закрытии заявки (D-14); complaint/other — без награды.
+    feedback_reward_bug: int = Field(default=500, alias="FEEDBACK_REWARD_BUG")
+    feedback_reward_idea: int = Field(default=300, alias="FEEDBACK_REWARD_IDEA")
+
 
 settings = Settings()
 
