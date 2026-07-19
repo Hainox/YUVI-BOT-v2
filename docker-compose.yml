@@ -28,6 +28,22 @@ services:
     depends_on:
       - postgres
 
+  # Self-hosted media-download backend (MEDIA-01/02, DEPLOY-01) — внутренний
+  # сервис без внешних портов, как nlp/redis; бот обращается по внутреннему
+  # COBALT_API_URL=http://cobalt:9000/ (docker DNS-имя сервиса).
+  cobalt:
+    image: ghcr.io/imputnet/cobalt:11
+    restart: unless-stopped
+    init: true
+    read_only: true
+    environment:
+      # API_URL обязателен даже для внутреннего инстанса — без него
+      # tunnel/redirect-ссылки в ответах cobalt нерабочие (06-RESEARCH.md
+      # Pitfall 5).
+      API_URL: "http://cobalt:9000/"
+    # Портов наружу НЕ открываем — только bot обращается к cobalt внутри
+    # сети compose, как nlp:8000.
+
   bot:
     build:
       context: .
@@ -38,6 +54,7 @@ services:
       - migrations
       - redis
       - postgres
+      - cobalt
 
   api:
     build:
