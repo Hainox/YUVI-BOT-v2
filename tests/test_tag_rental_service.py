@@ -52,6 +52,14 @@ async def _fund(session, chat_id: int, user_id: int) -> int:
     return await economy_service.get_balance(session, chat_id, user_id)
 
 
+async def _topup(session, chat_id: int, user_id: int, amount: int, ref_id: str) -> None:
+    """Довносит баланс сверх стартового бонуса — 3/7-дневная аренда (1500/3500)
+    дороже settings.economy_start_bonus (1000 по умолчанию), тестам нужен
+    запас, не связанный с самим TAG-02 сценарием недостатка средств."""
+    await economy_service.credit(session, chat_id, user_id, amount, kind="test_topup", ref_id=ref_id)
+    await session.commit()
+
+
 async def _get_user_balance(session, chat_id: int, user_id: int) -> int:
     result = await session.execute(
         select(UserBalance.balance).where(
@@ -96,7 +104,9 @@ async def test_rent_charges_and_grants(session, bot):
     chat_id = -1009007001
     user_id = 9007001
     await _ensure_user(session, user_id, "Арендатор")
-    balance_before = await _fund(session, chat_id, user_id)
+    await _fund(session, chat_id, user_id)
+    await _topup(session, chat_id, user_id, 5000, "test_topup_1")
+    balance_before = await _get_user_balance(session, chat_id, user_id)
     bank_before = await _get_bank_balance(session, chat_id)
 
     row = await tag_rental_service.rent_title(
@@ -229,6 +239,7 @@ async def test_nomination_suspends_then_restores_rental(session, bot):
     user_id = 9007006
     await _ensure_user(session, user_id)
     await _fund(session, chat_id, user_id)
+    await _topup(session, chat_id, user_id, 5000, "test_topup_6")
 
     rental = await tag_rental_service.rent_title(
         session, chat_id, user_id, "Аренда", 3, "tag_rent:test:6", bot
