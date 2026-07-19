@@ -1,0 +1,293 @@
+"""Единственный владелец Telegram custom_title и таблицы `active_titles`
+(TAG-01/02, D-07/D-10) — жертва дня (source='victim', план 05-04) и рынок
+аренды тегов (source='rental', план 05-07) строятся поверх этого модуля, ни
+один из них не зовёт `bot.promote_chat_member`/`bot.set_chat_administrator_
+custom_title` напрямую.
+
+Контракт порядка блокировок: активная строка `active_titles` того же
+`(chat_id, user_id)` блокируется `FOR UPDATE` ПЕРВОЙ (частичный
+UNIQUE(chat_id, user_id) WHERE status='active' из миграции 0008 гарантирует
+не больше одной active-строки на юзера) — та же форма, что
+`duel_service._get_duel_for_update`/`markets_service.place_bet` (row-lock
+перед мутацией, T-05-06).
+
+Pitfall 1 (verified aiogram 3.27.0): `set_chat_administrator_custom_title`
+работает ТОЛЬКО на админах, реально promoted этим ботом — `grant_title`
+ВСЕГДА зовёт `promote_chat_member` ПЕРЕД `set_chat_administrator_custom_title`,
+без исключений.
+
+Pitfall 3: демот/повторный промоут НЕ сохраняет `custom_title` сам по себе —
+`custom_title` это отдельный API-вызов, полностью независимый от
+promote_chat_member. `expire_due` при восстановлении подвешенной аренды
+ВСЕГДА повторно зовёт `set_chat_administrator_custom_title` со стёртым в
+`active_titles.title` значением.
+
+Любой сбой Telegram API (пользователь — реальный, НЕ promoted этим ботом
+админ; бот потерял `can_promote_members`) ловится defensively
+(TelegramBadRequest/TelegramForbiddenError логируется, не пробрасывается) —
+та же дисциплина, что мут проигравшего дуэли
+(`test_duel_accept_handler_survives_mute_failure`): состояние `active_titles`
+уже согласовано, побочный эффект Telegram-стороны не должен ронять
+вызывающий флоу (awards/victim payout, аренда).
+"""
+
+from __future__ import annotations
+
+import logging
+from datetime import datetime
+
+import emoji
+from aiogram import Bot
+from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramForbiddenError
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from bot.config import settings
+from common.db.session import SessionLocal
+from common.models.active_title import ActiveTitle
+
+logger = logging.getLogger(__name__)
+
+
+class TagError(Exception):
+    """Базовое исключение модуля тегов (валидация title и т.п.)."""
+
+
+# --- Валидация title (T-05-01, V5 Input Validation) --------------------------
+
+
+def _validate_title(title: str) -> str:
+    """Обрезает пробелы, отклоняет title длиннее settings.title_max (16) или
+    содержащий эмодзи (Telegram custom_title — plain text, ДО любого
+    обращения к Bot API, T-05-01: свободный ввод участника при аренде —
+    единственное по-настоящему недоверенное место в этой фазе)."""
+    cleaned = title.strip()
+    if not cleaned or len(cleaned) > settings.title_max:
+        raise TagError(f"Титул должен быть от 1 до {settings.title_max} символов")
+    if emoji.emoji_list(cleaned):
+        raise TagError("Титул не может содержать эмодзи")
+    return cleaned
+
+
+# --- Telegram-эффекты (защищённые от сбоя API) -------------------------------
+
+
+async def _promote_and_set_title(bot: Bot, chat_id: int, user_id: int, title: str) -> None:
+    """Pitfall 1: promote_chat_member ВСЕГДА первым, ПОТОМ
+    set_chat_administrator_custom_title. Сбой любого из двух вызовов
+    ловится, не пробрасывается (Pitfall 2 — реальный не-bot-promoted админ
+    или бот без can_promote_members)."""
+    try:
+        await bot.promote_chat_member(
+            chat_id=chat_id,
+            user_id=user_id,
+            is_anonymous=False,
+            can_invite_users=True,  # безобидное право, как в других сервисах
+        )
+        await bot.set_chat_administrator_custom_title(
+            chat_id=chat_id,
+            user_id=user_id,
+            custom_title=title,
+        )
+    except (TelegramBadRequest, TelegramForbiddenError):
+        logger.warning(
+            "tag_service: promote+custom_title не удался для chat_id=%s user_id=%s "
+            "(не bot-promoted админ или боту не хватает can_promote_members, "
+            "см. docs/botfather-setup.md) — active_titles-строка остаётся на месте",
+            chat_id,
+            user_id,
+        )
+
+
+async def _demote(bot: Bot, chat_id: int, user_id: int) -> None:
+    """Демот = promote_chat_member со всеми правами явно False (снятие тега).
+    Defensive-catch — та же дисциплина, что _promote_and_set_title."""
+    try:
+        await bot.promote_chat_member(
+            chat_id=chat_id,
+            user_id=user_id,
+            is_anonymous=False,
+            can_manage_chat=False,
+            can_delete_messages=False,
+            can_manage_video_chats=False,
+            can_restrict_members=False,
+            can_promote_members=False,
+            can_change_info=False,
+            can_invite_users=False,
+            can_pin_messages=False,
+            can_manage_topics=False,
+        )
+    except (TelegramBadRequest, TelegramForbiddenError):
+        logger.warning(
+            "tag_service: демот не удался для chat_id=%s user_id=%s — "
+            "active_titles-строка всё равно помечается expired",
+            chat_id,
+            user_id,
+        )
+
+
+# --- grant_title / clear_title -----------------------------------------------
+
+
+async def grant_title(
+    bot: Bot,
+    session: AsyncSession,
+    chat_id: int,
+    user_id: int,
+    title: str,
+    source: str,
+    expires_at: datetime | None,
+    price_paid: int | None = None,
+) -> ActiveTitle:
+    """Выдаёт Telegram custom_title. Валидация title ДО любого Bot API
+    (T-05-01). Приоритет номинанта над арендатором (D-07/D-10): грант
+    'victim' поверх активной 'rental' подвешивает её в 'suspended' (не
+    удаляет); грант 'rental' поверх активной 'victim' создаёт новую
+    rental-строку сразу 'suspended' (номинант остаётся). Не коммитит —
+    транзакцию завершает вызывающий."""
+    validated_title = _validate_title(title)
+
+    existing = (
+        await session.execute(
+            select(ActiveTitle)
+            .where(
+                ActiveTitle.chat_id == chat_id,
+                ActiveTitle.user_id == user_id,
+                ActiveTitle.status == "active",
+            )
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+
+    new_status = "active"
+    if existing is not None:
+        if existing.source == "victim" and source == "rental":
+            # Номинант в приоритете — новая аренда рождается подвешенной,
+            # активный тег номинанта не трогаем (D-07).
+            new_status = "suspended"
+        else:
+            # victim поверх active rental, либо любой другой конфликт —
+            # существующая строка подвешивается (не удаляется), новая активна.
+            existing.status = "suspended"
+            new_status = "active"
+
+    row = ActiveTitle(
+        chat_id=chat_id,
+        user_id=user_id,
+        tg_user_id=user_id,  # users.id == Telegram user id в этом проекте
+        title=validated_title,
+        source=source,
+        price_paid=price_paid,
+        expires_at=expires_at,
+        status=new_status,
+    )
+    session.add(row)
+    await session.flush()
+
+    if new_status == "active":
+        await _promote_and_set_title(bot, chat_id, user_id, validated_title)
+
+    return row
+
+
+async def clear_title(bot: Bot, session: AsyncSession, chat_id: int, user_id: int) -> None:
+    """Снимает активный тег: демотит (defensively) и помечает active-строку
+    юзера expired. Не восстанавливает подвешенную аренду — это забота
+    expire_due (снятие вручную, а не по расписанию, не triggers restore)."""
+    await _demote(bot, chat_id, user_id)
+    active_rows = (
+        await session.execute(
+            select(ActiveTitle).where(
+                ActiveTitle.chat_id == chat_id,
+                ActiveTitle.user_id == user_id,
+                ActiveTitle.status == "active",
+            )
+        )
+    ).scalars().all()
+    for row in active_rows:
+        row.status = "expired"
+
+
+# --- expire_due (планировщик, D-07 restore) -----------------------------------
+
+
+async def expire_due(bot: Bot, session: AsyncSession) -> int:
+    """Демотит просроченные active-титулы (expires_at <= now) и
+    восстанавливает подвешенную аренду того же юзера (suspended->active,
+    повторный promote+set_custom_title — Pitfall 3). Возвращает число
+    обработанных (демотированных) строк."""
+    now = datetime.utcnow()
+    due_rows = (
+        await session.execute(
+            select(ActiveTitle)
+            .where(
+                ActiveTitle.status == "active",
+                ActiveTitle.expires_at.isnot(None),
+                ActiveTitle.expires_at <= now,
+            )
+            .with_for_update()
+        )
+    ).scalars().all()
+
+    processed = 0
+    for row in due_rows:
+        await _demote(bot, row.chat_id, row.user_id)
+        row.status = "expired"
+        processed += 1
+
+        suspended = (
+            await session.execute(
+                select(ActiveTitle)
+                .where(
+                    ActiveTitle.chat_id == row.chat_id,
+                    ActiveTitle.user_id == row.user_id,
+                    ActiveTitle.status == "suspended",
+                    ActiveTitle.expires_at.isnot(None),
+                    ActiveTitle.expires_at > now,
+                )
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+
+        if suspended is not None:
+            suspended.status = "active"
+            # Pitfall 3: титул не переживает demote/promote сам по себе —
+            # повторный set_chat_administrator_custom_title обязателен.
+            await _promote_and_set_title(bot, suspended.chat_id, suspended.user_id, suspended.title)
+
+    return processed
+
+
+# --- register_title_expiry (APScheduler, форма markets_service.register_auto_close) --
+
+
+_EXPIRE_JOB_ID = "active_titles_expire"
+
+
+def register_title_expiry(scheduler: AsyncIOScheduler, bot: Bot) -> None:
+    """Регистрирует фоновый expire_due как interval-job (5 минут), по
+    образцу markets_service.register_auto_close: своя сессия, broad-except —
+    тик обязан пережить любую ошибку и не уронить планировщик."""
+
+    async def _job() -> None:
+        async with SessionLocal() as session:
+            try:
+                processed = await expire_due(bot, session)
+                await session.commit()
+                if processed:
+                    logger.info("active_titles_expire: обработано просроченных титулов — %s", processed)
+            except Exception:  # noqa: BLE001 - job обязан пережить любую ошибку и не уронить планировщик
+                logger.exception("active_titles_expire: тик упал")
+
+    scheduler.add_job(
+        _job,
+        "interval",
+        minutes=5,
+        coalesce=True,
+        max_instances=1,
+        misfire_grace_time=120,
+        id=_EXPIRE_JOB_ID,
+        replace_existing=True,
+    )
