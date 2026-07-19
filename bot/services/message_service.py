@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from zoneinfo import ZoneInfo
 
@@ -129,12 +130,19 @@ async def save_message(session: AsyncSession, event: Message) -> bool:
     # записи, никаких COUNT(*) по messages на query-time (RESEARCH.md
     # Anti-Pattern). text_or_caption покрывает и подпись медиа-сообщений.
     text_or_caption = event.text or event.caption or ""
+    # WR-02 (05-REVIEW.md): pymorphy3-лемматизация — синхронный CPU-bound
+    # вызов без await-точек внутри; выполненный inline в save_message (на
+    # ПУТИ каждого сообщения, DATA-01 "100% сбор") блокирует единственный
+    # asyncio event loop на всё время разбора текста. Уносим в отдельный
+    # поток — тот же принцип, что MorphAnalyzer как module-level singleton
+    # (не создаётся per-call), просто вызов теперь не блокирует луп.
+    profanity_count = await asyncio.to_thread(profanity_service.count_profanity, text_or_caption)
     daily_stat_stmt = pg_insert(DailyStat).values(
         chat_id=event.chat.id,
         user_id=user.id,
         stat_date=stat_date,
         message_count=1,
-        profanity_count=profanity_service.count_profanity(text_or_caption),
+        profanity_count=profanity_count,
         photo_count=1 if event.content_type.value == "photo" else 0,
         forward_count=1 if event.forward_origin is not None else 0,
         longest_msg_len=len(text_or_caption),

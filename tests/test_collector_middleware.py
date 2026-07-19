@@ -112,6 +112,34 @@ async def test_collector_middleware_bumps_daily_stat_on_second_message(session):
 
 
 @pytest.mark.asyncio
+async def test_collector_middleware_counts_profanity_via_offloaded_thread(session):
+    """WR-02 (05-REVIEW.md): count_profanity теперь считается через
+    asyncio.to_thread (bot/services/message_service.py::save_message) вместо
+    inline-вызова на event loop — доказывает, что офлоуд в отдельный поток
+    не ломает результат: словоформа леммы всё равно засчитывается в
+    daily_stats.profanity_count."""
+    chat_id = -100123456799
+    user_id = 555000119
+    user = User(id=user_id, is_bot=False, first_name="Тест")
+
+    handler = AsyncMock(return_value="handled")
+    middleware = CollectorMiddleware()
+
+    message = _make_message(4001, chat_id, user, "ты блядь и бляди")
+    await middleware(handler, message, {"session": session})
+
+    stat = (
+        await session.execute(
+            select(DailyStat).where(
+                DailyStat.chat_id == chat_id,
+                DailyStat.user_id == user_id,
+            )
+        )
+    ).scalar_one()
+    assert stat.profanity_count >= 2
+
+
+@pytest.mark.asyncio
 async def test_collector_middleware_is_idempotent_on_retry_of_same_message(session):
     """T-02-04: повторная обработка того же telegram_message_id (ретрай после
     краша до commit) не должна задваивать daily_stats.message_count — сообщение
