@@ -8,7 +8,7 @@ Bot API напрямую (05-03: tag_service — единственный вла
 custom_title/active_titles).
 
 Свободный title (пользовательский ввод) валидируется через
-tag_service._validate_title ДО списания денег и ДО любого обращения к Bot
+tag_service.validate_title ДО списания денег и ДО любого обращения к Bot
 API (T-05-01) — единственная untrusted-free-text-точка этой фазы.
 
 Идемпотентность: ref_id аренды — f"tag_rent:{chat_id}:{message_id}"
@@ -61,7 +61,7 @@ async def rent_title(
     bot: Bot,
 ) -> ActiveTitle:
     """Аренда custom_title: days валидируется ПЕРВЫМ (дешёвая проверка без
-    похода к деньгам/API), затем title через tag_service._validate_title
+    похода к деньгам/API), затем title через tag_service.validate_title
     (T-05-01 — ДО денег и ДО Bot API), затем идемпотентное списание в банк
     чата (economy_service.debit_to_bank), и только после успешного списания —
     выдача через tag_service.grant_title(source='rental'); приоритет
@@ -80,7 +80,7 @@ async def rent_title(
         allowed = ", ".join(str(d) for d in sorted(_allowed_days()))
         raise TagRentalError(f"Аренда доступна только на {allowed} дн.")
 
-    validated_title = tag_service._validate_title(title)  # T-05-01, ДО денег/API
+    validated_title = tag_service.validate_title(title)  # T-05-01, ДО денег/API
 
     price = _price(days)
     charged = await economy_service.debit_to_bank(

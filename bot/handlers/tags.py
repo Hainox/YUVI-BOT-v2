@@ -24,7 +24,7 @@ router = Router()
 def _parse_rent_args(message: Message) -> tuple[int | None, str | None]:
     """Парсит `/tag_rent <дни> <титул>`. days — первый токен, только если он
     состоит целиком из цифр (иначе None); title — остаток строки как есть
-    (обрезка пробелов и валидация длины/эмодзи — в tag_service._validate_title,
+    (обрезка пробелов и валидация длины/эмодзи — в tag_service.validate_title,
     внутри tag_rental_service.rent_title, T-05-01)."""
     if message.text is None:
         return None, None

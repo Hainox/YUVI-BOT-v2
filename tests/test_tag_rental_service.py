@@ -9,7 +9,7 @@
   expires_at≈now+days*24h) — active_titles-строка source='rental' status='active'.
 - days вне settings.tag_rent_allowed_days отклоняется ДО списания/гранта.
 - Свободный title длиннее settings.title_max отклоняется ДО списания/гранта
-  (T-05-01 — делегируется tag_service._validate_title).
+  (T-05-01 — делегируется tag_service.validate_title).
 - Недостаток средств поднимает economy_service.InsufficientFunds, титул не выдан.
 - Повтор rent_title с тем же ref_id (ретрай апдейта Telegram) не списывает
   дважды и не зовёт Bot API повторно — идемпотентный no-op, возвращает уже

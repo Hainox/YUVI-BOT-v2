@@ -57,7 +57,7 @@ async def get_user_nlp_averages(session: AsyncSession, chat_id: int, user_id: in
     }
 
 
-async def _fetch_user_recent_texts(
+async def fetch_user_recent_texts(
     session: AsyncSession, chat_id: int, user_id: int, n: int
 ) -> list[dict]:
     """Последние N текстовых сообщений КОНКРЕТНОГО участника, в хронологическом
@@ -67,6 +67,11 @@ async def _fetch_user_recent_texts(
     вариант; здесь намеренно НЕ переиспользуется fetch_recent_texts напрямую,
     т.к. у неё нет параметра user_id — добавлять его туда расширило бы
     контракт функции, используемой /summary для всего чата).
+
+    Публичная (WR-04, 05-REVIEW.md) — вызывается не только build_portrait
+    отсюда, но и напрямую из twin_service.build_twin_reply; leading-
+    underscore имя неверно сигнализировало бы "internal only", хотя у
+    функции есть реальный внешний вызывающий.
     """
     stmt = (
         select(Message.text, User.first_name)
@@ -89,7 +94,7 @@ async def build_portrait(
     Стриминг в сообщение не нужен (портрет короткий, часть большого ответа
     /card) — собираем полный текст из ai_client.stream и возвращаем строкой.
     """
-    rows = await _fetch_user_recent_texts(session, chat_id, user_id, PORTRAIT_MESSAGE_LIMIT)
+    rows = await fetch_user_recent_texts(session, chat_id, user_id, PORTRAIT_MESSAGE_LIMIT)
     if not rows:
         return NO_DATA_PORTRAIT
 

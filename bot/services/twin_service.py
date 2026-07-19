@@ -12,7 +12,7 @@ Pitfall 8): модели не доверяем самораскрытие.
 
 Профиль = card_service.build_portrait (14-дн психо-портрет, reuse as-is,
 D-03) + свежая budget-capped выборка реальных сообщений через
-card_service._fetch_user_recent_texts + summary_service.build_context (тот
+card_service.fetch_user_recent_texts + summary_service.build_context (тот
 же char-budget дисциплина, что и /summary).
 """
 
@@ -65,7 +65,7 @@ async def build_twin_reply(
         session, chat_id, target_user_id, target_display_name
     )
     # Блок 2: свежая raw-выборка сообщений, тот же char-budget, что у /summary.
-    sample_rows = await card_service._fetch_user_recent_texts(
+    sample_rows = await card_service.fetch_user_recent_texts(
         session, chat_id, target_user_id, TWIN_SAMPLE_MESSAGE_LIMIT
     )
     char_budget = settings.ai_max_input_tokens * CHARS_PER_TOKEN

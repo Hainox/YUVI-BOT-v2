@@ -5,7 +5,7 @@
 Доказывают:
 - grant_title ВСЕГДА зовёт bot.promote_chat_member ПЕРЕД
   bot.set_chat_administrator_custom_title (Pitfall 1, T-05-03).
-- _validate_title отклоняет title длиннее settings.title_max ДО любого
+- validate_title отклоняет title длиннее settings.title_max ДО любого
   обращения к Bot API (T-05-01) — ни promote, ни custom_title не вызываются.
 - active_titles — единственный владелец Telegram-эффекта: grant_title
   (source='victim') подвешивает активную 'rental'-строку того же юзера в
@@ -90,7 +90,7 @@ async def test_grant_promotes_then_sets_title(session, bot):
     assert stored.status == "active"
 
 
-# --- _validate_title: длина ДО обращения к Bot API (T-05-01) ----------------
+# --- validate_title: длина ДО обращения к Bot API (T-05-01) ----------------
 
 
 @pytest.mark.asyncio

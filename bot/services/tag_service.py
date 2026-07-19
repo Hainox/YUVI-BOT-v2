@@ -67,11 +67,16 @@ class TagError(Exception):
 # --- Валидация title (T-05-01, V5 Input Validation) --------------------------
 
 
-def _validate_title(title: str) -> str:
+def validate_title(title: str) -> str:
     """Обрезает пробелы, отклоняет title длиннее settings.title_max (16) или
     содержащий эмодзи (Telegram custom_title — plain text, ДО любого
     обращения к Bot API, T-05-01: свободный ввод участника при аренде —
-    единственное по-настоящему недоверенное место в этой фазе)."""
+    единственное по-настоящему недоверенное место в этой фазе).
+
+    Публичная (WR-04, 05-REVIEW.md) — вызывается не только отсюда, но и
+    напрямую из tag_rental_service.rent_title ДО списания денег/Bot API;
+    leading-underscore имя неверно сигнализировало бы "internal only", хотя
+    у функции есть реальный внешний вызывающий."""
     cleaned = title.strip()
     if not cleaned or len(cleaned) > settings.title_max:
         raise TagError(f"Титул должен быть от 1 до {settings.title_max} символов")
@@ -165,7 +170,7 @@ async def grant_title(
     строки на идемпотентном ретрае, вместо recency-эвристики по "последней
     rental-строке юзера". active_titles остаётся под записью ИСКЛЮЧИТЕЛЬНО
     tag_service — вызывающие передают ref_id сюда, а не пишут строку сами."""
-    validated_title = _validate_title(title)
+    validated_title = validate_title(title)
 
     # CR-01 (05-REVIEW.md): `SELECT ... FOR UPDATE` только что ниже блокирует
     # строку, которая УЖЕ существует — если в момент нашего SELECT ни одной
