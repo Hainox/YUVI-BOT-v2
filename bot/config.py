@@ -83,6 +83,16 @@ class Settings(BaseSettings):
         default="http://localhost:8003", alias="MINI_APP_FRONTEND_ORIGIN"
     )
 
+    # --- Ежедневные ритуалы, теги и Twin (фаза 5) ---
+    tag_rent_per_day: int = Field(default=500, alias="TAG_RENT_PER_DAY")
+    tag_rent_allowed_days: str = Field(default="1,3,7", alias="TAG_RENT_ALLOWED_DAYS")
+    title_max: int = Field(default=16, alias="TITLE_MAX")
+    # Секреты Steam Wishlist (AWARDS-01) — пустые по умолчанию, заполняются
+    # в .env перед деплоем; никогда не хардкодятся (D-11).
+    steam_api_key: str = Field(default="", alias="STEAM_API_KEY")
+    steam_id64: str = Field(default="", alias="STEAM_ID64")
+    twin_max_output_tokens: int = Field(default=300, alias="TWIN_MAX_OUTPUT_TOKENS")
+
 
 settings = Settings()
 

@@ -23,3 +23,8 @@ class DailyStat(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     stat_date: Mapped[Date] = mapped_column(Date, nullable=False)
     message_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    # +4 колонки фазы 5 (AWARDS-01 метрики номинаций /awards) — 05-01, миграция 0008.
+    profanity_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    photo_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    forward_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    longest_msg_len: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
