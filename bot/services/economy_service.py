@@ -172,19 +172,27 @@ async def transfer_with_fee(
     to_user_id: int,
     amount: int,
     ref_id: str,
+    fee_multiplier: float = 1.0,
 ) -> None:
-    """Перевод с комиссией в банк чата (D-04): fee = max(1, ceil(amount * transfer_fee_pct)).
+    """Перевод с комиссией в банк чата (D-04): fee = max(1, ceil(amount * transfer_fee_pct * fee_multiplier)).
 
     Контракт порядка блокировок (Pattern 1): user_balance по возрастанию
     user_id, банк — последним. Идемпотентность (Pattern 2): повтор с тем же
     ref_id ловит IntegrityError на _log_tx внутри SAVEPOINT — no-op.
+
+    `fee_multiplier` — additive kwarg (default 1.0 сохраняет прежнее
+    поведение без изменений): игровой дебафф «Жертвы дня» (VICTIM-01/D-06)
+    передаёт 2.0 через вызывающего (bot/handlers/economy.py резолвит его
+    через victim_service.is_active_victim); этот модуль остаётся ignorant
+    про то, ПОЧЕМУ у конкретного перевода другая комиссия (05-RESEARCH.md
+    Pattern 3).
     """
     if amount <= 0:
         raise InvalidArgument("Сумма перевода должна быть положительной")
     if from_user_id == to_user_id:
         raise InvalidArgument("Нельзя перевести самому себе")
 
-    fee = max(1, math.ceil(amount * settings.transfer_fee_pct))
+    fee = max(1, math.ceil(amount * settings.transfer_fee_pct * fee_multiplier))
 
     first_id, second_id = sorted((from_user_id, to_user_id))
     await _get_or_create_balance(session, chat_id, first_id)
