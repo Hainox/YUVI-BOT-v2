@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
 from bot.services import economy_service
+from bot.services import victim_service
 from bot.services.target_resolution_service import resolve_target
 
 router = Router()
@@ -153,15 +154,29 @@ async def transfer_command(message: Message, session: AsyncSession) -> None:
     to_user_id, to_raw_name = target
     ref_id = f"transfer:{message.chat.id}:{message.message_id}"
 
+    # T-05-12: дебафф «Жертвы дня» (D-06) резолвится здесь, server-authoritative,
+    # через daily_picks-lookup — НЕ из клиентского ввода. economy_service
+    # остаётся ignorant про victim (05-RESEARCH.md Pattern 3).
+    is_victim = await victim_service.is_active_victim(
+        session, message.chat.id, message.from_user.id
+    )
+    fee_multiplier = victim_service.VICTIM_FEE_MULTIPLIER if is_victim else 1.0
+
     try:
         await economy_service.transfer_with_fee(
-            session, message.chat.id, message.from_user.id, to_user_id, amount, ref_id
+            session,
+            message.chat.id,
+            message.from_user.id,
+            to_user_id,
+            amount,
+            ref_id,
+            fee_multiplier=fee_multiplier,
         )
     except (economy_service.InvalidArgument, economy_service.InsufficientFunds) as exc:
         await message.answer(str(exc))
         return
 
-    fee = max(1, math.ceil(amount * settings.transfer_fee_pct))
+    fee = max(1, math.ceil(amount * settings.transfer_fee_pct * fee_multiplier))
     text = format_transfer_success(amount, html.escape(to_raw_name), fee)
 
     await message.answer(text, parse_mode="HTML")
