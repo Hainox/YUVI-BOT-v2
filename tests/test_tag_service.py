@@ -1,0 +1,215 @@
+"""Тесты tag_service (TAG-01) — единственный владелец Telegram custom_title и
+таблицы active_titles (мокнутый `bot` из tests/conftest.py, живой Postgres
+через фикстуру `session`, форма test_duel_service.py).
+
+Доказывают:
+- grant_title ВСЕГДА зовёт bot.promote_chat_member ПЕРЕД
+  bot.set_chat_administrator_custom_title (Pitfall 1, T-05-03).
+- _validate_title отклоняет title длиннее settings.title_max ДО любого
+  обращения к Bot API (T-05-01) — ни promote, ни custom_title не вызываются.
+- active_titles — единственный владелец Telegram-эффекта: grant_title
+  (source='victim') подвешивает активную 'rental'-строку того же юзера в
+  'suspended' (не удаляет её) — приоритет номинанта над арендатором (D-07/D-10).
+- expire_due демотит просроченные active-титулы (status->expired) и
+  ВОССТАНАВЛИВАЕТ подвешенную аренду того же юзера (suspended->active,
+  повторный promote + set_custom_title — Pitfall 3).
+- Сбой Telegram API (TelegramBadRequest) ловится defensively в grant_title —
+  та же дисциплина, что мут дуэли (test_duel_accept_handler_survives_mute_failure).
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+from datetime import timedelta
+from unittest.mock import AsyncMock
+
+import pytest
+from aiogram.exceptions import TelegramBadRequest
+from sqlalchemy import select
+
+from bot.config import settings
+from bot.services import tag_service
+from common.models.active_title import ActiveTitle
+from common.models.user import User
+
+
+# --- Хелперы (форма test_duel_service.py) ------------------------------------
+
+
+async def _ensure_user(session, user_id: int, first_name: str = "Тест") -> None:
+    session.add(User(id=user_id, first_name=first_name))
+    await session.flush()
+
+
+async def _get_active_title(session, chat_id: int, user_id: int, source: str) -> ActiveTitle:
+    result = await session.execute(
+        select(ActiveTitle).where(
+            ActiveTitle.chat_id == chat_id,
+            ActiveTitle.user_id == user_id,
+            ActiveTitle.source == source,
+        )
+    )
+    return result.scalars().first()
+
+
+# --- grant_title: порядок promote -> custom_title (Pitfall 1) ---------------
+
+
+@pytest.mark.asyncio
+async def test_grant_promotes_then_sets_title(session, bot):
+    chat_id = -1009006001
+    user_id = 9006001
+    await _ensure_user(session, user_id, "Номинант")
+
+    expires_at = datetime.utcnow() + timedelta(hours=24)
+    row = await tag_service.grant_title(
+        bot, session, chat_id, user_id, "Жертва дня", "victim", expires_at
+    )
+    await session.commit()
+
+    bot.promote_chat_member.assert_awaited_once()
+    bot.set_chat_administrator_custom_title.assert_awaited_once()
+
+    promote_call_index = next(
+        i for i, c in enumerate(bot.mock_calls) if c[0] == "promote_chat_member"
+    )
+    title_call_index = next(
+        i
+        for i, c in enumerate(bot.mock_calls)
+        if c[0] == "set_chat_administrator_custom_title"
+    )
+    assert promote_call_index < title_call_index
+
+    assert row.status == "active"
+    assert row.source == "victim"
+    assert row.title == "Жертва дня"
+
+    stored = await _get_active_title(session, chat_id, user_id, "victim")
+    assert stored is not None
+    assert stored.status == "active"
+
+
+# --- _validate_title: длина ДО обращения к Bot API (T-05-01) ----------------
+
+
+@pytest.mark.asyncio
+async def test_grant_rejects_long_title(session, bot):
+    chat_id = -1009006002
+    user_id = 9006002
+    await _ensure_user(session, user_id)
+
+    long_title = "А" * (settings.title_max + 1)
+    with pytest.raises(tag_service.TagError):
+        await tag_service.grant_title(
+            bot,
+            session,
+            chat_id,
+            user_id,
+            long_title,
+            "victim",
+            datetime.utcnow() + timedelta(hours=24),
+        )
+
+    bot.promote_chat_member.assert_not_awaited()
+    bot.set_chat_administrator_custom_title.assert_not_awaited()
+
+
+# --- active_titles state machine: victim подвешивает active rental (D-07) ---
+
+
+@pytest.mark.asyncio
+async def test_grant_victim_suspends_active_rental(session, bot):
+    chat_id = -1009006003
+    user_id = 9006003
+    await _ensure_user(session, user_id)
+
+    rental_expires = datetime.utcnow() + timedelta(days=3)
+    rental_row = await tag_service.grant_title(
+        bot, session, chat_id, user_id, "Аренда", "rental", rental_expires
+    )
+    await session.commit()
+    bot.reset_mock()
+
+    victim_expires = datetime.utcnow() + timedelta(hours=24)
+    victim_row = await tag_service.grant_title(
+        bot, session, chat_id, user_id, "Жертва", "victim", victim_expires
+    )
+    await session.commit()
+
+    await session.refresh(rental_row)
+    await session.refresh(victim_row)
+    assert rental_row.status == "suspended"
+    assert victim_row.status == "active"
+    assert victim_row.source == "victim"
+
+
+# --- expire_due: демот просроченного + восстановление аренды (Pitfall 3) ----
+
+
+@pytest.mark.asyncio
+async def test_expire_demotes_and_restores_rental(session, bot):
+    chat_id = -1009006004
+    user_id = 9006004
+    await _ensure_user(session, user_id)
+
+    rental_expires = datetime.utcnow() + timedelta(days=3)
+    rental_row = await tag_service.grant_title(
+        bot, session, chat_id, user_id, "Аренда", "rental", rental_expires
+    )
+    await session.commit()
+
+    victim_expires = datetime.utcnow() - timedelta(hours=1)  # уже просрочен
+    victim_row = await tag_service.grant_title(
+        bot, session, chat_id, user_id, "Жертва", "victim", victim_expires
+    )
+    await session.commit()
+
+    await session.refresh(rental_row)
+    assert rental_row.status == "suspended"
+
+    bot.reset_mock()
+    processed = await tag_service.expire_due(bot, session)
+    await session.commit()
+
+    assert processed == 1
+
+    await session.refresh(victim_row)
+    await session.refresh(rental_row)
+    assert victim_row.status == "expired"
+    assert rental_row.status == "active"
+
+    # Pitfall 3: восстановленная аренда получает повторный
+    # set_chat_administrator_custom_title со своим сохранённым title, титул
+    # не переживает demote/promote сам по себе.
+    bot.promote_chat_member.assert_awaited()
+    title_calls = [
+        c
+        for c in bot.set_chat_administrator_custom_title.await_args_list
+        if c.kwargs.get("custom_title") == "Аренда"
+    ]
+    assert title_calls
+
+
+# --- Сбой Telegram API не должен ронять флоу (defensive-catch) --------------
+
+
+@pytest.mark.asyncio
+async def test_grant_survives_telegram_error(session, bot):
+    chat_id = -1009006005
+    user_id = 9006005
+    await _ensure_user(session, user_id)
+
+    bot.set_chat_administrator_custom_title.side_effect = TelegramBadRequest(
+        method=AsyncMock(), message="CHAT_ADMIN_REQUIRED"
+    )
+
+    expires_at = datetime.utcnow() + timedelta(hours=24)
+    row = await tag_service.grant_title(
+        bot, session, chat_id, user_id, "Жертва", "victim", expires_at
+    )
+    await session.commit()
+
+    assert row.status == "active"
+    stored = await _get_active_title(session, chat_id, user_id, "victim")
+    assert stored is not None
+    assert stored.status == "active"
