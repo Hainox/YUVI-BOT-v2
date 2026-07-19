@@ -26,6 +26,7 @@ from unittest.mock import AsyncMock
 import pytest
 from aiogram.exceptions import TelegramBadRequest
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from bot.config import settings
 from bot.services import tag_service
@@ -188,6 +189,64 @@ async def test_expire_demotes_and_restores_rental(session, bot):
         if c.kwargs.get("custom_title") == "Аренда"
     ]
     assert title_calls
+
+
+# --- CR-01 (05-REVIEW.md): гонка "existing=None, но INSERT конфликтует" -----
+
+
+@pytest.mark.asyncio
+async def test_grant_retries_once_on_integrity_error(session, bot):
+    """Симулирует ровно ту гонку, что описана в CR-01: на момент SELECT ...
+    FOR UPDATE активной строки ещё не было (или она "потерялась" из
+    результата после разблокировки — см. docstring grant_title), но флаш
+    INSERT'а конфликтует с частичным UNIQUE(chat_id, user_id) WHERE
+    status='active', который в реальности только что зафиксировала
+    выигравшая гонку транзакция. Здесь конфликт при первом флаше
+    симулируется напрямую (без второй живой транзакции) — доказывает, что
+    grant_title перечитывает состояние и повторяет ОДИН раз вместо того,
+    чтобы пробросить IntegrityError наружу (это именно то, что раньше падало
+    необработанным исключением — bot/handlers/tags.py не ловит
+    IntegrityError вовсе, см. Impact в CR-01)."""
+    chat_id = -1009006006
+    user_id = 9006006
+    await _ensure_user(session, user_id)
+
+    real_flush = session.flush
+    calls = {"n": 0}
+
+    async def flaky_flush(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise IntegrityError(
+                "INSERT INTO active_titles ...",
+                {},
+                Exception('duplicate key value violates unique constraint "uq_active_title_user_active"'),
+            )
+        return await real_flush(*args, **kwargs)
+
+    session.flush = flaky_flush
+    try:
+        expires_at = datetime.utcnow() + timedelta(hours=24)
+        row = await tag_service.grant_title(
+            bot, session, chat_id, user_id, "Ретрай", "victim", expires_at
+        )
+    finally:
+        session.flush = real_flush
+    await session.commit()
+
+    # IntegrityError не пробрасывается наружу — flush был вызван дважды
+    # (первый упал, второй — реальный, успешный).
+    assert calls["n"] == 2
+    assert row.status == "active"
+
+    stored = await _get_active_title(session, chat_id, user_id, "victim")
+    assert stored is not None
+    assert stored.status == "active"
+    assert stored.id == row.id
+
+    # Успешно выданный тег ПОСЛЕ повтора — Bot API всё равно вызывается.
+    bot.promote_chat_member.assert_awaited_once()
+    bot.set_chat_administrator_custom_title.assert_awaited_once()
 
 
 # --- Сбой Telegram API не должен ронять флоу (defensive-catch) --------------
