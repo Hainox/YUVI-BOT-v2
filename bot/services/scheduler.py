@@ -15,10 +15,12 @@ markets_service.register_external_check (план 03-06), авто-стенд
 просроченных раздач блэкджека (blackjack_timeouts, interval 30с, D-07/D-08)
 через casino_service.register_blackjack_timeouts (план 04.1-03),
 mean-reversion тик AMM-пула фермы CP<->ювик (amm_mean_reversion, interval
-10м, D-03) через clicker_service.register_amm_tick (план 04.1-05), и демот
+10м, D-03) через clicker_service.register_amm_tick (план 04.1-05), демот
 просроченных Telegram custom_title + восстановление подвешенной аренды
 (active_titles_expire, interval 5м, D-07/D-10) через
-tag_service.register_title_expiry (план 05-03). Импорты
+tag_service.register_title_expiry (план 05-03), и автопост /awards
+(awards_daily_autopost, cron ~23:55 МСК, AWARDS-01/02) через
+awards_service.register_daily_autopost (план 05-06). Импорты
 ленивые (внутри функции), чтобы модули, ещё не существующие на момент
 плана 01 (пустой setup_jobs), не ломали import bot.main до их появления.
 """
@@ -56,11 +58,14 @@ def setup_jobs(bot: Bot) -> None:
     external_markets_check, interval 30м), авто-стенд просроченных раздач
     блэкджека (план 04.1-03, blackjack_timeouts, interval 30с, D-07/D-08),
     mean-reversion тик AMM-пула фермы (план 04.1-05, amm_mean_reversion,
-    interval 10м, D-03) и демот просроченных Telegram custom_title +
+    interval 10м, D-03), демот просроченных Telegram custom_title +
     восстановление подвешенной аренды (план 05-03, active_titles_expire,
-    interval 5м, D-07/D-10). Ленивые импорты — эти модули появились в более
-    поздних планах, чем изначальный (пустой) setup_jobs плана 01.
+    interval 5м, D-07/D-10) и автопост /awards (план 05-06,
+    awards_daily_autopost, cron ~23:55 МСК, AWARDS-01/02). Ленивые импорты —
+    эти модули появились в более поздних планах, чем изначальный (пустой)
+    setup_jobs плана 01.
     """
+    from bot.services import awards_service
     from bot.services import casino_service
     from bot.services import clicker_service
     from bot.services import digest_service
@@ -77,6 +82,7 @@ def setup_jobs(bot: Bot) -> None:
     casino_service.register_blackjack_timeouts(scheduler)
     clicker_service.register_amm_tick(scheduler)
     tag_service.register_title_expiry(scheduler, bot)
+    awards_service.register_daily_autopost(scheduler, bot)
 
     async def _digest_job() -> None:
         await digest_service.run_daily_digest(bot)
