@@ -38,3 +38,10 @@ class ActiveTitle(Base):
     # 'active' | 'suspended' | 'expired' | 'cancelled'
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    # WR-01 (05-REVIEW.md): ref_id аренды, породившей эту строку (только
+    # source='rental') — tag_rental_service.rent_title ищет по нему свою
+    # строку на идемпотентном ретрае, а не "самую свежую" (recency-эвристика
+    # могла вернуть чужую строку, если юзер успел арендовать снова другим
+    # ref_id до прихода ретрая). NULL для source='victim' — там своей
+    # идемпотентности через ref_id нет (victim_service — per-MSK-day).
+    ref_id: Mapped[str | None] = mapped_column(String(80), nullable=True)

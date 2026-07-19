@@ -15,7 +15,11 @@ API (T-05-01) — единственная untrusted-free-text-точка это
 (назначается вызывающим хендлером). Повтор того же ref_id (ретрай апдейта
 Telegram) ловится через economy_service.debit_to_bank — деньги не
 списываются повторно, grant_title (а значит и Bot API) не вызывается
-повторно; вызывающий получает уже созданную ранее rental-строку.
+повторно; вызывающий получает уже созданную ранее rental-строку — найденную
+ПО ref_id (active_titles.ref_id, миграция 0009), а не "самую свежую
+rental-строку юзера" (WR-01, 05-REVIEW.md: recency-эвристика могла вернуть
+чужую строку, если юзер успел арендовать снова другим ref_id до прихода
+ретрая).
 """
 
 from __future__ import annotations
@@ -83,21 +87,30 @@ async def rent_title(
         session, chat_id, user_id, price, kind="tag_rent", ref_id=ref_id
     )
     if not charged:
+        # WR-01 (05-REVIEW.md): "самая свежая rental-строка юзера" — НЕ то
+        # же самое, что "строка, которую создал ИМЕННО этот ref_id". Если
+        # юзер арендовал повторно (другой ref_id/message_id) уже ПОСЛЕ
+        # вызова, который сейчас реплеится, самая свежая строка принадлежит
+        # той, более поздней аренде — деньги не задваиваются (debit_to_bank
+        # уже вернул charged=False), но вызывающему ушёл бы чужой title/
+        # price_paid/expires_at. Ищем строку ИМЕННО по ref_id, который
+        # успешный вызов записал в неё ниже (active_titles.ref_id,
+        # миграция 0009) — однозначно, без recency-эвристики.
         existing = (
             await session.execute(
-                select(ActiveTitle)
-                .where(
+                select(ActiveTitle).where(
                     ActiveTitle.chat_id == chat_id,
                     ActiveTitle.user_id == user_id,
                     ActiveTitle.source == "rental",
+                    ActiveTitle.ref_id == ref_id,
                 )
-                .order_by(ActiveTitle.id.desc())
             )
-        ).scalars().first()
+        ).scalar_one_or_none()
         if existing is None:
-            # Тот же ref_id уже применён к деньгам, но rental-строки нет —
-            # структурно не должно случаться (grant_title всегда идёт сразу
-            # после успешного debit_to_bank в том же вызове), но не молчим.
+            # Тот же ref_id уже применён к деньгам, но rental-строки с этим
+            # ref_id нет — структурно не должно случаться (grant_title
+            # всегда идёт сразу после успешного debit_to_bank в том же
+            # вызове), но не молчим.
             raise TagRentalError("Аренда с этим ref_id уже обработана, но запись не найдена")
         return existing
 
@@ -111,6 +124,7 @@ async def rent_title(
         source="rental",
         expires_at=expires_at,
         price_paid=price,
+        ref_id=ref_id,  # WR-01: для однозначного поиска СВОЕЙ строки на ретрае
     )
 
 

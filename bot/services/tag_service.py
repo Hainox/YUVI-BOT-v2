@@ -149,13 +149,22 @@ async def grant_title(
     source: str,
     expires_at: datetime | None,
     price_paid: int | None = None,
+    ref_id: str | None = None,
 ) -> ActiveTitle:
     """Выдаёт Telegram custom_title. Валидация title ДО любого Bot API
     (T-05-01). Приоритет номинанта над арендатором (D-07/D-10): грант
     'victim' поверх активной 'rental' подвешивает её в 'suspended' (не
     удаляет); грант 'rental' поверх активной 'victim' создаёт новую
     rental-строку сразу 'suspended' (номинант остаётся). Не коммитит —
-    транзакцию завершает вызывающий."""
+    транзакцию завершает вызывающий.
+
+    `ref_id` (WR-01, 05-REVIEW.md) — опционально сохраняется на строке как
+    есть, БЕЗ идемпотентной проверки здесь (её уже сделал
+    economy_service.debit_to_bank в tag_rental_service ДО вызова
+    grant_title) — нужен только вызывающему для однозначного поиска СВОЕЙ
+    строки на идемпотентном ретрае, вместо recency-эвристики по "последней
+    rental-строке юзера". active_titles остаётся под записью ИСКЛЮЧИТЕЛЬНО
+    tag_service — вызывающие передают ref_id сюда, а не пишут строку сами."""
     validated_title = _validate_title(title)
 
     # CR-01 (05-REVIEW.md): `SELECT ... FOR UPDATE` только что ниже блокирует
@@ -205,6 +214,7 @@ async def grant_title(
                     price_paid=price_paid,
                     expires_at=expires_at,
                     status=new_status,
+                    ref_id=ref_id,
                 )
                 session.add(row)
                 await session.flush()

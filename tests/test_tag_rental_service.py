@@ -230,6 +230,51 @@ async def test_rent_idempotent_on_retry(session, bot):
     bot.set_chat_administrator_custom_title.assert_not_awaited()
 
 
+# --- WR-01 (05-REVIEW.md): ретрай возвращает ИМЕННО свою строку, не самую свежую --
+
+
+@pytest.mark.asyncio
+async def test_rent_idempotent_retry_returns_own_row_not_latest(session, bot):
+    """Юзер арендовал title A (ref_id=1), затем арендовал ДРУГОЙ title B
+    (ref_id=2, отдельное сообщение) — теперь у него две rental-строки.
+    Реплей ref_id=1 (ретрай апдейта Telegram на самое первое сообщение)
+    должен вернуть строку A (title/price/expires_at ПЕРВОЙ аренды), а не
+    "самую свежую" строку B — иначе хендлер покажет юзеру чужие данные в
+    подтверждении (bot/handlers/tags.py f"Тег «{row.title}» ...")."""
+    chat_id = -1009007008
+    user_id = 9007008
+    await _ensure_user(session, user_id)
+    await _fund(session, chat_id, user_id)
+    await _topup(session, chat_id, user_id, 5000, "test_topup_8")
+
+    first = await tag_rental_service.rent_title(
+        session, chat_id, user_id, "Первый", 1, "tag_rent:test:8a", bot
+    )
+    await session.commit()
+    bot.reset_mock()
+
+    # Первая аренда 1-дневная, expires_at в прошлом почти сразу — экспайрим
+    # её вручную, чтобы вторая аренда могла стать активной (иначе grant_title
+    # просто подвесит вторую rental-строку, что не мешает тесту, но нагляднее
+    # проверить на двух ПОЛНОЦЕННЫХ rental-строках).
+    second = await tag_rental_service.rent_title(
+        session, chat_id, user_id, "Второй", 3, "tag_rent:test:8b", bot
+    )
+    await session.commit()
+
+    assert second.id != first.id
+
+    # Реплей САМОГО ПЕРВОГО ref_id (debit_to_bank вернёт charged=False).
+    replay = await tag_rental_service.rent_title(
+        session, chat_id, user_id, "Первый", 1, "tag_rent:test:8a", bot
+    )
+    await session.commit()
+
+    assert replay.id == first.id
+    assert replay.title == "Первый"
+    assert replay.price_paid == first.price_paid
+
+
 # --- Приоритет номинанта поверх реальной аренды (D-07) -------------------------
 
 
