@@ -113,6 +113,28 @@ async def test_http_error_graceful_none(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_malformed_item_shape_graceful_none(monkeypatch):
+    """WR-03 (05-REVIEW.md): раньше только сетевой фетч был под try/except —
+    позиция wishlist не той формы (например, список строк вместо dict'ов)
+    роняла sorted()/item.get(...) необработанным AttributeError, который
+    уходил из get_random_wishlist_game ДО session.commit() в
+    awards_service.run_awards и мог откатить уже посчитанные выплаты
+    номинаций за день. Теперь сортировка/форматирование тоже под
+    try/except — деградация в None, как и сетевая ошибка."""
+    _reset_cache(monkeypatch)
+    _set_steam_settings(monkeypatch)
+    monkeypatch.setattr(
+        steam_service,
+        "_fetch_wishlist_json",
+        AsyncMock(return_value={"response": {"items": ["не словарь", 12345]}}),
+    )
+
+    result = await steam_service.get_random_wishlist_game(date(2026, 7, 19))
+
+    assert result is None
+
+
+@pytest.mark.asyncio
 async def test_empty_wishlist_returns_none(monkeypatch):
     _reset_cache(monkeypatch)
     _set_steam_settings(monkeypatch)

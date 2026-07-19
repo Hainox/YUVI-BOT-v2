@@ -91,17 +91,26 @@ async def get_random_wishlist_game(day_msk: date) -> str | None:
     if not settings.steam_api_key or not settings.steam_id64:
         return None
 
+    # WR-03 (05-REVIEW.md): раньше только _get_wishlist_items() был под
+    # try/except — сортировка/форматирование ниже могли бросить необработанный
+    # AttributeError (например, позиции wishlist не той формы/схемы), который
+    # уходил из get_random_wishlist_game ДО awards_service.run_awards'ного
+    # session.commit() и тихо откатывал уже посчитанные (внутри ещё не
+    # закоммиченных SAVEPOINT) выплаты 6 номинаций за день. Оборачиваем ВЕСЬ
+    # путь — сеть + разбор ответа — одним try/except: любой сбой формы ответа
+    # деградирует в None (уже установленный fallback «Steam недоступен»,
+    # D-11), а не пробрасывается мимо границы транзакции.
     try:
         items = await _get_wishlist_items()
-    except Exception:  # noqa: BLE001 - любая сетевая/HTTP-ошибка graceful (D-11)
-        logger.warning("steam_service: не удалось получить Steam Wishlist", exc_info=True)
+        if not items:
+            return None
+
+        # Сортировка по appid ДО выбора — детерминизм зависит ТОЛЬКО от day_msk,
+        # не от недокументированного порядка ответа Steam API (см. модульный docstring).
+        sorted_items = sorted(items, key=lambda item: item.get("appid", 0))
+        names = [item.get("name") or f"Steam App #{item.get('appid')}" for item in sorted_items]
+    except Exception:  # noqa: BLE001 - любая сетевая/HTTP/форма-ответа ошибка graceful (D-11)
+        logger.warning("steam_service: не удалось получить/разобрать Steam Wishlist", exc_info=True)
         return None
 
-    if not items:
-        return None
-
-    # Сортировка по appid ДО выбора — детерминизм зависит ТОЛЬКО от day_msk,
-    # не от недокументированного порядка ответа Steam API (см. модульный docstring).
-    sorted_items = sorted(items, key=lambda item: item.get("appid", 0))
-    names = [item.get("name") or f"Steam App #{item.get('appid')}" for item in sorted_items]
     return random.Random(day_msk.toordinal()).choice(names)
