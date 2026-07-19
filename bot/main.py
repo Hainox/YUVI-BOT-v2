@@ -13,6 +13,7 @@ import bot.handlers as handlers_package
 from bot.config import settings
 from bot.middleware.collector import CollectorMiddleware
 from bot.middleware.db_session import DbSessionMiddleware
+from bot.services import profanity_service
 from bot.services.commands_service import setup_bot_commands
 from bot.services.pinned_menu_service import ensure_pinned_menu
 from bot.services.scheduler import get_scheduler
@@ -73,6 +74,10 @@ async def run() -> None:
     scheduler = get_scheduler()
     setup_jobs(bot)
     scheduler.start()
+
+    # Прогрев MorphAnalyzer (~50 МБ, 2-5 сек) ДО старта поллинга, чтобы холодный
+    # cold-load не блокировал обработку первого сообщения чата (Pitfall 6).
+    profanity_service.init()
 
     await dp.start_polling(
         bot,
