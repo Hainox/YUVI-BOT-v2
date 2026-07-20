@@ -6,7 +6,7 @@ COPY miniapp/package.json miniapp/package-lock.json ./
 RUN npm ci
 
 COPY miniapp/ ./
-RUN npm run build
+RUN node node_modules/vite/bin/vite.js build
 
 FROM nginx:alpine
 COPY miniapp/nginx.conf /etc/nginx/conf.d/default.conf
