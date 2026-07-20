@@ -20,6 +20,7 @@ import hashlib
 import hmac
 import json
 import time
+import uuid
 from unittest.mock import AsyncMock
 from urllib.parse import urlencode
 
@@ -67,15 +68,23 @@ async def _ensure_user(user_id: int, first_name: str = "Тест") -> None:
         await db_session.commit()
 
 
-async def _stream_valid_json(*args, **kwargs):
-    """Мок ai_client.stream: валидный JSON с непустым register (auto-submit)."""
-    payload = json.dumps(
-        {
-            "reply": "понял, оформляю",
-            "register": {"category": "bug", "text": "кнопка не работает"},
-        }
-    )
-    yield payload
+def _make_stream_valid_json(text: str):
+    """Фабрика мока ai_client.stream: валидный JSON с непустым register
+    (auto-submit). Текст заявки параметризован уникальным (uuid) значением —
+    эти HTTP-тесты коммитят напрямую в живой Postgres без rollback (тот же
+    паттерн, что test_api_feedback.py), фиксированный текст задваивался бы
+    строками при повторном прогоне сьюта против того же контейнера."""
+
+    async def _stream(*args, **kwargs):
+        payload = json.dumps(
+            {
+                "reply": "понял, оформляю",
+                "register": {"category": "bug", "text": text},
+            }
+        )
+        yield payload
+
+    return _stream
 
 
 async def _stream_register_null(*args, **kwargs):
@@ -127,7 +136,8 @@ async def test_valid_json_auto_submits(monkeypatch):
     submit (D-15, чат-помощник сам оформляет заявку), автор строки — из
     AuthContext (initData), не из тела запроса."""
     monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
-    monkeypatch.setattr(ai_client, "stream", _stream_valid_json)
+    unique_text = f"кнопка не работает {uuid.uuid4()}"
+    monkeypatch.setattr(ai_client, "stream", _make_stream_valid_json(unique_text))
     user_id = 900671
     await _ensure_user(user_id)
     init_data = _build_init_data(user_id=user_id)
@@ -138,7 +148,7 @@ async def test_valid_json_auto_submits(monkeypatch):
             "/api/v1/feedback/assist",
             params={"chat_id": CHAT_ID},
             headers={"X-Telegram-Init-Data": init_data},
-            json={"history": [{"role": "user", "content": "кнопка не работает"}]},
+            json={"history": [{"role": "user", "content": unique_text}]},
         )
 
     assert resp.status_code == 200
@@ -149,7 +159,7 @@ async def test_valid_json_auto_submits(monkeypatch):
 
     async with SessionLocal() as session:
         rows = await feedback_service.list_feedback(session, CHAT_ID)
-    matching = [row for row in rows if row["text"] == "кнопка не работает"]
+    matching = [row for row in rows if row["text"] == unique_text]
     assert len(matching) == 1
     assert matching[0]["user_id"] == user_id
     assert matching[0]["category"] == "bug"
