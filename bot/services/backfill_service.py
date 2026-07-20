@@ -31,6 +31,8 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from pyrogram import Client
+from sqlalchemy import func
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -258,11 +260,11 @@ def _pyrogram_message_to_row(message: Any, chat_id: int) -> dict[str, Any] | Non
         "user_id": message.from_user.id,
         "username": message.from_user.username,
         "first_name": message.from_user.first_name or "",
-        "text": message.text,
+        "text": str(message.text) if message.text is not None else None,
         "reply_to_telegram_message_id": message.reply_to_message_id,
         "message_thread_id": getattr(message, "message_thread_id", None),
         "content_type": _pyrogram_content_type(message),
-        "caption": message.caption,
+        "caption": str(message.caption) if message.caption is not None else None,
         "media_file_id": media.file_id,
         "media_file_unique_id": media.file_unique_id,
         "media_mime_type": media.mime_type,
@@ -270,6 +272,28 @@ def _pyrogram_message_to_row(message: Any, chat_id: int) -> dict[str, Any] | Non
         "is_forwarded": message.forward_origin is not None,
         "created_at": message.date,
     }
+
+
+async def _resume_offset_id(chat_id: int) -> int | None:
+    """Граница возобновления (T-06-05): MIN(telegram_message_id) уже
+    сохранённых строк для chat_id — Telegram message_id монотонно растёт со
+    временем внутри чата, поэтому самый маленький уже увиденный id и есть
+    "передний край" непрерывно покрытой backfill'ом истории (независимо от
+    того, backfill это записал или живой сбор). get_chat_history(offset_id=...)
+    отдаёт только сообщения СТАРШЕ этого id — без этого каждый повторный
+    прогон run_backfill заново перелистывает Telegram API от самых новых
+    сообщений через уже покрытый диапазон (idempotent-вставка не спасает от
+    повторных flood-wait пауз на уже обработанных страницах, только от дублей
+    в БД). None, если для чата ещё нет ни одной сохранённой строки — полный
+    обход с самого начала."""
+    async with SessionLocal() as session:
+        return (
+            await session.execute(
+                select(func.min(MessageModel.telegram_message_id)).where(
+                    MessageModel.chat_id == chat_id
+                )
+            )
+        ).scalar_one_or_none()
 
 
 async def run_backfill(chat_id: int) -> int:
@@ -282,6 +306,9 @@ async def run_backfill(chat_id: int) -> int:
     При отсутствии TG_API_ID/TG_API_HASH бросает понятную ошибку. Kurigram сам
     ждёт flood-wait внутренне — без retry-петли вокруг него (T-06-02).
 
+    Возобновляемый (T-06-05): продолжает с места последнего прогона вместо
+    полного повтора — см. _resume_offset_id.
+
     Возвращает общее число реально вставленных новых сообщений.
     """
     if settings.tg_api_id is None or settings.tg_api_hash is None:
@@ -291,7 +318,10 @@ async def run_backfill(chat_id: int) -> int:
             "Добавьте их в .env и перезапустите."
         )
 
-    logger.info("run_backfill: старт для chat_id=%s", chat_id)
+    offset_id = await _resume_offset_id(chat_id)
+    logger.info(
+        "run_backfill: старт для chat_id=%s (offset_id=%s)", chat_id, offset_id
+    )
 
     total_inserted = 0
     batch: list[dict[str, Any]] = []
@@ -302,7 +332,12 @@ async def run_backfill(chat_id: int) -> int:
         api_hash=settings.tg_api_hash,
         workdir=_PROJECT_ROOT,
     ) as app:
-        async for message in app.get_chat_history(chat_id):
+        # max_id, не устаревший offset_id (Kurigram deprecation warning): при
+        # обходе по умолчанию (reverse=False, от новых к старым) max_id
+        # ограничивает выдачу сообщениями СТАРШЕ этого id — тот же смысл,
+        # что был у offset_id.
+        history = app.get_chat_history(chat_id, max_id=offset_id or 0)
+        async for message in history:
             row = _pyrogram_message_to_row(message, chat_id)
             if row is None:
                 continue

@@ -25,15 +25,22 @@ from common.models.word_frequency import WordFrequency
 
 _WORD_RE = re.compile(r"[а-яёa-z0-9]+", re.IGNORECASE)
 
+# word_frequency.word — VARCHAR(128) (common/models/word_frequency.py). Токены
+# длиннее лимита — не настоящие слова (спам вида "ааааааа..." на сотни
+# символов без пробелов), а не что-то, что стоит обрезать/задваивать по
+# случайному общему префиксу — просто не считаем их словом (в реальном чате
+# встречается, ловит StringDataRightTruncationError при INSERT иначе).
+_MAX_WORD_LEN = 128
+
 
 def extract_words(text: str | None) -> list[str]:
     """Токенизирует текст на слова (кириллица/латиница/цифры), lowercased.
 
-    Пустой/None текст -> [].
+    Пустой/None текст -> []. Токены длиннее `_MAX_WORD_LEN` отбрасываются.
     """
     if not text:
         return []
-    return [w.lower() for w in _WORD_RE.findall(text)]
+    return [w.lower() for w in _WORD_RE.findall(text) if len(w) <= _MAX_WORD_LEN]
 
 
 def extract_emojis(text: str | None) -> list[str]:
