@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import re
+from typing import Literal
 
 from fastapi import APIRouter
 from fastapi import Depends
@@ -44,11 +45,26 @@ class ResolveBody(BaseModel):
     resolved: bool
 
 
+class ChatTurn(BaseModel):
+    """Один элемент `AssistBody.history` (WR-04 06-REVIEW.md): `role`
+    ограничен `user`/`assistant` — `"system"` СОЗНАТЕЛЬНО исключён из
+    допустимых значений, иначе аутентифицированный участник чата мог бы
+    смуглить поддельное `{"role": "system", "content": "..."}` в историю и
+    получить более весомое (по сравнению с обычным `user`-контентом) влияние
+    на системный промпт LLM — role-based prompt injection, отдельный вектор
+    от уже существующей content-level injection-guard фразы."""
+
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=2000)
+
+
 class AssistBody(BaseModel):
     """Тело POST /assist — только history (D-15). Никаких author-полей
-    (chat_id/user_id ТОЛЬКО из AuthContext, T-06-20 IDOR)."""
+    (chat_id/user_id ТОЛЬКО из AuthContext, T-06-20 IDOR). `history` —
+    строго типизированный список `ChatTurn` (не сырой `list[dict]`, WR-04
+    06-REVIEW.md), максимум 40 реплик диалога."""
 
-    history: list[dict]
+    history: list[ChatTurn] = Field(max_length=40)
 
 
 # buffer-then-parse строгого JSON (НЕ response_format — OpenCode Go не
@@ -140,7 +156,10 @@ async def post_feedback_assist(
     """
     from bot.services import ai_client  # ленивый импорт — openai SDK не грузится при старте API
 
-    messages = [{"role": "system", "content": GROUNDED_SYSTEM_PROMPT}, *body.history]
+    messages = [
+        {"role": "system", "content": GROUNDED_SYSTEM_PROMPT},
+        *(turn.model_dump() for turn in body.history),
+    ]
 
     parts: list[str] = []
     try:
