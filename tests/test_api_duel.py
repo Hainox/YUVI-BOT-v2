@@ -39,6 +39,7 @@ from api import telegram_client
 from api.main import app
 from bot.config import settings
 from bot.services import duel_service
+from bot.services import economy_service
 from common.db.session import engine
 from common.db.session import SessionLocal
 from common.models.duel import Duel
@@ -91,6 +92,30 @@ async def _ensure_user(user_id: int, first_name: str = "Тест") -> None:
         await db_session.commit()
 
 
+async def _topup(chat_id: int, user_id: int, min_balance: int = 1000) -> None:
+    """Тот же Rule-1 фикс, что `tests/test_api_games.py::_topup` /
+    `tests/test_api_markets.py::_fund` (04.2-10, см. deferred-items.md) —
+    фиксированные user_id-литералы этого файла против ДОЛГОЖИВУЩЕГО
+    docker-compose Postgres-контейнера истощаются накопительными списаниями
+    ставок по мере повторных прогонов полного набора тестов (стартовый
+    бонус economy_service начисляется один раз за (chat_id, user_id),
+    идемпотентно по ref_id). Топит баланс минимум до `min_balance` через
+    economy_service.credit со свежим ref_id (никогда не гасится
+    идемпотентностью)."""
+    async with SessionLocal() as db_session:
+        balance = await economy_service.get_balance(db_session, chat_id, user_id)
+        if balance < min_balance:
+            await economy_service.credit(
+                db_session,
+                chat_id,
+                user_id,
+                min_balance - balance,
+                kind="test_topup",
+                ref_id=f"test_topup:{uuid.uuid4()}",
+            )
+            await db_session.commit()
+
+
 async def _get_duel(duel_id: int) -> Duel:
     async with SessionLocal() as db_session:
         return (await db_session.execute(select(Duel).where(Duel.id == duel_id))).scalar_one()
@@ -137,6 +162,7 @@ async def test_create_duel_valid_returns_200(monkeypatch):
     challenger_id, opponent_id = 940101, 940102
     await _ensure_user(challenger_id)
     await _ensure_user(opponent_id)
+    await _topup(CREATE_CHAT_ID, challenger_id)
     init_data = _build_init_data(user_id=challenger_id)
 
     transport = ASGITransport(app=app)
@@ -199,6 +225,7 @@ async def test_create_duel_replay_same_ref_id_returns_400(monkeypatch):
     challenger_id, opponent_id = 940106, 940107
     await _ensure_user(challenger_id)
     await _ensure_user(opponent_id)
+    await _topup(CREATE_CHAT_ID, challenger_id)
     init_data = _build_init_data(user_id=challenger_id)
     ref_id = str(uuid.uuid4())
 
@@ -261,6 +288,8 @@ async def test_create_duel_ignores_challenger_id_in_body_idor(monkeypatch):
     await _ensure_user(attacker_id)
     await _ensure_user(victim_id)
     await _ensure_user(opponent_id)
+    await _topup(CREATE_CHAT_ID, attacker_id)
+    await _topup(CREATE_CHAT_ID, victim_id)
     init_data = _build_init_data(user_id=attacker_id)
 
     transport = ASGITransport(app=app)
@@ -291,6 +320,8 @@ async def test_accept_duel_resolves_and_mutes_loser(monkeypatch):
     challenger_id, opponent_id = 940201, 940202
     await _ensure_user(challenger_id)
     await _ensure_user(opponent_id)
+    await _topup(ACCEPT_CHAT_ID, challenger_id)
+    await _topup(ACCEPT_CHAT_ID, opponent_id)
     duel_id = await _create_pending_duel(ACCEPT_CHAT_ID, challenger_id, opponent_id)
 
     # Форсируем challenger как победителя (accept_duel: _rng.choice([challenger_id, opponent_id])).
@@ -329,6 +360,8 @@ async def test_accept_duel_mute_failure_does_not_break_response(monkeypatch):
     challenger_id, opponent_id = 940203, 940204
     await _ensure_user(challenger_id)
     await _ensure_user(opponent_id)
+    await _topup(ACCEPT_CHAT_ID, challenger_id)
+    await _topup(ACCEPT_CHAT_ID, opponent_id)
     duel_id = await _create_pending_duel(ACCEPT_CHAT_ID, challenger_id, opponent_id)
 
     monkeypatch.setattr(duel_service, "_rng", _ForcedChoiceRng(challenger_id))
@@ -362,6 +395,7 @@ async def test_accept_duel_by_non_invited_user_returns_400_idor(monkeypatch):
     await _ensure_user(challenger_id)
     await _ensure_user(opponent_id)
     await _ensure_user(stranger_id)
+    await _topup(ACCEPT_CHAT_ID, challenger_id)
     duel_id = await _create_pending_duel(ACCEPT_CHAT_ID, challenger_id, opponent_id)
 
     init_data = _build_init_data(user_id=stranger_id)
@@ -406,6 +440,7 @@ async def test_decline_duel_by_opponent_returns_declined(monkeypatch):
     challenger_id, opponent_id = 940301, 940302
     await _ensure_user(challenger_id)
     await _ensure_user(opponent_id)
+    await _topup(DECLINE_CHAT_ID, challenger_id)
     duel_id = await _create_pending_duel(DECLINE_CHAT_ID, challenger_id, opponent_id)
 
     init_data = _build_init_data(user_id=opponent_id)
@@ -428,6 +463,7 @@ async def test_decline_duel_by_non_opponent_returns_400_idor(monkeypatch):
     challenger_id, opponent_id = 940303, 940304
     await _ensure_user(challenger_id)
     await _ensure_user(opponent_id)
+    await _topup(DECLINE_CHAT_ID, challenger_id)
     duel_id = await _create_pending_duel(DECLINE_CHAT_ID, challenger_id, opponent_id)
 
     # challenger пытается "отклонить" свою же дуэль — только opponent_id может.
@@ -450,6 +486,7 @@ async def test_cancel_duel_by_challenger_returns_cancelled(monkeypatch):
     challenger_id, opponent_id = 940401, 940402
     await _ensure_user(challenger_id)
     await _ensure_user(opponent_id)
+    await _topup(CANCEL_CHAT_ID, challenger_id)
     duel_id = await _create_pending_duel(CANCEL_CHAT_ID, challenger_id, opponent_id)
 
     init_data = _build_init_data(user_id=challenger_id)
@@ -472,6 +509,7 @@ async def test_cancel_duel_by_non_challenger_returns_400_idor(monkeypatch):
     challenger_id, opponent_id = 940403, 940404
     await _ensure_user(challenger_id)
     await _ensure_user(opponent_id)
+    await _topup(CANCEL_CHAT_ID, challenger_id)
     duel_id = await _create_pending_duel(CANCEL_CHAT_ID, challenger_id, opponent_id)
 
     init_data = _build_init_data(user_id=opponent_id)  # оппонент, не челленджер
@@ -496,6 +534,7 @@ async def test_duelbot_valid_returns_200_resolved(monkeypatch):
     monkeypatch.setattr(duel_service, "_rng", _ForcedChoiceRng(True))
     user_id = 940501
     await _ensure_user(user_id)
+    await _topup(DUELBOT_CHAT_ID, user_id)
     init_data = _build_init_data(user_id=user_id)
 
     transport = ASGITransport(app=app)
@@ -536,6 +575,7 @@ async def test_duelbot_ignores_foreign_user_id_in_body_idor(monkeypatch):
     attacker_id, victim_id = 940502, 940503
     await _ensure_user(attacker_id)
     await _ensure_user(victim_id)
+    await _topup(DUELBOT_CHAT_ID, attacker_id)
     init_data = _build_init_data(user_id=attacker_id)
 
     transport = ASGITransport(app=app)

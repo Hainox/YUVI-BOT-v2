@@ -359,6 +359,7 @@ async def test_dice_valid_bet_returns_200_with_settled_result(monkeypatch):
     monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
     user_id = 300201
     await _ensure_user(user_id)
+    await _topup(DICE_CHAT_ID, user_id)
     init_data = _build_init_data(user_id=user_id)
 
     transport = ASGITransport(app=app)
