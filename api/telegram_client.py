@@ -73,3 +73,50 @@ def is_admin_status(status: str) -> bool:
 def reset_cache() -> None:
     """Очищает module-level кэш членства — для детерминированности тестов."""
     _cache.clear()
+
+
+async def send_invoice(
+    client: httpx.AsyncClient,
+    bot_token: str,
+    chat_id: int,
+    title: str,
+    description: str,
+    payload: str,
+    prices: list[dict],
+) -> dict:
+    """Raw HTTP `sendInvoice` для Telegram Stars (XTR) — второй UI-вход
+    доната из Mini App (STARS-01, D-10). `api`-процесс не держит aiogram
+    `Bot`-инстанс, поэтому инвойс отправляется тем же raw-httpx способом,
+    что `get_chat_member_status`/`api/duel_mute.py::apply_mute_from_api`.
+
+    `currency="XTR"`/`provider_token=""` — обязательны для Stars (та же
+    семантика, что `bot/services/stars_service.py::build_invoice_kwargs`,
+    только без aiogram `LabeledPrice` — `prices` здесь уже плоские dict'ы
+    `{"label": ..., "amount": ...}`).
+
+    Fail-closed на сетевой ошибке/невалидном JSON-ответе — возвращает
+    `{"ok": False, "description": ...}` вместо поднятия исключения (та же
+    дисциплина, что `get_chat_member_status`); вызывающий (`api/routes/
+    donate.py`) маппит `ok=False` в `HTTPException`. `bot_token` никогда не
+    логируется.
+    """
+    try:
+        resp = await client.post(
+            f"https://api.telegram.org/bot{bot_token}/sendInvoice",
+            json={
+                "chat_id": chat_id,
+                "title": title,
+                "description": description,
+                "payload": payload,
+                "currency": "XTR",
+                "prices": prices,
+                "provider_token": "",
+            },
+        )
+    except Exception:
+        return {"ok": False, "description": "telegram_request_failed"}
+
+    try:
+        return resp.json()
+    except Exception:
+        return {"ok": False, "description": f"telegram_bad_response_{resp.status_code}"}
