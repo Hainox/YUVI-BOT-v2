@@ -35,6 +35,9 @@ from common.models.user_balance import UserBalance
 CHAT_A = -900701
 CHAT_B = -900702
 CHAT_C = -900703
+CHAT_D = -900704
+CHAT_E = -900705
+CHAT_F = -900706
 
 
 async def _ensure_user(session, user_id: int, first_name: str = "Тест") -> None:
@@ -115,6 +118,42 @@ class _FakeResponse:
         return None
 
 
+class _FakeErrorResponse:
+    """Симулирует HTTP-уровневую ошибку cobalt/CDN (CR-02 06-REVIEW.md) —
+    `raise_for_status()` поднимает `aiohttp.ClientResponseError` ДО того, как
+    тело ответа могло бы быть прочитано/просчитано как валидный контент.
+    `.json()`/`.content` намеренно падают с AssertionError, если что-то
+    попробует прочитать их до вызова `raise_for_status()` — это гарантирует,
+    что регрессионный тест ловит именно порядок вызовов, а не только факт
+    поднятого исключения."""
+
+    def __init__(self, status: int = 500) -> None:
+        self._status = status
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    def raise_for_status(self) -> None:
+        raise aiohttp.ClientResponseError(
+            request_info=SimpleNamespace(
+                real_url="http://cobalt:9000/tunnel/abc", method="GET", headers={}
+            ),
+            history=(),
+            status=self._status,
+            message="Internal Server Error",
+        )
+
+    async def json(self):
+        raise AssertionError("json() не должен вызываться до raise_for_status() (CR-02)")
+
+    @property
+    def content(self):
+        raise AssertionError("content не должен читаться до raise_for_status() (CR-02)")
+
+
 class _FakeClientSession:
     def __init__(self, post_response=None, get_response=None) -> None:
         self._post_response = post_response
@@ -131,6 +170,35 @@ class _FakeClientSession:
 
     def get(self, *args, **kwargs):
         return self._get_response
+
+
+# --- CR-01 06-REVIEW.md: зарегистрированный фильтр хендлера (не только
+# extract_url) должен матчить URL, встроенный НЕ первым токеном сообщения --
+
+
+def test_registered_filter_matches_url_mid_message():
+    """Регрессия на CR-01: `F.text.regexp(URL_RE)` БЕЗ `mode="search"`
+    анкорит совпадение к позиции 0 (`pattern.match`) и никогда не срабатывает
+    на реальные сообщения вида "смотри <ссылка>" — это единственный тест,
+    который проверяет ИМЕННО зарегистрированный на роутере объект фильтра
+    (`bot.handlers.media_dl.router`), а не `media_dl_service.extract_url()`
+    напрямую (которая всегда использовала `.search()` и не ловила разницу)."""
+    import bot.handlers.media_dl as media_dl_handler
+
+    handlers = media_dl_handler.router.message.handlers
+    assert len(handlers) == 1, "ожидается ровно один message-хендлер в этом роутере"
+    magic_filter = handlers[0].filters[0].magic
+
+    mid_message = SimpleNamespace(text="смотри https://vm.tiktok.com/xyz")
+    assert magic_filter.resolve(mid_message) is not None, (
+        "catch-all фильтр обязан матчить URL, даже если он не первый токен сообщения (D-08)"
+    )
+
+    bare_url = SimpleNamespace(text="https://vm.tiktok.com/xyz")
+    assert magic_filter.resolve(bare_url) is not None
+
+    no_url = SimpleNamespace(text="просто текст без ссылки")
+    assert magic_filter.resolve(no_url) is None
 
 
 # --- extract_url whitelist (T-06-03, SSRF) ------------------------------
@@ -190,6 +258,41 @@ async def test_download_returns_bytes_within_cap(monkeypatch):
 
     result = await media_dl_service.download("http://cobalt:9000/tunnel/abc", max_bytes=2048)
     assert result == chunk * 5
+
+
+# --- CR-02 06-REVIEW.md: non-2xx ответ не должен трактоваться как успех -----
+
+
+@pytest.mark.asyncio
+async def test_download_raises_on_non_2xx_status(monkeypatch):
+    """Сломанный tunnel/CDN-ответ (не 2xx) обязан поднимать исключение ДО
+    того, как тело начнёт стримиться и трактоваться как валидные байты файла
+    — без этой проверки ошибка сервера тихо принималась бы за успешную
+    загрузку и оплачивалась (D-07)."""
+    from bot.services import media_dl_service
+
+    fake_response = _FakeErrorResponse(status=500)
+    fake_session = _FakeClientSession(get_response=fake_response)
+    monkeypatch.setattr(aiohttp, "ClientSession", lambda *a, **kw: fake_session)
+
+    with pytest.raises(aiohttp.ClientResponseError):
+        await media_dl_service.download("http://cobalt:9000/tunnel/abc", max_bytes=2048)
+
+
+@pytest.mark.asyncio
+async def test_resolve_raises_on_non_2xx_status(monkeypatch):
+    """Та же проверка (CR-02), что `test_download_raises_on_non_2xx_status`,
+    для `resolve()` — HTTP-уровневая ошибка самого cobalt-сервиса (5xx/4xx,
+    отдельно от application-level `status: "error"` внутри валидного
+    200-ответа) не должна трактоваться как валидный JSON-ответ."""
+    from bot.services import media_dl_service
+
+    fake_response = _FakeErrorResponse(status=502)
+    fake_session = _FakeClientSession(post_response=fake_response)
+    monkeypatch.setattr(aiohttp, "ClientSession", lambda *a, **kw: fake_session)
+
+    with pytest.raises(aiohttp.ClientResponseError):
+        await media_dl_service.resolve("https://www.tiktok.com/@u/video/1")
 
 
 # --- picker type mapping (Pitfall 4, D-06) ----------------------------------
@@ -320,3 +423,133 @@ async def test_charge_only_on_success(session, monkeypatch):
     )
     bot_mock3_retry.send_video.assert_not_awaited()
     assert ref_id  # ref_id формируется как f"mediadl:{message.message_id}" внутри хендлера
+
+
+# --- WR-03 06-REVIEW.md: сетевые сбои cobalt/CDN не должны молча ронять апдейт --
+
+
+@pytest.mark.asyncio
+async def test_no_charge_when_resolve_raises_network_error(session, monkeypatch):
+    """`resolve()` поднимает aiohttp.ClientError (сеть недоступна/таймаут) —
+    хендлер обязан поймать это (WR-03), ответить пользователю по-русски и
+    НЕ уронить апдейт необработанным исключением; денег это тоже не
+    касается (списание ещё не начиналось)."""
+    import bot.handlers.media_dl as media_dl
+    from bot.services import media_dl_service
+
+    chat_id, user_id = CHAT_D, 900704
+    await _ensure_user(session, user_id)
+    await economy_service.get_balance(session, chat_id, user_id)
+
+    async def fake_resolve_network_error(url: str) -> dict:
+        raise aiohttp.ClientConnectionError("connection refused")
+
+    monkeypatch.setattr(media_dl_service, "resolve", fake_resolve_network_error)
+
+    message = _fake_message(chat_id, user_id, "Тест", "https://www.tiktok.com/@u/video/4", message_id=104)
+    bot_mock = AsyncMock()
+
+    await media_dl.on_media_url(message, session, bot_mock)  # не должно поднять исключение
+
+    assert await _count_tx(session, chat_id, "mediadl_charge") == 0
+    assert await _get_user_balance(session, chat_id, user_id) == settings.economy_start_bonus
+    bot_mock.send_video.assert_not_awaited()
+    message.reply.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_no_charge_when_download_raises_http_error(session, monkeypatch):
+    """CR-02 + WR-03 06-REVIEW.md (комбинированный сценарий): cobalt резолвит
+    tunnel успешно, но GET по tunnel-URL возвращает non-2xx — `download()`
+    поднимает `aiohttp.ClientResponseError` (CR-02), хендлер обязан поймать
+    это (WR-03) и НЕ вызывать `debit_to_bank` вовсе — сломанный tunnel не
+    должен списывать деньги (D-07)."""
+    import bot.handlers.media_dl as media_dl
+    from bot.services import media_dl_service
+
+    chat_id, user_id = CHAT_E, 900705
+    await _ensure_user(session, user_id)
+    await economy_service.get_balance(session, chat_id, user_id)
+
+    async def fake_resolve_tunnel(url: str) -> dict:
+        return {"status": "tunnel", "url": "http://cobalt:9000/tunnel/broken", "filename": "video.mp4"}
+
+    async def fake_download_http_error(item_url: str, max_bytes: int) -> bytes | None:
+        raise aiohttp.ClientResponseError(
+            request_info=SimpleNamespace(real_url=item_url, method="GET", headers={}),
+            history=(),
+            status=502,
+            message="Bad Gateway",
+        )
+
+    monkeypatch.setattr(media_dl_service, "resolve", fake_resolve_tunnel)
+    monkeypatch.setattr(media_dl_service, "download", fake_download_http_error)
+
+    message = _fake_message(chat_id, user_id, "Тест", "https://www.tiktok.com/@u/video/5", message_id=105)
+    bot_mock = AsyncMock()
+
+    await media_dl.on_media_url(message, session, bot_mock)  # не должно поднять исключение
+
+    assert await _count_tx(session, chat_id, "mediadl_charge") == 0
+    assert await _get_user_balance(session, chat_id, user_id) == settings.economy_start_bonus
+    bot_mock.send_video.assert_not_awaited()
+    message.reply.assert_awaited_once()
+
+
+# --- WR-01 06-REVIEW.md: списание откатывается, если отправка в Telegram упала --
+
+
+@pytest.mark.asyncio
+async def test_charge_rolled_back_when_send_fails_then_retry_succeeds(session, monkeypatch):
+    """`bot.send_video` падает ПОСЛЕ успешного скачивания — списание и
+    отправка обёрнуты одним SAVEPOINT (`session.begin_nested()`), поэтому
+    падение send_video откатывает ТОЛЬКО эту вложенную транзакцию, не всю
+    сессию — деньги фактически не списываются, пользователь не остаётся без
+    денег и без файла (WR-01 06-REVIEW.md). Ретрай того же апдейта (тот же
+    message_id) с рабочей отправкой должен списать РОВНО ОДИН раз — откат
+    SAVEPOINT освобождает `ref_id` для повторной попытки, а ранее
+    закоммиченный стартовый баланс переживает откат (в отличие от
+    session-wide `session.rollback()`, которая откатила бы и его)."""
+    import bot.handlers.media_dl as media_dl
+    from bot.services import media_dl_service
+
+    chat_id, user_id = CHAT_F, 900706
+    await _ensure_user(session, user_id)
+    await economy_service.get_balance(session, chat_id, user_id)
+
+    async def fake_resolve_tunnel(url: str) -> dict:
+        return {"status": "tunnel", "url": "http://cobalt:9000/tunnel/abc", "filename": "video.mp4"}
+
+    async def fake_download(item_url: str, max_bytes: int) -> bytes:
+        return b"fake-video-bytes"
+
+    monkeypatch.setattr(media_dl_service, "resolve", fake_resolve_tunnel)
+    monkeypatch.setattr(media_dl_service, "download", fake_download)
+
+    message_id = 106
+    message = _fake_message(chat_id, user_id, "Тест", "https://www.tiktok.com/@u/video/6", message_id=message_id)
+    bot_mock_failing = AsyncMock()
+    bot_mock_failing.send_video.side_effect = RuntimeError("simulated Telegram upload failure")
+
+    await media_dl.on_media_url(message, session, bot_mock_failing)
+
+    # Списание НЕ закоммичено (откачено) — ни одной строки в economy_tx,
+    # ранее закоммиченный стартовый баланс не тронут.
+    assert await _count_tx(session, chat_id, "mediadl_charge") == 0
+    assert await _get_user_balance(session, chat_id, user_id) == settings.economy_start_bonus
+    message.reply.assert_awaited_once()
+
+    # Ретрай того же апдейта (тот же message_id) с рабочей отправкой —
+    # откат SAVEPOINT освободил ref_id, поэтому списание проходит РОВНО один раз.
+    message_retry = _fake_message(
+        chat_id, user_id, "Тест", "https://www.tiktok.com/@u/video/6", message_id=message_id
+    )
+    bot_mock_ok = AsyncMock()
+    await media_dl.on_media_url(message_retry, session, bot_mock_ok)
+
+    assert await _count_tx(session, chat_id, "mediadl_charge") == 2  # игрок + банк
+    assert (
+        await _get_user_balance(session, chat_id, user_id)
+        == settings.economy_start_bonus - settings.mediadl_cost
+    )
+    bot_mock_ok.send_video.assert_awaited_once()

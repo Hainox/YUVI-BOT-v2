@@ -7,18 +7,33 @@
 cobalt/сети, `local-processing` или превышении `MEDIADL_MAX_MB` деньги не
 двигаются вовсе.
 
-Фильтр `F.text.regexp(media_dl_service.URL_RE)` срабатывает только на
-сообщения с распознанной ссылкой (SSRF-whitelist уже внутри самого
-`URL_RE`, T-06-03) — существующие `Command(...)`-хендлеры не задевает,
-формы фильтров взаимоисключающие (текст команды начинается с `/`, а не с
-`http(s)://`). Router подхватывается `bot/main.py::_discover_routers`
-автоматически.
+Фильтр `F.text.regexp(media_dl_service.URL_RE, mode="search")` срабатывает
+на сообщения с распознанной ссылкой ГДЕ УГОДНО в тексте (не только первым
+токеном — `mode="search"` обязателен, дефолтный `mode="match"` у
+`magic_filter`/aiogram анкорит поиск к позиции 0 и пропускает подавляющее
+большинство реальных сообщений вида "смотри <ссылка>", D-08). SSRF-whitelist
+уже внутри самого `URL_RE` (T-06-03) — существующие `Command(...)`-хендлеры
+не задевает, формы фильтров взаимоисключающие (текст команды начинается с
+`/`, а не с `http(s)://`, а совпадение `URL_RE` требует `http(s)://` где-то в
+тексте). Router подхватывается `bot/main.py::_discover_routers` автоматически.
+
+Списание (`economy_service.debit_to_bank`) и отправка файла в Telegram
+обёрнуты ОДНИМ SAVEPOINT (`session.begin_nested()`, форма
+`economy_service.py::transfer_with_fee`): если `bot.send_video`/
+`send_media_group` падает, откатывается ТОЛЬКО эта вложенная транзакция
+(списание), не вся сессия целиком — деньги фактически применяются, только
+когда доставка подтверждена (D-07 расширен на шаг доставки, не только на шаг
+скачивания, WR-01 06-REVIEW.md). Это же сохраняет идемпотентность на повторе
+апдейта: `debit_to_bank` проверяет `ref_id` ДО отправки, поэтому повторный
+вызов с тем же `message_id` не шлёт файл повторно.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
+import aiohttp
 from aiogram import Bot
 from aiogram import F
 from aiogram import Router
@@ -37,16 +52,29 @@ router = Router()
 _MAX_BYTES = settings.mediadl_max_mb * 1024 * 1024
 _SIZE_ERROR = f"Файл больше {settings.mediadl_max_mb}МБ — скачивание отменено."
 _EMPTY_RESULT_ERROR = "Не удалось скачать медиа по этой ссылке. Попробуйте другую ссылку."
+_RESOLVE_ERROR = "Не удалось обработать ссылку — сервис скачивания временно недоступен. Попробуйте позже."
+_DOWNLOAD_ERROR = "Не удалось скачать файл по ссылке — возможно, она устарела. Попробуйте отправить ссылку заново."
+_SEND_ERROR = "Не удалось отправить файл в чат — попробуйте ещё раз, деньги не списаны."
+
+# Сетевые/протокольные сбои cobalt-клиента (WR-03): aiohttp.ClientError не
+# покрывает asyncio.TimeoutError (total-таймаут ClientTimeout поднимает его
+# напрямую, не оборачивая) — ловим обе группы явно.
+_NETWORK_ERRORS = (aiohttp.ClientError, asyncio.TimeoutError)
 
 
 async def _download_or_reply(message: Message, item_url: str) -> bytes | None:
-    file_bytes = await media_dl_service.download(item_url, _MAX_BYTES)
+    try:
+        file_bytes = await media_dl_service.download(item_url, _MAX_BYTES)
+    except _NETWORK_ERRORS:
+        logger.warning("media_dl: download() failed for item_url=%s", item_url, exc_info=True)
+        await message.reply(_DOWNLOAD_ERROR)
+        return None
     if file_bytes is None:
         await message.reply(_SIZE_ERROR)
     return file_bytes
 
 
-@router.message(F.text.regexp(media_dl_service.URL_RE))
+@router.message(F.text.regexp(media_dl_service.URL_RE, mode="search"))
 async def on_media_url(message: Message, session: AsyncSession, bot: Bot) -> None:
     if message.from_user is None or message.text is None:
         return
@@ -55,7 +83,12 @@ async def on_media_url(message: Message, session: AsyncSession, bot: Bot) -> Non
     if url is None:
         return
 
-    result = await media_dl_service.resolve(url)
+    try:
+        result = await media_dl_service.resolve(url)
+    except _NETWORK_ERRORS:
+        logger.warning("media_dl: resolve() failed for url=%s", url, exc_info=True)
+        await message.reply(_RESOLVE_ERROR)
+        return
     status = result.get("status")
 
     if status in ("error", "local-processing"):
@@ -76,16 +109,33 @@ async def on_media_url(message: Message, session: AsyncSession, bot: Bot) -> Non
         if file_bytes is None:
             return
 
-        debited = await economy_service.debit_to_bank(
-            session, chat_id, user_id, settings.mediadl_cost, kind="mediadl_charge", ref_id=ref_id
-        )
+        filename = result.get("filename") or "video.mp4"
+        debited = False
+        try:
+            # SAVEPOINT (форма economy_service.py::transfer_with_fee) — если
+            # send_video упадёт, `begin_nested()` автоматически откатит
+            # ТОЛЬКО эту вложенную транзакцию (списание), не затрагивая
+            # остальную сессию (WR-01 06-REVIEW.md). Списание фактически
+            # применяется, только когда доставка подтверждена (D-07 расширен
+            # на шаг доставки).
+            async with session.begin_nested():
+                debited = await economy_service.debit_to_bank(
+                    session, chat_id, user_id, settings.mediadl_cost, kind="mediadl_charge", ref_id=ref_id
+                )
+                if debited:
+                    await bot.send_video(chat_id, BufferedInputFile(file_bytes, filename=filename))
+        except Exception:
+            logger.exception(
+                "media_dl: send_video упал после списания (ref_id=%s), списание отменено", ref_id
+            )
+            await message.reply(_SEND_ERROR)
+            return
+
         if not debited:
             logger.info("media_dl: ref_id=%s уже применён, повтор пропущен", ref_id)
             return
-        await session.commit()
 
-        filename = result.get("filename") or "video.mp4"
-        await bot.send_video(chat_id, BufferedInputFile(file_bytes, filename=filename))
+        await session.commit()
         return
 
     if status == "picker":
@@ -103,15 +153,27 @@ async def on_media_url(message: Message, session: AsyncSession, bot: Bot) -> Non
             filename = entry.get("filename") or "media"
             media_group.append(media_cls(media=BufferedInputFile(entry_bytes, filename=filename)))
 
-        debited = await economy_service.debit_to_bank(
-            session, chat_id, user_id, settings.mediadl_cost, kind="mediadl_charge", ref_id=ref_id
-        )
+        debited = False
+        try:
+            async with session.begin_nested():
+                debited = await economy_service.debit_to_bank(
+                    session, chat_id, user_id, settings.mediadl_cost, kind="mediadl_charge", ref_id=ref_id
+                )
+                if debited:
+                    await bot.send_media_group(chat_id, media_group)
+        except Exception:
+            logger.exception(
+                "media_dl: send_media_group упал после списания (ref_id=%s), списание отменено",
+                ref_id,
+            )
+            await message.reply(_SEND_ERROR)
+            return
+
         if not debited:
             logger.info("media_dl: ref_id=%s уже применён, повтор пропущен", ref_id)
             return
-        await session.commit()
 
-        await bot.send_media_group(chat_id, media_group)
+        await session.commit()
         return
 
     # Неизвестный статус cobalt — трактуем как отказ, деньги не двигаем.

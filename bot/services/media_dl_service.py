@@ -72,7 +72,12 @@ def extract_url(text: str) -> str | None:
 async def resolve(url: str) -> dict:
     """POST settings.cobalt_api_url {url, videoQuality} — cobalt API v11 контракт.
 
-    Source: 06-RESEARCH.md Pattern 2 (та же форма aiohttp, что nlp_client.py)."""
+    `raise_for_status()` (CR-02 06-REVIEW.md) — HTTP-уровневая ошибка cobalt
+    (5xx/4xx от самого сервиса, отдельно от application-level `status:
+    "error"` внутри валидного 200-ответа) поднимает `aiohttp.ClientResponseError`,
+    не даёт вызывающему хендлеру трактовать битый/пустой ответ как валидный
+    JSON. Source: 06-RESEARCH.md Pattern 2 (та же форма aiohttp, что
+    nlp_client.py)."""
     timeout = aiohttp.ClientTimeout(total=_RESOLVE_TIMEOUT_SEC)
     async with aiohttp.ClientSession(timeout=timeout) as http_session:
         async with http_session.post(
@@ -80,6 +85,7 @@ async def resolve(url: str) -> dict:
             json={"url": url, "videoQuality": "720"},
             headers={"Accept": "application/json", "Content-Type": "application/json"},
         ) as response:
+            response.raise_for_status()
             return await response.json()
 
 
@@ -87,12 +93,17 @@ async def download(item_url: str, max_bytes: int) -> bytes | None:
     """Стримит `item_url` чанками, обрывает РАННО при превышении `max_bytes`.
 
     Возвращает None при превышении лимита — не копит полный файл в память,
-    если он заведомо больше max_bytes (T-06-11, DoS-защита)."""
+    если он заведомо больше max_bytes (T-06-11, DoS-защита). `raise_for_status()`
+    (CR-02 06-REVIEW.md) — сломанный tunnel/CDN-ответ (4xx/5xx) поднимает
+    `aiohttp.ClientResponseError` ДО того, как тело ответа начнёт стримиться
+    и трактоваться как валидные байты файла — без этой проверки ошибка
+    сервера тихо принималась бы за успешную загрузку и оплачивалась (D-07)."""
     timeout = aiohttp.ClientTimeout(total=_DOWNLOAD_TIMEOUT_SEC)
     chunks: list[bytes] = []
     total = 0
     async with aiohttp.ClientSession(timeout=timeout) as http_session:
         async with http_session.get(item_url) as response:
+            response.raise_for_status()
             async for chunk in response.content.iter_chunked(_DOWNLOAD_CHUNK_SIZE):
                 total += len(chunk)
                 if total > max_bytes:
