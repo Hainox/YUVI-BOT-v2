@@ -183,6 +183,77 @@ async def test_joke_order_personalized(session, monkeypatch):
     )
 
 
+# --- WR-02 06-REVIEW.md: повтор апдейта НЕ дублирует LLM-вызов --------------
+
+
+@pytest.mark.asyncio
+async def test_joke_order_replay_skips_second_llm_call(session, monkeypatch):
+    """Повтор апдейта Telegram (тот же message_id) не должен звать LLM
+    повторно — `debit_to_bank`'s idempotency-сигнал должен приводить к
+    короткому замыканию (`return None`) ДО `_run_llm`, иначе реплей апдейта
+    тратит реальный, неоплаченный LLM-запрос (WR-02 06-REVIEW.md)."""
+    chat_id = CHAT_JOKE
+    actor_id, target_id = 900633, 900634
+    await _ensure_user(session, actor_id, "Актор3")
+    await _ensure_user(session, target_id, "Цель3")
+    await economy_service.get_balance(session, chat_id, actor_id)
+
+    call_count = 0
+
+    async def counting_stream(messages, model, max_tokens):
+        nonlocal call_count
+        call_count += 1
+        yield "анекдот"
+
+    monkeypatch.setattr(social_service.ai_client, "stream", counting_stream)
+
+    message_id = 4002
+    first = await social_service.do_joke_order(
+        session, chat_id, actor_id, target_id, "Цель3", "про котиков", message_id
+    )
+    await session.commit()
+    assert first == "анекдот"
+    assert call_count == 1
+
+    second = await social_service.do_joke_order(
+        session, chat_id, actor_id, target_id, "Цель3", "про котиков", message_id
+    )
+    await session.commit()
+    assert second is None  # реплей -> ничего не отправлять
+    assert call_count == 1  # LLM НЕ вызван повторно
+
+
+@pytest.mark.asyncio
+async def test_roast_replay_skips_second_llm_call(session, monkeypatch):
+    """Тот же контракт (WR-02), что `test_joke_order_replay_skips_second_llm_call`,
+    для `do_roast`."""
+    chat_id = CHAT_ROAST
+    actor_id, target_id = 900623, 900624
+    await _ensure_user(session, actor_id, "Актор4")
+    await _ensure_user(session, target_id, "Цель4")
+    await economy_service.get_balance(session, chat_id, actor_id)
+
+    call_count = 0
+
+    async def counting_stream(messages, model, max_tokens):
+        nonlocal call_count
+        call_count += 1
+        yield "роаст"
+
+    monkeypatch.setattr(social_service.ai_client, "stream", counting_stream)
+
+    message_id = 3002
+    first = await social_service.do_roast(session, chat_id, actor_id, target_id, "Цель4", message_id)
+    await session.commit()
+    assert first == "роаст"
+    assert call_count == 1
+
+    second = await social_service.do_roast(session, chat_id, actor_id, target_id, "Цель4", message_id)
+    await session.commit()
+    assert second is None
+    assert call_count == 1
+
+
 # --- недостаточно ювиков: отказ, деньги не тронуты --------------------------
 
 
@@ -225,6 +296,10 @@ async def test_charge_idempotent_by_message_id(session):
     result_second = await social_service.do_poke(session, chat_id, actor_id, target_id, "Цель", message_id)
     await session.commit()
 
-    assert result_second  # повтор (ретрай апдейта) не должен падать
+    # WR-02 06-REVIEW.md: повтор (ретрай апдейта) не должен падать И не
+    # должен генерировать второе сообщение — do_poke возвращает None, а
+    # вызывающий хендлер (bot/handlers/social.py) трактует None как "уже
+    # обработано, ничего не отправлять".
+    assert result_second is None
     assert await _get_user_balance(session, chat_id, actor_id) == balance_after_first
     assert await _get_bank_balance(session, chat_id) == bank_after_first

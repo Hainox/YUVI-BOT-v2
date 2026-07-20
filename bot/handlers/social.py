@@ -83,6 +83,11 @@ async def poke_command(message: Message, session: AsyncSession) -> None:
         return
 
     await session.commit()
+    if text is None:
+        # Повтор апдейта Telegram (тот же message_id) — списание уже
+        # применено ранее, повторное сообщение в чат не отправляем (WR-02
+        # 06-REVIEW.md).
+        return
     await message.answer(text, parse_mode="HTML")
 
 
@@ -112,6 +117,8 @@ async def hug_command(message: Message, session: AsyncSession) -> None:
         return
 
     await session.commit()
+    if text is None:
+        return
     await message.answer(text, parse_mode="HTML")
 
 
@@ -168,6 +175,8 @@ async def joke_order_command(message: Message, session: AsyncSession) -> None:
         return
 
     await session.commit()
+    if text is None:
+        return
     await message.answer(html.escape(text), parse_mode="HTML")
 
 
@@ -197,4 +206,6 @@ async def roast_command(message: Message, session: AsyncSession) -> None:
         return
 
     await session.commit()
+    if text is None:
+        return
     await message.answer(html.escape(text), parse_mode="HTML")

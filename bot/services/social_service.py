@@ -89,25 +89,34 @@ async def _run_llm(session: AsyncSession, chat_id: int, system_prompt: str, user
 
 async def do_poke(
     session: AsyncSession, chat_id: int, actor_id: int, target_id: int, target_name: str, message_id: int
-) -> str:
-    """`/poke` — шаблонный тычок. Списывает `social_poke_cost` в банк чата."""
+) -> str | None:
+    """`/poke` — шаблонный тычок. Списывает `social_poke_cost` в банк чата.
+    Возвращает None на повторе апдейта Telegram (тот же `message_id`,
+    `debit_to_bank` уже применён ранее) — вызывающий хендлер должен
+    трактовать None как "уже обработано, ничего не отправлять" (WR-02
+    06-REVIEW.md), не отправлять дублирующее сообщение в чат."""
     _guard_self_target(actor_id, target_id, "тыкать")
     ref_id = f"social_poke:{message_id}"
-    await economy_service.debit_to_bank(
+    debited = await economy_service.debit_to_bank(
         session, chat_id, actor_id, settings.social_poke_cost, kind="social_poke", ref_id=ref_id
     )
+    if not debited:
+        return None
     return random.choice(POKE_TEMPLATES).format(target=target_name)
 
 
 async def do_hug(
     session: AsyncSession, chat_id: int, actor_id: int, target_id: int, target_name: str, message_id: int
-) -> str:
-    """`/hug` — шаблонные обнимашки. Списывает `social_hug_cost` в банк чата."""
+) -> str | None:
+    """`/hug` — шаблонные обнимашки. Списывает `social_hug_cost` в банк чата.
+    Возвращает None на повторе апдейта (см. `do_poke`, WR-02 06-REVIEW.md)."""
     _guard_self_target(actor_id, target_id, "обнимать")
     ref_id = f"social_hug:{message_id}"
-    await economy_service.debit_to_bank(
+    debited = await economy_service.debit_to_bank(
         session, chat_id, actor_id, settings.social_hug_cost, kind="social_hug", ref_id=ref_id
     )
+    if not debited:
+        return None
     return random.choice(HUG_TEMPLATES).format(target=target_name)
 
 
@@ -119,28 +128,36 @@ async def do_joke_order(
     target_name: str,
     topic: str,
     message_id: int,
-) -> str:
+) -> str | None:
     """`/joke_order <тема>` — персонализированный анекдот НА ЗАКАЗ (D-04, не
     алиас бесплатного `/joke`). Списывает `social_joke_order_cost` в банк
-    чата; тема идёт user-сообщением LLM (не в системный промпт)."""
+    чата; тема идёт user-сообщением LLM (не в системный промпт). Возвращает
+    None на повторе апдейта ДО вызова LLM (см. `do_poke`, WR-02
+    06-REVIEW.md) — без этой проверки повтор апдейта тратил бы реальный,
+    неоплаченный LLM-запрос."""
     _guard_self_target(actor_id, target_id, "заказывать анекдот для")
     ref_id = f"social_joke_order:{message_id}"
-    await economy_service.debit_to_bank(
+    debited = await economy_service.debit_to_bank(
         session, chat_id, actor_id, settings.social_joke_order_cost, kind="social_joke_order", ref_id=ref_id
     )
+    if not debited:
+        return None
     system_prompt = _JOKE_ORDER_SYSTEM_PROMPT_TEMPLATE.format(target=target_name)
     return await _run_llm(session, chat_id, system_prompt, topic)
 
 
 async def do_roast(
     session: AsyncSession, chat_id: int, actor_id: int, target_id: int, target_name: str, message_id: int
-) -> str:
+) -> str | None:
     """`/roast` — AI-роаст (D-02: жёстко/саркастично, без травли). Списывает
-    `social_roast_cost` в банк чата."""
+    `social_roast_cost` в банк чата. Возвращает None на повторе апдейта ДО
+    вызова LLM (см. `do_joke_order`, WR-02 06-REVIEW.md)."""
     _guard_self_target(actor_id, target_id, "роастить")
     ref_id = f"social_roast:{message_id}"
-    await economy_service.debit_to_bank(
+    debited = await economy_service.debit_to_bank(
         session, chat_id, actor_id, settings.social_roast_cost, kind="social_roast", ref_id=ref_id
     )
+    if not debited:
+        return None
     system_prompt = _ROAST_SYSTEM_PROMPT_TEMPLATE.format(target=target_name)
     return await _run_llm(session, chat_id, system_prompt, f"Сделай роаст для {target_name}.")
