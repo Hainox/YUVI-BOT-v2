@@ -153,7 +153,11 @@ async def test_valid_json_auto_submits(monkeypatch):
 
     assert resp.status_code == 200
     body = resp.json()
-    assert body == {"reply": "понял, оформляю", "degraded": False}
+    assert body == {
+        "reply": "понял, оформляю",
+        "degraded": False,
+        "register": {"category": "bug", "text": unique_text},
+    }
 
     from bot.services import feedback_service
 
@@ -190,7 +194,11 @@ async def test_register_null_no_submit(monkeypatch):
         )
 
     assert resp.status_code == 200
-    assert resp.json() == {"reply": "Уточни, пожалуйста: это баг или идея?", "degraded": False}
+    assert resp.json() == {
+        "reply": "Уточни, пожалуйста: это баг или идея?",
+        "degraded": False,
+        "register": None,
+    }
 
     async with SessionLocal() as session:
         after = await feedback_service.list_feedback(session, CHAT_ID)

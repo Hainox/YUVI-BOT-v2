@@ -129,6 +129,14 @@ async def post_feedback_assist(
     раз не сабмитит). Любой сбой стрима/парсинга -> `{"degraded": True}`
     (graceful-деградация, НИКОГДА 500, T-06-21) — фронт откатывается на
     обычную форму Фазы 04.3.
+
+    Ответ ВСЕГДА несёт `register` (null, если заявка ещё не оформлена, либо
+    `{"category","text"}` фактически сохранённой заявки) — 06-UI-SPEC.md
+    §Component Inventory «3. AI-assistant chat layer»: фронт рендерит
+    submitted-card ИМЕННО по `register !== null` в ответе, без второго
+    похода в API (RESEARCH.md Pattern 3's `{reply, degraded}`-only shape не
+    даёт фронту способа узнать, что сервер уже сохранил заявку — расширено
+    по Rule 2, критично для must_haves truths этого плана).
     """
     from bot.services import ai_client  # ленивый импорт — openai SDK не грузится при старте API
 
@@ -150,6 +158,7 @@ async def post_feedback_assist(
     except Exception:  # noqa: BLE001 — любой сбой LLM/парсинга -> degraded (D-15/T-06-21)
         return {"degraded": True}
 
+    submitted_register: dict | None = None
     if isinstance(register, dict):
         category = register.get("category")
         text = register.get("text")
@@ -157,5 +166,6 @@ async def post_feedback_assist(
             async with SessionLocal() as session:
                 await feedback_service.submit(session, auth.chat_id, auth.user_id, category, text)
                 await session.commit()
+            submitted_register = {"category": category, "text": text}
 
-    return {"reply": reply, "degraded": False}
+    return {"reply": reply, "degraded": False, "register": submitted_register}
