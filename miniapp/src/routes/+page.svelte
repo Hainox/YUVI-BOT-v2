@@ -47,6 +47,12 @@
 		{ title: 'Лидерборд', desc: 'топ богачей чата', accent: 'yellow', href: '/leaderboard' },
 		{ title: 'Статистика', desc: 'баланс, стрик, большие выигрыши', accent: 'cyan', href: '/stats' },
 		{ title: 'Перевод', desc: 'закинь другу ювиков', href: '/transfer' },
+		{
+			title: 'Донат',
+			desc: 'задонать звёздами Telegram — получи ювики',
+			accent: 'yellow',
+			href: '/donate'
+		},
 		{ title: 'Правила', desc: 'как это всё работает', href: '/rules' },
 		{ title: 'Фидбек', desc: 'баг, идея или жалоба — админы увидят', href: '/feedback' }
 	];
