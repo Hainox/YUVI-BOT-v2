@@ -27,17 +27,28 @@ from bot.services import backfill_service
 router = Router()
 logger = logging.getLogger(__name__)
 
+# Client("yuvi_backfill_session", ...) в backfill_service всегда открывает
+# ОДИН и тот же файл SQLite-сессии, независимо от chat_id. Два одновременных
+# запуска (двойной /backfill подряд, или запуск в разных чатах в одно и то
+# же время) бьются за один файл и падают с sqlite3.OperationalError:
+# database is locked (см. run_backfill упал в логах). Лок сериализует
+# фоновые прогоны в этом процессе; второй просто дожидается первого и
+# честно репортит свой результат (backfill идемпотентен — повторный прогон
+# безопасен, см. docs/backfill-setup.md §5).
+_backfill_lock = asyncio.Lock()
+
 
 async def _run_backfill_and_report(bot: Bot, chat_id: int) -> None:
-    try:
-        total_inserted = await backfill_service.run_backfill(chat_id)
-    except Exception as exc:  # noqa: BLE001 - фоновая задача обязана сообщить любую ошибку в чат
-        logger.exception("run_backfill упал для chat_id=%s", chat_id)
-        await bot.send_message(chat_id, f"Backfill завершился с ошибкой: {exc}")
-        return
-    await bot.send_message(
-        chat_id, f"Backfill завершён: добавлено новых сообщений — {total_inserted}."
-    )
+    async with _backfill_lock:
+        try:
+            total_inserted = await backfill_service.run_backfill(chat_id)
+        except Exception as exc:  # noqa: BLE001 - фоновая задача обязана сообщить любую ошибку в чат
+            logger.exception("run_backfill упал для chat_id=%s", chat_id)
+            await bot.send_message(chat_id, f"Backfill завершился с ошибкой: {exc}")
+            return
+        await bot.send_message(
+            chat_id, f"Backfill завершён: добавлено новых сообщений — {total_inserted}."
+        )
 
 
 @router.message(Command("backfill"))

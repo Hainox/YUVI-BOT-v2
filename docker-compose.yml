@@ -48,8 +48,17 @@ services:
     build:
       context: .
       dockerfile: bot.Dockerfile
+    restart: unless-stopped
     env_file:
       - .env
+    # Личная MTProto-сессия для /backfill (Kurigram) — .dockerignore нарочно
+    # исключает *.session из образа (не коммитим секреты в слои), поэтому
+    # уже авторизованный файл сессии с хоста монтируется отдельно. Без этого
+    # каждый пересозданный контейнер требовал бы новый интерактивный ввод
+    # кода подтверждения, который некому принять в отсоединённом контейнере
+    # (EOFError — см. docs/backfill-setup.md).
+    volumes:
+      - ./yuvi_backfill_session.session:/app/yuvi_backfill_session.session
     depends_on:
       - migrations
       - redis
@@ -60,6 +69,7 @@ services:
     build:
       context: .
       dockerfile: api/Dockerfile
+    restart: unless-stopped
     env_file:
       - .env
     depends_on:
@@ -72,6 +82,7 @@ services:
     build:
       context: .
       dockerfile: nlp/Dockerfile
+    restart: unless-stopped
     env_file:
       - .env
     ports:
@@ -81,6 +92,7 @@ services:
     build:
       context: .
       dockerfile: miniapp/Dockerfile
+    restart: unless-stopped
     ports:
       - "8003:80"
 

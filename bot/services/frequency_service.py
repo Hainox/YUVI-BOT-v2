@@ -47,10 +47,18 @@ def extract_emojis(text: str | None) -> list[str]:
     """Извлекает все эмодзи из текста через emoji.emoji_list (не ручной regex).
 
     Пустой/None текст -> [].
+
+    str(text) обязателен: Kurigram отдаёт message.text/caption не как plain
+    str, а как свой подкласс Str с UTF-16-aware __getitem__ (для offset'ов
+    Telegram-сущностей). emoji.tokenizer индексирует строку посимвольно как
+    обычный str — на ZWJ-последовательностях это ловит Str.__getitem__ на
+    границе суррогатной пары и роняет UnicodeDecodeError (обнаружено на
+    реальном backfill). str(text) отдаёт настоящий str с тем же содержимым и
+    убирает несовместимый __getitem__.
     """
     if not text:
         return []
-    return [item["emoji"] for item in emoji.emoji_list(text)]
+    return [item["emoji"] for item in emoji.emoji_list(str(text))]
 
 
 async def bump_word_frequency(

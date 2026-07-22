@@ -65,6 +65,17 @@ def test_extract_emojis_no_emoji_in_text_returns_empty_list():
     assert frequency_service.extract_emojis("просто текст без эмодзи") == []
 
 
+def test_extract_emojis_handles_kurigram_str_subclass():
+    # Regression: message.text/caption из Kurigram — не plain str, а подкласс
+    # Str с UTF-16-aware __getitem__ (для offset'ов Telegram-сущностей). На
+    # ZWJ-последовательностях это роняло UnicodeDecodeError внутри
+    # emoji.emoji_list при реальном backfill (chat_id=-1002586380924).
+    from pyrogram.types.messages_and_media.message import Str
+
+    emojis = frequency_service.extract_emojis(Str("привет 👩‍🚀 мир"))
+    assert emojis == ["👩‍🚀"]
+
+
 # --- bump_word_frequency / bump_emoji_frequency (интеграционные) ---------
 
 
