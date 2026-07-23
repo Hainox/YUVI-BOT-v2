@@ -166,7 +166,9 @@
 {/snippet}
 
 {#snippet cardBack()}
-	<span class="bj-card bj-card-back"></span>
+	<span class="bj-card bj-card-back">
+		<img class="bj-card-img" src="/blackjack/back.webp" alt="рубашка карты" />
+	</span>
 {/snippet}
 
 <div class="bj-screen">
@@ -380,18 +382,7 @@
 		color: #fff;
 	}
 	.bj-card-back {
-		background: linear-gradient(135deg, #123c3a 0%, #15171c 52%, #3a1420 100%);
 		border-color: #ede3ce;
-	}
-	.bj-card-back::before {
-		content: '';
-		position: absolute;
-		inset: 0;
-		background: repeating-linear-gradient(
-			45deg,
-			rgba(46, 196, 182, 0.12) 0px 8px,
-			rgba(214, 56, 89, 0.12) 8px 16px
-		);
 	}
 
 	.bj-result {
