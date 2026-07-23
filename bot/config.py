@@ -54,7 +54,7 @@ class Settings(BaseSettings):
     digest_min_messages: int = Field(default=10, alias="DIGEST_MIN_MESSAGES")
 
     # --- Экономика и рынки ставок (ECON/BET) ---
-    economy_start_bonus: int = Field(default=1000, alias="ECONOMY_START_BONUS")
+    economy_start_bonus: int = Field(default=5000, alias="ECONOMY_START_BONUS")
     transfer_fee_pct: float = Field(default=0.05, alias="TRANSFER_FEE_PCT")
     market_creation_fee: int = Field(default=100, alias="MARKET_CREATION_FEE")
     market_min_bet: int = Field(default=10, alias="MARKET_MIN_BET")
