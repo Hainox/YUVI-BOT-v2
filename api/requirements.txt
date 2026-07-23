@@ -25,4 +25,13 @@ APScheduler==3.11.0
 # verification). Version pinned to what aiogram==3.27.0 actually resolves
 # in the dev image (`python -c "import aiohttp; print(aiohttp.__version__)"`).
 aiohttp==3.13.5
+# Transitive runtime dep of bot/services/ai_client.py (lazily imported by
+# api/routes/feedback.py's POST /feedback/assist, module-level `from openai
+# import AsyncOpenAI`) — same class of gap as APScheduler/aiohttp above,
+# caught live in production (500 ModuleNotFoundError) rather than by pytest
+# for the identical reason: yuvi-bot-dev:py311 already has the full root
+# requirements.txt, so this minimal api image's gaps only surface once the
+# specific code path actually runs against the real production image.
+# Version pinned to match root requirements.txt.
+openai==2.45.0
 
