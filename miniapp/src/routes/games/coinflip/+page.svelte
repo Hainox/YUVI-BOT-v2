@@ -10,10 +10,27 @@
 	// updates arrive via lib/api.ts's balance-sniffing (instant, this tab) AND
 	// the SSE stream seeded in +layout.svelte (other tabs/actions) — no local
 	// balance mutation here.
+	//
+	// Coin animation (this pass): a CSS 3D flip-card coin (rotateY +
+	// backface-visibility, same technique as any flip-card) dramatizes the
+	// already-known server result — it never decides it. Sequence: toss
+	// (brief lift/scale cue) -> spin (several full rotateY turns landing
+	// exactly on the server's face) -> land (short squash) -> only THEN is
+	// `result` assigned, which is what reveals the existing text/payout panel
+	// below. `flipping` still gates the whole sequence exactly like before,
+	// it just now spans toss+spin+land instead of a single instant fetch.
 	import { apiFetch, ApiError } from '$lib/api';
 	import { haptic } from '$lib/tg';
 
 	const BET_CHIPS = [10, 50, 100, 500, 1000];
+
+	// Animation timings (ms) — kept as named constants so the JS sequencing
+	// and the CSS transition durations (bound in via inline custom
+	// properties below) share one source of truth.
+	const TOSS_MS = 260;
+	const SPIN_MS = 900;
+	const LAND_MS = 320;
+	const SPIN_TURNS = 4; // extra full rotations before landing, purely cosmetic
 
 	type CoinflipResult = {
 		game: string;
@@ -32,12 +49,47 @@
 	let result = $state<CoinflipResult | null>(null);
 	let error = $state<string | null>(null);
 
+	// Coin visual state. `rotation` accumulates (never resets) so every flip
+	// keeps spinning forward from wherever the coin currently sits — no
+	// backward snap between rounds. `phase` drives which CSS animation class
+	// is active on the coin markup below.
+	let rotation = $state(0);
+	let phase = $state<'idle' | 'toss' | 'spin' | 'land'>('idle');
+
+	function sleep(ms: number): Promise<void> {
+		return new Promise((resolve) => window.setTimeout(resolve, ms));
+	}
+
+	function prefersReducedMotion(): boolean {
+		return typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+	}
+
+	// Smallest forward rotation from `current` that (a) lands the coin's
+	// rotateY on the correct face (0deg = heads, 180deg = tails, mod 360) and
+	// (b) always includes SPIN_TURNS full extra turns so it visibly spins
+	// even when the coin already happens to be resting on the right face.
+	function nextRotation(current: number, face: 'heads' | 'tails'): number {
+		const targetMod = face === 'heads' ? 0 : 180;
+		const currentMod = ((current % 360) + 360) % 360;
+		let delta = targetMod - currentMod;
+		if (delta < 0) delta += 360;
+		return current + SPIN_TURNS * 360 + delta;
+	}
+
 	async function flip() {
 		if (flipping) return;
 		flipping = true;
 		error = null;
 		result = null;
+		const reduced = prefersReducedMotion();
+
+		phase = 'toss';
+		haptic('spin');
 		try {
+			// Toss cue plays before we even know the outcome — purely a "the
+			// coin left your hand" cue, does not depend on the server.
+			await sleep(reduced ? 0 : TOSS_MS);
+
 			const res = await apiFetch<CoinflipResult>('/api/v1/games/coinflip', {
 				method: 'POST',
 				body: JSON.stringify({
@@ -46,12 +98,22 @@
 					idem_key: `coinflip:${crypto.randomUUID()}`
 				})
 			});
+
+			// Server result is known now — the spin's landing angle is derived
+			// from it, but the multi-turn spin itself is cosmetic dramatization.
+			rotation = nextRotation(rotation, res.outcome.result);
+			phase = 'spin';
+			await sleep(reduced ? 0 : SPIN_MS);
+
+			phase = 'land';
 			result = res;
 			haptic(res.outcome.won ? 'win' : 'lose');
+			await sleep(reduced ? 0 : LAND_MS);
 		} catch (err) {
 			error = err instanceof ApiError ? err.message : String(err ?? 'unknown_error');
 			haptic('error');
 		} finally {
+			phase = 'idle';
 			flipping = false;
 		}
 	}
@@ -80,6 +142,24 @@
 		>
 			решка
 		</button>
+	</div>
+
+	<div class="cf-coin-stage" aria-hidden="true">
+		<div
+			class="cf-coin-wrap {phase === 'toss' ? 'cf-toss' : ''} {phase === 'land' ? 'cf-land' : ''}"
+			style={`--toss-dur: ${TOSS_MS}ms`}
+		>
+			<div class="cf-coin" style={`--rotate: ${rotation}deg; --spin-dur: ${SPIN_MS}ms`}>
+				<div class="cf-face cf-face-heads">
+					<span class="cf-face-glyph">О</span>
+					<span class="cf-face-label">орёл</span>
+				</div>
+				<div class="cf-face cf-face-tails">
+					<span class="cf-face-glyph">Р</span>
+					<span class="cf-face-label">решка</span>
+				</div>
+			</div>
+		</div>
 	</div>
 
 	{#if result}
@@ -163,6 +243,95 @@
 		font-size: var(--font-heading-size);
 		text-transform: uppercase;
 		padding: var(--space-md);
+	}
+
+	/* ─── coin — CSS 3D flip-card technique (rotateY + backface-visibility).
+	   Purely cosmetic: `rotation`'s landing angle is derived from an already-
+	   known server result, this never decides the outcome. ───────────────── */
+	.cf-coin-stage {
+		display: flex;
+		justify-content: center;
+		padding: var(--space-sm) 0 var(--space-xs);
+		perspective: 900px;
+	}
+	.cf-coin-wrap {
+		width: 128px;
+		height: 128px;
+		transition: transform var(--toss-dur, 260ms) cubic-bezier(0.34, 1.4, 0.64, 1);
+	}
+	/* Pre-flip toss cue: the coin lifts and grows slightly before it starts
+	   spinning, so it reads as an actual physical toss upward, not a spin
+	   appearing in place. */
+	.cf-coin-wrap.cf-toss {
+		transform: translateY(-16px) scale(1.08);
+	}
+	.cf-coin-wrap.cf-land {
+		animation: cfLandSquash 320ms ease-out;
+	}
+	@keyframes cfLandSquash {
+		0% {
+			transform: scale(1, 1);
+		}
+		35% {
+			transform: scale(0.9, 1.1);
+		}
+		65% {
+			transform: scale(1.06, 0.94);
+		}
+		100% {
+			transform: scale(1, 1);
+		}
+	}
+	.cf-coin {
+		position: relative;
+		width: 100%;
+		height: 100%;
+		transform-style: preserve-3d;
+		transform: rotateY(var(--rotate, 0deg));
+		transition: transform var(--spin-dur, 900ms) cubic-bezier(0.22, 0.61, 0.36, 1);
+	}
+	.cf-face {
+		position: absolute;
+		inset: 0;
+		border-radius: 50%;
+		backface-visibility: hidden;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		gap: 2px;
+		background: var(--bg-secondary-2);
+		border: 3px solid var(--accent-pink);
+		box-shadow:
+			0 6px 0 #111,
+			0 6px 18px rgba(0, 0, 0, 0.35);
+	}
+	.cf-face-tails {
+		transform: rotateY(180deg);
+	}
+	.cf-face-glyph {
+		font-family: var(--font-numeric);
+		font-size: 42px;
+		font-weight: 900;
+		line-height: 1;
+		color: var(--accent-pink);
+	}
+	.cf-face-label {
+		font-family: var(--font-body);
+		font-size: 11px;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: var(--text-secondary);
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.cf-coin-wrap,
+		.cf-coin-wrap.cf-toss,
+		.cf-coin-wrap.cf-land,
+		.cf-coin {
+			transition: none !important;
+			animation: none !important;
+			transform: rotateY(var(--rotate, 0deg)) !important;
+		}
 	}
 
 	.cf-result {
