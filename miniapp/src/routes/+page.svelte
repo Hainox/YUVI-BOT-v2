@@ -39,7 +39,6 @@
 	const baseTiles: Tile[] = [
 		{ title: 'Игры', desc: 'слоты · рулетка · блэкджек · кости · монетка', accent: 'pink', href: '/games' },
 		{ title: 'Ферма', desc: 'тапай, копи CP, качай апгрейды', accent: 'cyan', href: '/farm' },
-		{ title: 'Гача', desc: 'крути баннер, собирай тир-лист', accent: 'yellow', href: '/gacha' },
 		{ title: 'Дуэль', desc: 'вызови кого-нибудь на бабки', accent: 'pink', href: '/duel' },
 		{ title: 'Рынки', desc: 'ставь на исход, следи за котировкой', accent: 'cyan', href: '/markets' },
 		{ title: 'Портфолио', desc: 'твои открытые позиции', accent: 'yellow', href: '/portfolio' },
@@ -64,6 +63,7 @@
 	};
 
 	const lockedTiles: Tile[] = [
+		{ title: 'Гача', desc: 'временно отключено', locked: 'временно отключено' },
 		{ title: 'Магазин', desc: 'скоро', locked: 'скоро' },
 		{ title: 'Теги', desc: 'скоро', locked: 'скоро' }
 	];

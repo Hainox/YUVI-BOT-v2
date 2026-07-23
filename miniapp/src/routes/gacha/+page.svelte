@@ -18,6 +18,11 @@
 	import { apiFetch, ApiError } from '$lib/api';
 	import { haptic } from '$lib/tg';
 
+	// Временное отключение раздела (хаб уже прячет тайл — см. lockedTiles в
+	// +page.svelte хаба). Флаг здесь же гасит и прямой заход по /gacha,
+	// код ниже не трогается — переключается обратно одной строкой.
+	const GACHA_DISABLED = true;
+
 	const ROLL_COST = 300;
 	const ROLL10_COST = 2700;
 	const PITY_SSR = 50;
@@ -114,10 +119,14 @@
 		return bannerChar ? bannerChar.name : `персонаж ${bannerId} (ещё не выпал)`;
 	}
 
-	onMount(loadCollection);
+	onMount(() => {
+		if (!GACHA_DISABLED) loadCollection();
+	});
 </script>
 
-{#if loading}
+{#if GACHA_DISABLED}
+	<div class="screen-loading"><span>гача временно отключена</span></div>
+{:else if loading}
 	<div class="screen-loading"><span>загрузка баннера…</span></div>
 {:else}
 	<div class="gacha-screen">

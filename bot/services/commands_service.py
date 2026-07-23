@@ -50,6 +50,23 @@ _PUBLIC_COMMANDS: list[BotCommand] = [
     BotCommand(command="duel_accept", description="Принять дуэль"),
     BotCommand(command="duel_decline", description="Отклонить дуэль"),
     BotCommand(command="duel_cancel", description="Отменить свою дуэль"),
+    BotCommand(command="donate", description="Задонатить звёздами Telegram"),
+    BotCommand(command="fb", description="Оставить фидбек, баг или идею"),
+    BotCommand(command="poke", description="Толкнуть участника"),
+    BotCommand(command="hug", description="Обнять участника"),
+    BotCommand(command="joke_order", description="Заказать шутку про участника"),
+    BotCommand(command="roast", description="Роастнуть участника"),
+    BotCommand(command="tag_rent", description="Арендовать титул в чате"),
+    BotCommand(command="tag_cancel", description="Отменить аренду титула"),
+    BotCommand(command="twin", description="Спросить AI-двойника участника"),
+    BotCommand(command="twin_optin", description="Подключить своего AI-двойника"),
+    BotCommand(command="twin_status", description="Статус моего AI-двойника"),
+    BotCommand(command="twin_pause", description="Приостановить AI-двойника"),
+    BotCommand(command="twin_resume", description="Возобновить AI-двойника"),
+    BotCommand(command="twin_optout", description="Отключить AI-двойника"),
+    BotCommand(command="victim", description="Жертва дня"),
+    BotCommand(command="awards", description="Итоги дня (номинации)"),
+    BotCommand(command="yuvi", description="Yuvi_Yuvi дня (лотерея)"),
 ]
 
 _ADMIN_ONLY_COMMANDS: list[BotCommand] = [
