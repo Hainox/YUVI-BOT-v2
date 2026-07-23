@@ -27,6 +27,7 @@ def _reset_cache(monkeypatch) -> None:
     зависели от порядка выполнения друг друга."""
     monkeypatch.setattr(steam_service, "_cache_items", None)
     monkeypatch.setattr(steam_service, "_cache_fetched_at", 0.0)
+    monkeypatch.setattr(steam_service, "_name_cache", {})
 
 
 def _set_steam_settings(monkeypatch, key: str = "fake-key", steamid: str = "fake-id") -> None:
@@ -147,3 +148,70 @@ async def test_empty_wishlist_returns_none(monkeypatch):
     result = await steam_service.get_random_wishlist_game(date(2026, 7, 19))
 
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_missing_inline_name_resolves_via_appdetails(monkeypatch):
+    """Реальный ответ IWishlistService несёт только appid (см. модульный
+    docstring) — этот кейс резолвит имя через store/appdetails вместо
+    fallback'а `Steam App #{appid}`."""
+    _reset_cache(monkeypatch)
+    _set_steam_settings(monkeypatch)
+    monkeypatch.setattr(
+        steam_service,
+        "_fetch_wishlist_json",
+        AsyncMock(return_value={"response": {"items": [{"appid": 42}]}}),
+    )
+    mock_appdetails = AsyncMock(
+        return_value={"42": {"success": True, "data": {"name": "Elden Ring"}}}
+    )
+    monkeypatch.setattr(steam_service, "_fetch_appdetails_json", mock_appdetails)
+
+    result = await steam_service.get_random_wishlist_game(date(2026, 7, 19))
+
+    assert result == "Elden Ring"
+    mock_appdetails.assert_awaited_once_with(42)
+
+
+@pytest.mark.asyncio
+async def test_appdetails_failure_falls_back_to_appid_label(monkeypatch):
+    """D-11: appdetails недоступен -> `Steam App #{appid}`, НЕ None — сама
+    игра уже найдена в wishlist, деградирует только имя, не весь результат."""
+    _reset_cache(monkeypatch)
+    _set_steam_settings(monkeypatch)
+    monkeypatch.setattr(
+        steam_service,
+        "_fetch_wishlist_json",
+        AsyncMock(return_value={"response": {"items": [{"appid": 42}]}}),
+    )
+    monkeypatch.setattr(
+        steam_service, "_fetch_appdetails_json", AsyncMock(side_effect=Exception("boom"))
+    )
+
+    result = await steam_service.get_random_wishlist_game(date(2026, 7, 19))
+
+    assert result == "Steam App #42"
+
+
+@pytest.mark.asyncio
+async def test_resolved_name_is_cached_across_calls(monkeypatch):
+    """Повторный вызов в тот же день (тот же выбранный appid) не должен
+    снова бить по appdetails — module-level `_name_cache`."""
+    _reset_cache(monkeypatch)
+    _set_steam_settings(monkeypatch)
+    monkeypatch.setattr(
+        steam_service,
+        "_fetch_wishlist_json",
+        AsyncMock(return_value={"response": {"items": [{"appid": 42}]}}),
+    )
+    mock_appdetails = AsyncMock(
+        return_value={"42": {"success": True, "data": {"name": "Elden Ring"}}}
+    )
+    monkeypatch.setattr(steam_service, "_fetch_appdetails_json", mock_appdetails)
+
+    day = date(2026, 7, 19)
+    first = await steam_service.get_random_wishlist_game(day)
+    second = await steam_service.get_random_wishlist_game(day)
+
+    assert first == second == "Elden Ring"
+    mock_appdetails.assert_awaited_once()

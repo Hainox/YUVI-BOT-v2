@@ -24,15 +24,21 @@ Graceful-degradation (D-11): нет `STEAM_API_KEY`/`STEAM_ID64` ИЛИ люба
 опциональная подстраховка.
 
 Реальный ответ `IWishlistService/GetWishlist/v1` отдаёт позиции только с
-`appid` (без человекочитаемого имени) — этот модуль ожидает опциональное
-поле `name` у каждой позиции и иначе отдаёт `Steam App #{appid}`. Резолв
-реальных названий через отдельный эндпоинт (`appdetails`/store API) —
-второй внешний HTTP-хост, вне единственной границы доверия `api.
-steampowered.com`, зафиксированной в threat_model плана 05-06; сознательно
-не добавляется в этом плане (реальная Steam-проверка остаётся manual-only
-до заполнения секретов, D-11).
+`appid` (без человекочитаемого имени). Имя резолвится (запрошено
+пользователем 2026-07-23, после первой живой проверки секретов) через
+публичный `store.steampowered.com/api/appdetails` — ВТОРОЙ внешний
+HTTP-хост, сознательно за пределами исходной единственной границы доверия
+`api.steampowered.com` (threat_model плана 05-06), но тоже официальный
+Valve-хост, без креда в запросе (только appid — наши собственные данные,
+не пользовательский ввод, SSRF не аргумент) и с тем же graceful-degradation
+контрактом (D-11): любой сбой резолва → `Steam App #{appid}`, никогда
+исключение наружу. Резолвится ТОЛЬКО для уже выбранного дня item'а (не для
+всего wishlist) — один HTTP-запрос в день, не N.
 
-TTL-кэш (module-level, 6ч) — не дёргает Steam API на каждый `/awards`.
+TTL-кэш wishlist-списка (module-level, 6ч) — не дёргает Wishlist API на
+каждый `/awards`. Отдельный module-level dict-кэш `_name_cache` (appid ->
+имя, без TTL — имя игры не меняется) — повторный `/awards` в тот же день с
+той же выбранной игрой не бьёт по appdetails повторно.
 """
 
 from __future__ import annotations
@@ -49,10 +55,12 @@ from bot.config import settings
 logger = logging.getLogger(__name__)
 
 _WISHLIST_URL = "https://api.steampowered.com/IWishlistService/GetWishlist/v1/"
+_APPDETAILS_URL = "https://store.steampowered.com/api/appdetails"
 _CACHE_TTL_SEC = 6 * 3600
 
 _cache_items: list[dict] | None = None
 _cache_fetched_at: float = 0.0
+_name_cache: dict[int, str] = {}
 
 
 async def _fetch_wishlist_json(key: str, steamid: str) -> dict:
@@ -83,6 +91,45 @@ async def _get_wishlist_items() -> list[dict]:
     return items
 
 
+async def _fetch_appdetails_json(appid: int) -> dict:
+    """GET публичного store/appdetails (форма `_fetch_wishlist_json` —
+    отдельная функция специально ради monkeypatch в тестах, без реального
+    aiohttp)."""
+    timeout = aiohttp.ClientTimeout(total=settings.ai_call_timeout_sec)
+    async with aiohttp.ClientSession(timeout=timeout) as http_session:
+        async with http_session.get(
+            _APPDETAILS_URL, params={"appids": str(appid), "l": "russian"}
+        ) as response:
+            response.raise_for_status()
+            return await response.json()
+
+
+async def _resolve_app_name(appid: int) -> str:
+    """Резолвит человекочитаемое имя по appid через публичный
+    store/appdetails (не требует STEAM_API_KEY — отдельный публичный
+    эндпоинт). Кэш без TTL (имя игры не меняется) — module-level
+    `_name_cache`. Любой сбой (сеть/форма ответа/success=False) деградирует
+    в `Steam App #{appid}`, тот же D-11 контракт, что у остального модуля —
+    resolve-провал НЕ должен превращать уже найденную игру в «Steam
+    недоступен»."""
+    if appid in _name_cache:
+        return _name_cache[appid]
+
+    fallback = f"Steam App #{appid}"
+    try:
+        data = await _fetch_appdetails_json(appid)
+        entry = data.get(str(appid)) or {}
+        name = entry.get("data", {}).get("name") if entry.get("success") else None
+    except Exception:  # noqa: BLE001 - graceful degradation, тот же D-11, что остальной модуль
+        logger.warning("steam_service: не удалось резолвнуть имя appid=%s", appid, exc_info=True)
+        return fallback
+
+    if not name:
+        return fallback
+    _name_cache[appid] = name
+    return name
+
+
 async def get_random_wishlist_game(day_msk: date) -> str | None:
     """Название (или `Steam App #{appid}`) случайной игры из Steam Wishlist,
     детерминированной по MSK-дню (Pitfall 5). `None`, если
@@ -108,9 +155,18 @@ async def get_random_wishlist_game(day_msk: date) -> str | None:
         # Сортировка по appid ДО выбора — детерминизм зависит ТОЛЬКО от day_msk,
         # не от недокументированного порядка ответа Steam API (см. модульный docstring).
         sorted_items = sorted(items, key=lambda item: item.get("appid", 0))
-        names = [item.get("name") or f"Steam App #{item.get('appid')}" for item in sorted_items]
+        chosen = random.Random(day_msk.toordinal()).choice(sorted_items)
+        appid = chosen.get("appid")
     except Exception:  # noqa: BLE001 - любая сетевая/HTTP/форма-ответа ошибка graceful (D-11)
         logger.warning("steam_service: не удалось получить/разобрать Steam Wishlist", exc_info=True)
         return None
 
-    return random.Random(day_msk.toordinal()).choice(names)
+    # Wishlist API иногда сам отдаёт "name" — тогда appdetails не нужен
+    # вообще (0 доп. HTTP-запросов). Иначе резолвим ТОЛЬКО выбранный appid
+    # (не весь wishlist) через _resolve_app_name.
+    inline_name = chosen.get("name")
+    if inline_name:
+        return inline_name
+    if appid is None:
+        return "Steam App #?"
+    return await _resolve_app_name(appid)
