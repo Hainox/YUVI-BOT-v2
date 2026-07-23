@@ -41,6 +41,7 @@
 		{ title: 'Ферма', desc: 'тапай, копи CP, качай апгрейды', accent: 'cyan', href: '/farm' },
 		{ title: 'Дуэль', desc: 'вызови кого-нибудь на бабки', accent: 'pink', href: '/duel' },
 		{ title: 'Рынки', desc: 'ставь на исход, следи за котировкой', accent: 'cyan', href: '/markets' },
+		{ title: 'Биржа', desc: 'продай ювики за что угодно — вне бота', accent: 'cyan', href: '/exchange' },
 		{ title: 'Портфолио', desc: 'твои открытые позиции', accent: 'yellow', href: '/portfolio' },
 		{ title: 'История', desc: 'все твои ставки, тапы и переводы', href: '/history' },
 		{ title: 'Лидерборд', desc: 'топ богачей чата', accent: 'yellow', href: '/leaderboard' },
