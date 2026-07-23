@@ -62,7 +62,7 @@ async def test_do_poke_debits_and_rejects_self_target(session):
     await economy_service.get_balance(session, chat_id, actor_id)
     bank_before = await _get_bank_balance(session, chat_id)
 
-    result = await social_service.do_poke(session, chat_id, actor_id, target_id, "Цель", 1001)
+    result = await social_service.do_poke(session, chat_id, actor_id, target_id, "Цель", "1001")
     await session.commit()
 
     assert result
@@ -72,7 +72,7 @@ async def test_do_poke_debits_and_rejects_self_target(session):
     assert await _get_bank_balance(session, chat_id) == bank_before + settings.social_poke_cost
 
     with pytest.raises(social_service.InvalidTarget):
-        await social_service.do_poke(session, chat_id, actor_id, actor_id, "Актор", 1002)
+        await social_service.do_poke(session, chat_id, actor_id, actor_id, "Актор", "1002")
     await session.commit()
 
     # Деньги за отклонённую self-target попытку НЕ списаны.
@@ -90,7 +90,7 @@ async def test_do_hug_debits_and_rejects_self_target(session):
     await economy_service.get_balance(session, chat_id, actor_id)
     bank_before = await _get_bank_balance(session, chat_id)
 
-    result = await social_service.do_hug(session, chat_id, actor_id, target_id, "Цель", 2001)
+    result = await social_service.do_hug(session, chat_id, actor_id, target_id, "Цель", "2001")
     await session.commit()
 
     assert result
@@ -100,7 +100,7 @@ async def test_do_hug_debits_and_rejects_self_target(session):
     assert await _get_bank_balance(session, chat_id) == bank_before + settings.social_hug_cost
 
     with pytest.raises(social_service.InvalidTarget):
-        await social_service.do_hug(session, chat_id, actor_id, actor_id, "Актор", 2002)
+        await social_service.do_hug(session, chat_id, actor_id, actor_id, "Актор", "2002")
     await session.commit()
 
     assert await _get_user_balance(session, chat_id, actor_id) == (
@@ -128,7 +128,7 @@ async def test_roast_calls_ai_client(session, monkeypatch):
 
     monkeypatch.setattr(social_service.ai_client, "stream", capturing_stream)
 
-    result = await social_service.do_roast(session, chat_id, actor_id, target_id, "Цель", 3001)
+    result = await social_service.do_roast(session, chat_id, actor_id, target_id, "Цель", "3001")
     await session.commit()
 
     assert result == "жёсткий текст"
@@ -165,7 +165,7 @@ async def test_joke_order_personalized(session, monkeypatch):
     monkeypatch.setattr(social_service.ai_client, "stream", capturing_stream)
 
     result = await social_service.do_joke_order(
-        session, chat_id, actor_id, target_id, "Цель", "про кофе", 4001
+        session, chat_id, actor_id, target_id, "Цель", "про кофе", "4001"
     )
     await session.commit()
 
@@ -207,7 +207,7 @@ async def test_joke_order_replay_skips_second_llm_call(session, monkeypatch):
 
     monkeypatch.setattr(social_service.ai_client, "stream", counting_stream)
 
-    message_id = 4002
+    message_id = "4002"
     first = await social_service.do_joke_order(
         session, chat_id, actor_id, target_id, "Цель3", "про котиков", message_id
     )
@@ -242,7 +242,7 @@ async def test_roast_replay_skips_second_llm_call(session, monkeypatch):
 
     monkeypatch.setattr(social_service.ai_client, "stream", counting_stream)
 
-    message_id = 3002
+    message_id = "3002"
     first = await social_service.do_roast(session, chat_id, actor_id, target_id, "Цель4", message_id)
     await session.commit()
     assert first == "роаст"
@@ -269,7 +269,7 @@ async def test_insufficient_funds_no_charge(session, monkeypatch):
     monkeypatch.setattr(social_service.settings, "social_poke_cost", 999_999)
 
     with pytest.raises(economy_service.InsufficientFunds):
-        await social_service.do_poke(session, chat_id, actor_id, target_id, "Цель", 5001)
+        await social_service.do_poke(session, chat_id, actor_id, target_id, "Цель", "5001")
     await session.commit()
 
     assert await _get_user_balance(session, chat_id, actor_id) == settings.economy_start_bonus
@@ -287,7 +287,7 @@ async def test_charge_idempotent_by_message_id(session):
     await _ensure_user(session, target_id, "Цель")
     await economy_service.get_balance(session, chat_id, actor_id)
 
-    message_id = 6001
+    message_id = "6001"
     await social_service.do_poke(session, chat_id, actor_id, target_id, "Цель", message_id)
     await session.commit()
     balance_after_first = await _get_user_balance(session, chat_id, actor_id)

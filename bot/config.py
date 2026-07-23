@@ -94,8 +94,10 @@ class Settings(BaseSettings):
     twin_max_output_tokens: int = Field(default=300, alias="TWIN_MAX_OUTPUT_TOKENS")
 
     # --- Платные фичи, донаты, медиа, фидбек (фаза 6) ---
-    # Соцмагазин (D-01/A1): цены сбалансированы относительно casino_min_bet=10,
-    # жертва дня=228, старт экономики=1000 — не копия эталонных 50/150/300.
+    # Соцмагазин (D-01/A1): цены изначально сбалансированы относительно
+    # casino_min_bet=10, жертва дня=228, старт экономики=1000 (сам старт
+    # позже поднят до 5000 — цены здесь НЕ пересчитывались вслед за ним,
+    # это отдельное решение) — не копия эталонных 50/150/300.
     social_poke_cost: int = Field(default=50, alias="SOCIAL_POKE_COST")
     social_hug_cost: int = Field(default=50, alias="SOCIAL_HUG_COST")
     social_joke_order_cost: int = Field(default=150, alias="SOCIAL_JOKE_ORDER_COST")

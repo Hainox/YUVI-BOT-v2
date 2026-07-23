@@ -100,8 +100,8 @@ async def test_transfer_with_fee_moves_money_and_fee_to_bank(session):
     ref_id = "test_transfer_moves_money"
     await economy_service.transfer_with_fee(session, chat_id, sender, receiver, 100, ref_id)
 
-    assert await _get_user_balance(session, chat_id, sender) == 1000 - 100
-    assert await _get_user_balance(session, chat_id, receiver) == 1000 + 95
+    assert await _get_user_balance(session, chat_id, sender) == settings.economy_start_bonus - 100
+    assert await _get_user_balance(session, chat_id, receiver) == settings.economy_start_bonus + 95
     assert await _get_bank_balance(session, chat_id) == 5
     assert await _count_tx_by_ref(session, chat_id, ref_id) == 3
 
@@ -117,7 +117,7 @@ async def test_transfer_fee_floor_is_one(session):
 
     await economy_service.transfer_with_fee(session, chat_id, sender, receiver, 1, "test_transfer_floor")
 
-    assert await _get_user_balance(session, chat_id, receiver) == 1000  # amount(1) - fee(1) = 0
+    assert await _get_user_balance(session, chat_id, receiver) == settings.economy_start_bonus  # amount(1) - fee(1) = 0
     assert await _get_bank_balance(session, chat_id) == 1
 
 
@@ -163,8 +163,8 @@ async def test_transfer_insufficient_funds_raises(session):
             session, chat_id, sender, receiver, 999_999, "test_transfer_insufficient"
         )
 
-    assert await _get_user_balance(session, chat_id, sender) == 1000
-    assert await _get_user_balance(session, chat_id, receiver) == 1000
+    assert await _get_user_balance(session, chat_id, sender) == settings.economy_start_bonus
+    assert await _get_user_balance(session, chat_id, receiver) == settings.economy_start_bonus
 
 
 @pytest.mark.asyncio
@@ -192,7 +192,7 @@ async def test_debit_idempotent_on_duplicate_ref(session):
     chat_id = -100700007
     user_id = 800060
     await _ensure_user(session, user_id)
-    await economy_service.get_balance(session, chat_id, user_id)  # 1000
+    await economy_service.get_balance(session, chat_id, user_id)  # settings.economy_start_bonus
 
     ref_id = "test_debit_duplicate_ref"
     ok_first = await economy_service.debit(session, chat_id, user_id, 100, "bet_place", ref_id)
@@ -201,7 +201,7 @@ async def test_debit_idempotent_on_duplicate_ref(session):
     ok_second = await economy_service.debit(session, chat_id, user_id, 100, "bet_place", ref_id)
     assert ok_second is False
 
-    assert await _get_user_balance(session, chat_id, user_id) == 900
+    assert await _get_user_balance(session, chat_id, user_id) == settings.economy_start_bonus - 100
 
 
 @pytest.mark.asyncio
@@ -209,12 +209,12 @@ async def test_debit_insufficient_raises(session):
     chat_id = -100700008
     user_id = 800070
     await _ensure_user(session, user_id)
-    await economy_service.get_balance(session, chat_id, user_id)  # 1000
+    await economy_service.get_balance(session, chat_id, user_id)  # settings.economy_start_bonus
 
     with pytest.raises(economy_service.InsufficientFunds):
         await economy_service.debit(session, chat_id, user_id, 999_999, "bet_place", "test_debit_insufficient")
 
-    assert await _get_user_balance(session, chat_id, user_id) == 1000
+    assert await _get_user_balance(session, chat_id, user_id) == settings.economy_start_bonus
 
 
 # --- debit_to_bank (IN-01: общий стейк-примитив казино/дуэлей) --------------
@@ -225,7 +225,7 @@ async def test_debit_to_bank_moves_stake_to_shared_bank(session):
     chat_id = -100700009
     user_id = 800080
     await _ensure_user(session, user_id)
-    await economy_service.get_balance(session, chat_id, user_id)  # 1000
+    await economy_service.get_balance(session, chat_id, user_id)  # settings.economy_start_bonus
     bank_before = await _get_bank_balance(session, chat_id)
 
     ok = await economy_service.debit_to_bank(
@@ -234,7 +234,7 @@ async def test_debit_to_bank_moves_stake_to_shared_bank(session):
     await session.commit()
 
     assert ok is True
-    assert await _get_user_balance(session, chat_id, user_id) == 900
+    assert await _get_user_balance(session, chat_id, user_id) == settings.economy_start_bonus - 100
     assert await _get_bank_balance(session, chat_id) == bank_before + 100
 
 
@@ -243,7 +243,7 @@ async def test_debit_to_bank_idempotent_skips_bank_leg_on_replay(session):
     chat_id = -100700010
     user_id = 800081
     await _ensure_user(session, user_id)
-    await economy_service.get_balance(session, chat_id, user_id)  # 1000
+    await economy_service.get_balance(session, chat_id, user_id)  # settings.economy_start_bonus
 
     ref_id = "test_debit_to_bank_replay"
     first = await economy_service.debit_to_bank(session, chat_id, user_id, 100, "casino_bet", ref_id)
@@ -255,7 +255,7 @@ async def test_debit_to_bank_idempotent_skips_bank_leg_on_replay(session):
     await session.commit()
 
     assert second is False
-    assert await _get_user_balance(session, chat_id, user_id) == 900
+    assert await _get_user_balance(session, chat_id, user_id) == settings.economy_start_bonus - 100
     assert await _get_bank_balance(session, chat_id) == bank_after_first
 
 
@@ -283,9 +283,9 @@ async def test_get_leaderboard_orders_by_balance_desc(session):
     balances = [row["balance"] for row in leaderboard]
     assert balances == sorted(balances, reverse=True)
     assert leaderboard[0]["user_id"] == u2
-    assert leaderboard[0]["balance"] == 1500
+    assert leaderboard[0]["balance"] == settings.economy_start_bonus + 500
     assert leaderboard[-1]["user_id"] == u3
-    assert leaderboard[-1]["balance"] == 800
+    assert leaderboard[-1]["balance"] == settings.economy_start_bonus - 200
 
 
 @pytest.mark.asyncio
@@ -313,7 +313,9 @@ async def test_get_chat_summary_fields(session):
     summary = await economy_service.get_chat_summary(session, chat_id)
 
     assert summary["bank_balance"] == 5
-    assert summary["total_in_circulation"] == (1000 - 100) + (1000 + 95)
+    assert summary["total_in_circulation"] == (settings.economy_start_bonus - 100) + (
+        settings.economy_start_bonus + 95
+    )
     assert summary["open_markets_count"] == 1
 
 

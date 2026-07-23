@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 import bot.handlers.economy as economy_handlers
+from bot.config import settings
 from bot.services import economy_service
 from common.models.market import Market
 from common.models.user import User
@@ -62,7 +63,7 @@ async def test_balance_command_grants_start_bonus_for_newcomer(session):
 
     message.answer.assert_awaited_once()
     text = message.answer.await_args.args[0]
-    assert "1000" in text
+    assert str(settings.economy_start_bonus) in text
     assert "ювик" in text
 
 
@@ -92,7 +93,7 @@ async def test_transfer_command_reply_moves_money_with_fee(session):
     assert "5" in text  # комиссия max(1, ceil(0.05*100))=5
 
     receiver_balance = await economy_service.get_balance(session, chat_id, receiver_id)
-    assert receiver_balance == 1000 + 95
+    assert receiver_balance == settings.economy_start_bonus + 95
 
 
 @pytest.mark.asyncio
@@ -164,7 +165,7 @@ async def test_leaderboard_command_lists_balances(session):
 
     text = message.answer.await_args.args[0]
     assert "Топ Игрок" in text
-    assert "1000" in text
+    assert str(settings.economy_start_bonus) in text
 
 
 @pytest.mark.asyncio
