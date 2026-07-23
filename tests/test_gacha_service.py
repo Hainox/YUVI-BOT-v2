@@ -1,9 +1,9 @@
 """Интеграционные тесты gacha_service против живого Postgres (фикстура
 `session` из tests/conftest.py — транзакция-на-тест). Доказывают гача-ядро
 (04.1-06, GACHA-01..03 бэкенд): D-03 (стоимость 300/×10=2700 сток в банк,
-веса SR 0.80/SSR 0.18/UR 0.02, pity SSR 50/UR 90 со сбросом обоих при UR,
-rate-up баннер 0.5 только для UR, дубль +1★ до 5 затем refund ювиками
-R20/SR80/SSR300/UR1500, ×10-гарант SR, идемпотентность по ref_id) и D-07
+веса S 0.78/UR 0.20/UUR 0.02, pity UR 50/UUR 90 со сбросом обоих при UUR,
+rate-up баннер 0.5 только для UUR, дубль +1★ до 5 затем refund ювиками
+R20/S80/UR400/UUR1500, ×10-гарант S, идемпотентность по ref_id) и D-07
 (R существует в каталоге, но НЕДОСТИЖИМ через /roll).
 
 Все исходы форсируются через RNG-сим `gacha_service._rng` (monkeypatched
@@ -158,30 +158,30 @@ async def test_roll10_costs_2700_and_returns_10(session, monkeypatch):
     assert await _get_bank_balance(session, chat_id) == bank_before + 2700
 
 
-# --- Веса тиров (D-03/D-07: SR 0.80/SSR 0.18/UR 0.02, R никогда) -------------
+# --- Веса тиров (D-03/D-07: S 0.78/UR 0.20/UUR 0.02, R никогда) -------------
 
 
 def test_tier_weights_distribution():
     """Свежая (не duck-typed через ORM) фарма с pity=0 — реальный `_rng`,
     широкие (~10+ std) допуски, чтобы не флакать."""
     farm = SimpleNamespace(pity_ssr=0, pity_ur=0)
-    counts = {"SR": 0, "SSR": 0, "UR": 0}
+    counts = {"S": 0, "UR": 0, "UUR": 0}
     n = 400
     for _ in range(n):
         tier = gacha_service._pick_tier(farm)
-        assert tier in ("SR", "SSR", "UR")  # R НЕДОСТИЖИМ (D-07)
+        assert tier in ("S", "UR", "UUR")  # R НЕДОСТИЖИМ (D-07)
         counts[tier] += 1
 
-    assert 220 <= counts["SR"] <= 380  # ожидание ~320 (0.80)
-    assert 15 <= counts["SSR"] <= 140  # ожидание ~72 (0.18)
-    assert counts["UR"] <= 35  # ожидание ~8 (0.02), допуск только сверху
+    assert 230 <= counts["S"] <= 390  # ожидание ~312 (0.78)
+    assert 20 <= counts["UR"] <= 160  # ожидание ~80 (0.20)
+    assert counts["UUR"] <= 35  # ожидание ~8 (0.02), допуск только сверху
 
 
-# --- Pity (D-03: SSR 50 / UR 90, UR сбрасывает оба) --------------------------
+# --- Pity (D-03: UR 50 / UUR 90, UUR сбрасывает оба) --------------------------
 
 
 @pytest.mark.asyncio
-async def test_pity_ssr_forces_ssr_at_threshold(session, monkeypatch):
+async def test_pity_ur_forces_ur_at_threshold(session, monkeypatch):
     chat_id = -100910003
     user_id = 910003
     await _ensure_user(session, user_id)
@@ -191,27 +191,27 @@ async def test_pity_ssr_forces_ssr_at_threshold(session, monkeypatch):
         ClickerFarm(
             chat_id=chat_id,
             user_id=user_id,
-            pity_ssr=gacha_catalog.PITY_SSR - 1,
-            pity_ur=gacha_catalog.PITY_SSR - 1,
+            pity_ssr=gacha_catalog.PITY_UR - 1,
+            pity_ur=gacha_catalog.PITY_UR - 1,
         )
     )
     await session.commit()
 
-    # random_value=0.0 => при форсированном {"SSR":0.18,"UR":0.02} выбор
-    # кумулятивно падает на SSR первым (детерминированно, не UR).
+    # random_value=0.0 => при форсированном {"UR":0.20,"UUR":0.02} выбор
+    # кумулятивно падает на UR первым (детерминированно, не UUR).
     monkeypatch.setattr(gacha_service, "_rng", _ForcedRng(random_value=0.0, choice_index=0))
 
-    result = await gacha_service.roll(session, chat_id, user_id, 1, "test_pity_ssr")
+    result = await gacha_service.roll(session, chat_id, user_id, 1, "test_pity_ur")
 
-    assert result["results"][0]["tier"] == "SSR"
+    assert result["results"][0]["tier"] == "UR"
 
     farm_after = await _get_farm(session, chat_id, user_id)
-    assert farm_after.pity_ssr == 0  # сброс на SSR
-    assert farm_after.pity_ur == gacha_catalog.PITY_SSR  # pity_ur продолжает копиться
+    assert farm_after.pity_ssr == 0  # сброс на UR
+    assert farm_after.pity_ur == gacha_catalog.PITY_UR  # pity_ur продолжает копиться
 
 
 @pytest.mark.asyncio
-async def test_pity_ur_forces_ur_and_resets_both(session, monkeypatch):
+async def test_pity_uur_forces_uur_and_resets_both(session, monkeypatch):
     chat_id = -100910004
     user_id = 910004
     await _ensure_user(session, user_id)
@@ -222,29 +222,29 @@ async def test_pity_ur_forces_ur_and_resets_both(session, monkeypatch):
             chat_id=chat_id,
             user_id=user_id,
             pity_ssr=10,  # намеренно ниже своего порога — доказывает, что
-            pity_ur=gacha_catalog.PITY_UR - 1,  # UR-pity форсирует НЕЗАВИСИМО от pity_ssr
+            pity_ur=gacha_catalog.PITY_UUR - 1,  # UUR-pity форсирует НЕЗАВИСИМО от pity_ssr
         )
     )
     await session.commit()
 
     monkeypatch.setattr(gacha_service, "_rng", _ForcedRng(random_value=0.0, choice_index=0))
 
-    result = await gacha_service.roll(session, chat_id, user_id, 1, "test_pity_ur")
+    result = await gacha_service.roll(session, chat_id, user_id, 1, "test_pity_uur")
 
-    assert result["results"][0]["tier"] == "UR"
+    assert result["results"][0]["tier"] == "UUR"
 
     farm_after = await _get_farm(session, chat_id, user_id)
-    assert farm_after.pity_ssr == 0  # UR сбрасывает ОБА, даже не-пороговый pity_ssr
+    assert farm_after.pity_ssr == 0  # UUR сбрасывает ОБА, даже не-пороговый pity_ssr
     assert farm_after.pity_ur == 0
 
 
-# --- Rate-up баннер (D-03: только UR, вес 0.5) -------------------------------
+# --- Rate-up баннер (D-03: только UUR, вес 0.5) -------------------------------
 
 
 @pytest.mark.asyncio
-async def test_rate_up_banner_biases_ur(session):
+async def test_rate_up_banner_biases_uur(session):
     chat_id = -100910005
-    banner_char = gacha_catalog.chars_of_tier("UR")[0]
+    banner_char = gacha_catalog.chars_of_tier("UUR")[0]
 
     settings_service.clear_cache()
     await settings_service.set_setting(
@@ -255,11 +255,11 @@ async def test_rate_up_banner_biases_ur(session):
     n = 300
     banner_count = 0
     for _ in range(n):
-        char = await gacha_service._pick_char(session, chat_id, "UR")
+        char = await gacha_service._pick_char(session, chat_id, "UUR")
         if char.char_id == banner_char.char_id:
             banner_count += 1
 
-    # Наивная равномерность среди 3 UR-персонажей каталога дала бы ~100 из
+    # Наивная равномерность среди 3 UUR-персонажей каталога дала бы ~100 из
     # 300 (1/3) — rate-up (вес 0.5) должен дать заметно больше, широкий
     # допуск против флакающего теста.
     assert banner_count > 110
@@ -280,7 +280,7 @@ async def test_dupe_adds_star_up_to_5(session, monkeypatch):
     await _top_up(session, chat_id, user_id, 10_000, "test_dupe_star_top_up")
 
     monkeypatch.setattr(gacha_service, "_rng", _ForcedRng(random_value=0.0, choice_index=0))
-    char = gacha_catalog.chars_of_tier("SR")[0]
+    char = gacha_catalog.chars_of_tier("S")[0]
 
     for i in range(1, 6):
         result = await gacha_service.roll(session, chat_id, user_id, 1, f"test_dupe_star_{i}")
@@ -303,7 +303,7 @@ async def test_dupe_over_5_refunds(session, monkeypatch):
     await _top_up(session, chat_id, user_id, 10_000, "test_dupe_refund_top_up")
 
     monkeypatch.setattr(gacha_service, "_rng", _ForcedRng(random_value=0.0, choice_index=0))
-    char = gacha_catalog.chars_of_tier("SR")[0]
+    char = gacha_catalog.chars_of_tier("S")[0]
 
     for i in range(1, 6):
         await gacha_service.roll(session, chat_id, user_id, 1, f"test_dupe_refund_build_{i}")
@@ -315,10 +315,10 @@ async def test_dupe_over_5_refunds(session, monkeypatch):
 
     assert grant["char_id"] == char.char_id
     assert grant["stars"] == gacha_catalog.MAX_STARS
-    assert grant["refunded"] == gacha_catalog.DUPE_REFUND["SR"]
+    assert grant["refunded"] == gacha_catalog.DUPE_REFUND["S"]
 
     balance_after_6th = await _get_user_balance(session, chat_id, user_id)
-    expected_delta = -gacha_service.ROLL_COST + gacha_catalog.DUPE_REFUND["SR"]
+    expected_delta = -gacha_service.ROLL_COST + gacha_catalog.DUPE_REFUND["S"]
     assert balance_after_6th - balance_before_6th == expected_delta
 
     row = await _get_gacha_row(session, chat_id, user_id, char.char_id)
@@ -326,35 +326,35 @@ async def test_dupe_over_5_refunds(session, monkeypatch):
     assert row.copies == 6
 
 
-# --- ×10 SR-гарант (D-03) -----------------------------------------------------
+# --- ×10 S-гарант (D-03) ------------------------------------------------------
 
 
-def test_enforce_sr_guarantee_upgrades_first_pick_when_missing():
-    """Белый ящик: _enforce_sr_guarantee — под текущими весами (D-07) этот
+def test_enforce_s_guarantee_upgrades_first_pick_when_missing():
+    """Белый ящик: _enforce_s_guarantee — под текущими весами (D-07) этот
     сценарий структурно недостижим через настоящий _pick_tier (R не может
     туда попасть), но сама защитная функция должна работать корректно."""
     tiers = ["R"] * 10
-    result = gacha_service._enforce_sr_guarantee(tiers)
-    assert result[0] == "SR"
+    result = gacha_service._enforce_s_guarantee(tiers)
+    assert result[0] == "S"
     assert result[1:] == ["R"] * 9
 
 
 @pytest.mark.asyncio
-async def test_roll10_guarantees_sr(session, monkeypatch):
+async def test_roll10_guarantees_s(session, monkeypatch):
     chat_id = -100910008
     user_id = 910008
     await _ensure_user(session, user_id)
     await _fund(session, chat_id, user_id)
     await _top_up(session, chat_id, user_id, 10_000, "test_roll10_guarantee_top_up")
 
-    # "Худшая удача" под D-07 — всё равно UR (лучше SR) на каждом пике,
-    # гарантия тривиально выполняется, т.к. ниже SR тиров в весах нет.
+    # "Худшая удача" под D-07 — всё равно UR/UUR (лучше S) на каждом пике,
+    # гарантия тривиально выполняется, т.к. ниже S тиров в весах нет.
     monkeypatch.setattr(gacha_service, "_rng", _ForcedRng(random_value=0.999, choice_index=0))
 
     result = await gacha_service.roll(session, chat_id, user_id, 10, "test_roll10_guarantee")
 
     tiers = [r["tier"] for r in result["results"]]
-    assert any(t in gacha_service._SR_OR_BETTER for t in tiers)
+    assert any(t in gacha_service._S_OR_BETTER for t in tiers)
 
 
 # --- Идемпотентность replay (D-03/T-04.1-20) ---------------------------------
@@ -411,11 +411,10 @@ async def test_get_collection_returns_catalog_enriched_rows(session, monkeypatch
 
     assert len(result["characters"]) == 1
     char = result["characters"][0]
-    expected = gacha_catalog.chars_of_tier("SR")[0]
+    expected = gacha_catalog.chars_of_tier("S")[0]
     assert char["char_id"] == expected.char_id
     assert char["name"] == expected.name
-    assert char["tier"] == "SR"
-    assert char["role"] == expected.role
+    assert char["tier"] == "S"
     assert char["stars"] == 1
     assert char["copies"] == 1
 
@@ -427,7 +426,7 @@ async def test_get_collection_reports_pity_and_banner(session, monkeypatch):
     await _ensure_user(session, user_id)
     await _fund(session, chat_id, user_id)
 
-    banner_char = gacha_catalog.chars_of_tier("UR")[0]
+    banner_char = gacha_catalog.chars_of_tier("UUR")[0]
     settings_service.clear_cache()
     await settings_service.set_setting(
         session, chat_id, gacha_service.GACHA_BANNER_KEY, banner_char.char_id, updated_by_tg_id=1
@@ -439,7 +438,7 @@ async def test_get_collection_reports_pity_and_banner(session, monkeypatch):
 
     result = await gacha_service.get_collection(session, chat_id, user_id)
 
-    assert result["pity_ssr"] == 1  # SR-roll increments both counters (D-03)
+    assert result["pity_ssr"] == 1  # S-roll increments both counters (D-03)
     assert result["pity_ur"] == 1
     assert result["banner"] == banner_char.char_id
 

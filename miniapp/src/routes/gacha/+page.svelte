@@ -1,8 +1,8 @@
 <script lang="ts">
 	// Gacha — roll ×1/×10 + tier-list collection view (GACHA-01, visual half
 	// of GACHA-03). 04-UI-SPEC.md §Component Inventory: rarity color-coding
-	// R=neutral/SR=cyan/SSR=pink/UR=yellow-glow (Hero/Impact reveal tier on
-	// UR pulls specifically); pity counters shown as small label-tier text
+	// R=neutral/S=cyan/UR=pink/UUR=yellow-glow (Hero/Impact reveal tier on
+	// UUR pulls specifically); pity counters shown as small label-tier text
 	// under the roll button.
 	//
 	// Server is the sole source of truth for every roll outcome
@@ -25,16 +25,15 @@
 
 	const ROLL_COST = 300;
 	const ROLL10_COST = 2700;
-	const PITY_SSR = 50;
-	const PITY_UR = 90;
-	const TIER_ORDER = ['UR', 'SSR', 'SR', 'R'] as const;
+	const PITY_UR = 50;
+	const PITY_UUR = 90;
+	const TIER_ORDER = ['UUR', 'UR', 'S', 'R'] as const;
 
-	type Tier = 'R' | 'SR' | 'SSR' | 'UR';
+	type Tier = 'R' | 'S' | 'UR' | 'UUR';
 	type Character = {
 		char_id: string;
 		name: string;
 		tier: Tier;
-		role: 'worker' | 'heroine';
 		stars: number;
 		copies: number;
 	};
@@ -100,8 +99,8 @@
 			});
 			await loadCollection();
 			reveal = res.results;
-			const hasUr = res.results.some((r) => r.tier === 'UR');
-			haptic(hasUr ? 'big-win' : 'win');
+			const hasUur = res.results.some((r) => r.tier === 'UUR');
+			haptic(hasUur ? 'big-win' : 'win');
 		} catch (err) {
 			error = describeError(err);
 			haptic('error');
@@ -174,8 +173,8 @@
 		</div>
 
 		<div class="gacha-pity">
-			<span>пити SSR: {pitySsr}/{PITY_SSR}</span>
-			<span>пити UR: {pityUr}/{PITY_UR}</span>
+			<span>пити UR: {pitySsr}/{PITY_UR}</span>
+			<span>пити UUR: {pityUr}/{PITY_UUR}</span>
 		</div>
 
 		<div class="gacha-collection">
@@ -298,8 +297,8 @@
 	}
 
 	/* Rarity color-coding (04-UI-SPEC.md §Component Inventory): R=neutral,
-	   SR=cyan, SSR=pink, UR=yellow glow (Hero/Impact reveal tier
-	   specifically on UR pulls). */
+	   S=cyan, UR=pink, UUR=yellow glow (Hero/Impact reveal tier
+	   specifically on UUR pulls). */
 	.gacha-tier-r {
 		border-color: #9b97ad;
 	}
@@ -307,31 +306,31 @@
 	.gacha-tier-r .gacha-char-name {
 		color: #9b97ad;
 	}
-	.gacha-tier-sr {
+	.gacha-tier-s {
 		border-color: var(--accent-cyan);
 	}
-	.gacha-tier-sr .gacha-reveal-tier,
-	.gacha-tier-sr .gacha-char-name {
+	.gacha-tier-s .gacha-reveal-tier,
+	.gacha-tier-s .gacha-char-name {
 		color: var(--accent-cyan);
 	}
-	.gacha-tier-ssr {
-		border-color: var(--accent-pink);
-	}
-	.gacha-tier-ssr .gacha-reveal-tier,
-	.gacha-tier-ssr .gacha-char-name {
-		color: var(--accent-pink);
-	}
 	.gacha-tier-ur {
-		border-color: var(--accent-yellow);
-		box-shadow: 0 0 24px rgba(255, 216, 74, 0.45);
+		border-color: var(--accent-pink);
 	}
 	.gacha-tier-ur .gacha-reveal-tier,
 	.gacha-tier-ur .gacha-char-name {
+		color: var(--accent-pink);
+	}
+	.gacha-tier-uur {
+		border-color: var(--accent-yellow);
+		box-shadow: 0 0 24px rgba(255, 216, 74, 0.45);
+	}
+	.gacha-tier-uur .gacha-reveal-tier,
+	.gacha-tier-uur .gacha-char-name {
 		color: var(--accent-yellow);
 	}
-	/* Hero-tier reveal treatment on UR pulls specifically (04-UI-SPEC.md
-	   line 68: gacha UR pull reveal is a "jackpot theater" Hero moment). */
-	.gacha-reveal-card.gacha-tier-ur .gacha-reveal-name {
+	/* Hero-tier reveal treatment on UUR pulls specifically (04-UI-SPEC.md
+	   line 68: gacha UUR pull reveal is a "jackpot theater" Hero moment). */
+	.gacha-reveal-card.gacha-tier-uur .gacha-reveal-name {
 		font-family: var(--font-numeric);
 		font-size: var(--font-hero-size);
 		font-weight: 900;

@@ -334,11 +334,10 @@ async def test_get_collection_returns_owned_characters_enriched(monkeypatch):
     body = resp.json()
     assert len(body["characters"]) == 1
     char = body["characters"][0]
-    expected = gacha_catalog.chars_of_tier("SR")[0]
+    expected = gacha_catalog.chars_of_tier("S")[0]
     assert char["char_id"] == expected.char_id
     assert char["name"] == expected.name
-    assert char["tier"] == "SR"
-    assert char["role"] == expected.role
+    assert char["tier"] == "S"
     assert char["stars"] == 1
     assert char["copies"] == 1
 

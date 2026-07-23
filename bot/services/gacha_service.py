@@ -49,10 +49,10 @@ _rng = secrets.SystemRandom()
 
 ROLL_COST = 300  # D-03
 ROLL10_COST = 2700  # D-03: ×10 = ×9 (скидка)
-RATE_UP_WEIGHT = 0.5  # D-03: вес rate-up баннера среди UR
+RATE_UP_WEIGHT = 0.5  # D-03: вес rate-up баннера среди UUR
 GACHA_BANNER_KEY = "gacha_banner"  # ключ BotSetting (rate-up баннер)
 
-_SR_OR_BETTER = frozenset({"SR", "SSR", "UR"})
+_S_OR_BETTER = frozenset({"S", "UR", "UUR"})
 
 
 class GachaError(Exception):
@@ -76,27 +76,27 @@ def _weighted_choice(weights: dict[str, float]) -> str:
 
 
 def _pick_tier(farm: ClickerFarm) -> str:
-    """D-03: pity применяется ПЕРВЫМ — pity_ur форсирует UR (порог PITY_UR),
-    иначе pity_ssr форсирует SSR-or-better (порог PITY_SSR), иначе честный
-    взвешенный выбор по `gacha_catalog.TIER_WEIGHTS` (R НЕДОСТИЖИМ, D-07 —
-    в весах нет ключа "R")."""
-    if farm.pity_ur + 1 >= gacha_catalog.PITY_UR:
-        return "UR"
-    if farm.pity_ssr + 1 >= gacha_catalog.PITY_SSR:
+    """D-03: pity применяется ПЕРВЫМ — pity_ur форсирует UUR (порог
+    PITY_UUR), иначе pity_ssr форсирует UR-or-better (порог PITY_UR), иначе
+    честный взвешенный выбор по `gacha_catalog.TIER_WEIGHTS` (R НЕДОСТИЖИМ,
+    D-07 — в весах нет ключа "R")."""
+    if farm.pity_ur + 1 >= gacha_catalog.PITY_UUR:
+        return "UUR"
+    if farm.pity_ssr + 1 >= gacha_catalog.PITY_UR:
         return _weighted_choice(
-            {"SSR": gacha_catalog.TIER_WEIGHTS["SSR"], "UR": gacha_catalog.TIER_WEIGHTS["UR"]}
+            {"UR": gacha_catalog.TIER_WEIGHTS["UR"], "UUR": gacha_catalog.TIER_WEIGHTS["UUR"]}
         )
     return _weighted_choice(gacha_catalog.TIER_WEIGHTS)
 
 
 def _apply_pity(farm: ClickerFarm, tier: str) -> None:
-    """D-03: UR сбрасывает ОБА счётчика; SSR сбрасывает только pity_ssr
-    (pity_ur продолжает копиться до собственного порога); SR инкрементирует
+    """D-03: UUR сбрасывает ОБА счётчика; UR сбрасывает только pity_ssr
+    (pity_ur продолжает копиться до собственного порога); S инкрементирует
     оба."""
-    if tier == "UR":
+    if tier == "UUR":
         farm.pity_ssr = 0
         farm.pity_ur = 0
-    elif tier == "SSR":
+    elif tier == "UR":
         farm.pity_ssr = 0
         farm.pity_ur += 1
     else:
@@ -108,11 +108,11 @@ def _apply_pity(farm: ClickerFarm, tier: str) -> None:
 
 
 async def _pick_char(session: AsyncSession, chat_id: int, tier: str) -> gacha_catalog.Character:
-    """Персонаж данного тира; для UR — rate-up баннер (`BotSetting
-    gacha_banner`, только для UR) смещает выбор в пользу забаннеренного
+    """Персонаж данного тира; для UUR — rate-up баннер (`BotSetting
+    gacha_banner`, только для UUR) смещает выбор в пользу забаннеренного
     персонажа с весом `RATE_UP_WEIGHT`."""
     chars = gacha_catalog.chars_of_tier(tier)
-    if tier == "UR":
+    if tier == "UUR":
         banner_id = await settings_service.get_setting(session, chat_id, GACHA_BANNER_KEY, "")
         banner_char = next((c for c in chars if c.char_id == banner_id), None)
         others = [c for c in chars if c.char_id != banner_id]
@@ -199,18 +199,18 @@ async def _grant(
     return {"char_id": char.char_id, "tier": char.tier, "stars": 1, "refunded": 0}
 
 
-# --- ×10 SR-гарант (D-03) -----------------------------------------------------
+# --- ×10 S-гарант (D-03) ------------------------------------------------------
 
 
-def _enforce_sr_guarantee(tiers: list[str]) -> list[str]:
-    """Если среди 10 пиков нет SR-or-better — апгрейдит первый пик до SR.
-    Под текущими весами (D-07: `TIER_WEIGHTS` без тиров ниже SR) технически
-    НЕДОСТИЖИМО — любой ролл уже SR-or-better — но защита сохраняется
+def _enforce_s_guarantee(tiers: list[str]) -> list[str]:
+    """Если среди 10 пиков нет S-or-better — апгрейдит первый пик до S. Под
+    текущими весами (D-07: `TIER_WEIGHTS` без тиров ниже S) технически
+    НЕДОСТИЖИМО — любой ролл уже S-or-better — но защита сохраняется
     буквально по плану на случай будущего изменения весов."""
-    if any(t in _SR_OR_BETTER for t in tiers):
+    if any(t in _S_OR_BETTER for t in tiers):
         return tiers
     tiers = list(tiers)
-    tiers[0] = "SR"
+    tiers[0] = "S"
     return tiers
 
 
@@ -248,7 +248,7 @@ async def roll(session: AsyncSession, chat_id: int, user_id: int, count: int, re
         tiers.append(tier)
 
     if count == 10:
-        tiers = _enforce_sr_guarantee(tiers)
+        tiers = _enforce_s_guarantee(tiers)
 
     results = []
     for tier in tiers:
@@ -292,7 +292,6 @@ async def get_collection(session: AsyncSession, chat_id: int, user_id: int) -> d
                 "char_id": row.char_id,
                 "name": char.name,
                 "tier": char.tier,
-                "role": char.role,
                 "stars": row.stars,
                 "copies": row.copies,
             }

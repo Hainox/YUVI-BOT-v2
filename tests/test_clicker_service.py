@@ -304,7 +304,7 @@ async def test_wipe_farm_creates_farm_if_missing(session):
     assert state["auto_level"] == 0
 
 
-# --- GACHA-02: доход фермы от собранных worker-персонажей -----------------
+# --- GACHA-02: доход фермы от собранных героинь -----------------------------
 
 
 async def _grant_char(session, chat_id: int, user_id: int, char_id: str, stars: int = 1) -> None:
@@ -315,53 +315,50 @@ async def _grant_char(session, chat_id: int, user_id: int, char_id: str, stars: 
 
 
 @pytest.mark.asyncio
-async def test_worker_collection_increases_cp_per_sec_offline_accrual(session):
-    """GACHA-02: пользователь с собранным worker-персонажем накапливает
-    БОЛЬШЕ CP за оффлайн-период, чем пользователь с пустой коллекцией —
-    доказывает реальную связь коллекции с доходом фермы (не заглушка)."""
+async def test_collection_increases_cp_per_sec_offline_accrual(session):
+    """GACHA-02: пользователь с собранной героиней накапливает БОЛЬШЕ CP за
+    оффлайн-период, чем пользователь с пустой коллекцией — доказывает
+    реальную связь коллекции с доходом фермы (не заглушка)."""
     chat_id = -100910012
-    with_worker_id = 910012
+    with_char_id = 910012
     empty_collection_id = 910013
-    await _ensure_user(session, with_worker_id)
+    await _ensure_user(session, with_char_id)
     await _ensure_user(session, empty_collection_id)
-    await clicker_service.get_farm_state(session, chat_id, with_worker_id)
+    await clicker_service.get_farm_state(session, chat_id, with_char_id)
     await clicker_service.get_farm_state(session, chat_id, empty_collection_id)
 
-    worker_char = next(
-        c for c in gacha_catalog.CATALOG.values() if c.role == "worker" and c.tier == "SR"
-    )
-    await _grant_char(session, chat_id, with_worker_id, worker_char.char_id, stars=1)
+    char = next(c for c in gacha_catalog.CATALOG.values() if c.tier == "S")
+    await _grant_char(session, chat_id, with_char_id, char.char_id, stars=1)
 
     elapsed_seconds = 200
     past = datetime.utcnow() - timedelta(seconds=elapsed_seconds)
-    await _set_farm(session, chat_id, with_worker_id, auto_level=0, last_accrued_at=past)
+    await _set_farm(session, chat_id, with_char_id, auto_level=0, last_accrued_at=past)
     await _set_farm(session, chat_id, empty_collection_id, auto_level=0, last_accrued_at=past)
 
-    state_with_worker = await clicker_service.get_farm_state(session, chat_id, with_worker_id)
+    state_with_char = await clicker_service.get_farm_state(session, chat_id, with_char_id)
     state_empty = await clicker_service.get_farm_state(session, chat_id, empty_collection_id)
 
-    assert state_with_worker["cp"] > state_empty["cp"]
+    assert state_with_char["cp"] > state_empty["cp"]
     assert state_empty["cp"] == 0  # auto_level=0, пустая коллекция -> без дохода вовсе
 
-    expected_rate = clicker_service.WORKER_TIER_CP_PER_SEC[worker_char.tier] * gacha_catalog.star_mult(1)
+    expected_rate = clicker_service.WORKER_TIER_CP_PER_SEC[char.tier] * gacha_catalog.star_mult(1)
     expected_gain = int(expected_rate * elapsed_seconds)
-    assert state_with_worker["cp"] == expected_gain
-    assert state_with_worker["cp_per_sec"] == pytest.approx(expected_rate)
+    assert state_with_char["cp"] == expected_gain
+    assert state_with_char["cp_per_sec"] == pytest.approx(expected_rate)
 
 
 @pytest.mark.asyncio
-async def test_heroine_role_does_not_contribute_farm_income(session):
-    """GACHA-02: heroine-тир персонажи (role="heroine") НЕ участвуют в
-    доходе фермы — только worker."""
+async def test_any_tier_contributes_farm_income(session):
+    """GACHA-02: после снятия фильтра role доход фермы даёт ЛЮБАЯ собранная
+    героиня, а не только часть тира — проверяем это на тире, отличном от
+    основного теста выше (UR), чтобы доказать отсутствие скрытого фильтра."""
     chat_id = -100910013
     user_id = 910014
     await _ensure_user(session, user_id)
     await clicker_service.get_farm_state(session, chat_id, user_id)
 
-    heroine_char = next(
-        c for c in gacha_catalog.CATALOG.values() if c.role == "heroine" and c.tier == "SR"
-    )
-    await _grant_char(session, chat_id, user_id, heroine_char.char_id, stars=1)
+    char = next(c for c in gacha_catalog.CATALOG.values() if c.tier == "UR")
+    await _grant_char(session, chat_id, user_id, char.char_id, stars=1)
 
     elapsed_seconds = 200
     past = datetime.utcnow() - timedelta(seconds=elapsed_seconds)
@@ -369,5 +366,7 @@ async def test_heroine_role_does_not_contribute_farm_income(session):
 
     state = await clicker_service.get_farm_state(session, chat_id, user_id)
 
-    assert state["cp"] == 0
-    assert state["cp_per_sec"] == 0
+    expected_rate = clicker_service.WORKER_TIER_CP_PER_SEC[char.tier] * gacha_catalog.star_mult(1)
+    expected_gain = int(expected_rate * elapsed_seconds)
+    assert state["cp"] == expected_gain
+    assert state["cp_per_sec"] == pytest.approx(expected_rate)
