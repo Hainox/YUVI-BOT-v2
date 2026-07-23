@@ -136,6 +136,22 @@ async def test_create_market_enforces_limits(session):
             "test_limits_duration_long",
         )
 
+    # Regression (review 2026-07-23, миниапп-роут создания рынков): лейбл
+    # длиннее MarketOption.label (String(200)) раньше проходил эту проверку
+    # и падал только на session.commit() Postgres'ным DataError, который
+    # ничем не ловился и уходил наружу необработанным 500 вместо
+    # документированного InvalidMarketArg -> 400.
+    with pytest.raises(markets_service.InvalidMarketArg):
+        await markets_service.create_market(
+            session,
+            chat_id,
+            creator_id,
+            "Достаточно длинный вопрос для проверки?",
+            ["A" * (markets_service.OPTION_LABEL_MAX_LEN + 1), "B"],
+            "7d",
+            "test_limits_option_label_too_long",
+        )
+
     # ни один из невалидных вызовов не должен был создать рынок или списать деньги
     markets = (
         await session.execute(select(Market).where(Market.chat_id == chat_id))

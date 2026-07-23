@@ -203,10 +203,7 @@
 		actingOnId = listingId;
 		mineActionError = null;
 		try {
-			await apiFetch(`/api/v1/exchange/${listingId}/confirm`, {
-				method: 'POST',
-				body: JSON.stringify({ ref_id: `exchange_confirm:${crypto.randomUUID()}` })
-			});
+			await apiFetch(`/api/v1/exchange/${listingId}/confirm`, { method: 'POST' });
 			haptic('big-win');
 			await loadMyListings();
 		} catch (err) {

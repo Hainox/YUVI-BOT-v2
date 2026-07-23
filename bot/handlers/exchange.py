@@ -198,11 +198,9 @@ async def exchange_confirm_command(message: Message, session: AsyncSession) -> N
         await message.answer("Использование: /exchange_confirm <id листинга>")
         return
 
-    ref_id = f"exchange_confirm:{message.chat.id}:{message.message_id}"
-
     try:
         result = await exchange_service.confirm_fulfillment(
-            session, message.chat.id, listing_id, message.from_user.id, ref_id
+            session, message.chat.id, listing_id, message.from_user.id
         )
     except (exchange_service.ListingNotFound, exchange_service.ExchangeError) as exc:
         await message.answer(str(exc))

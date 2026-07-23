@@ -57,10 +57,6 @@ class CreateListingBody(BaseModel):
     ref_id: str
 
 
-class ConfirmBody(BaseModel):
-    ref_id: str
-
-
 async def _publish_balance(session, redis_client, chat_id: int, user_id: int) -> None:
     balance = await economy_service.get_balance(session, chat_id, user_id)
     await balance_events.publish_balance(redis_client, chat_id, user_id, balance)
@@ -141,14 +137,13 @@ async def post_cancel_listing(
 @router.post("/api/v1/exchange/{listing_id}/confirm")
 async def post_confirm_listing(
     listing_id: int,
-    body: ConfirmBody,
     request: Request,
     auth: AuthContext = Depends(require_membership),
 ) -> dict:
     async with SessionLocal() as session:
         try:
             result = await exchange_service.confirm_fulfillment(
-                session, auth.chat_id, listing_id, auth.user_id, body.ref_id
+                session, auth.chat_id, listing_id, auth.user_id
             )
         except exchange_service.ListingNotFound as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc

@@ -88,6 +88,14 @@ QUESTION_MIN_LEN = 5
 QUESTION_MAX_LEN = 400
 MIN_OPTIONS = 2
 MAX_OPTIONS = 6
+# common/models/market.py: MarketOption.label — String(200). Проверяем ДО
+# INSERT (найдено ревью 2026-07-23, T-BET-01-create-миниапп): без этой
+# проверки лейбл длиннее колонки падал уже на session.commit() Postgres'ным
+# DataError — НЕ IntegrityError, поэтому ничем в этом модуле/роуте не
+# ловился и всплывал наружу необработанным 500 вместо документированного
+# InvalidMarketArg -> 400 (тот же класс валидации, что уже есть у question
+# выше — длина лейбла проверяется здесь же, ДО любого движения денег).
+OPTION_LABEL_MAX_LEN = 200
 MIN_DURATION = timedelta(minutes=5)
 MAX_DURATION = timedelta(days=365)
 
@@ -166,6 +174,8 @@ async def create_market(
         )
     if any(not label for label in labels):
         raise InvalidMarketArg("Варианты ответа не могут быть пустыми")
+    if any(len(label) > OPTION_LABEL_MAX_LEN for label in labels):
+        raise InvalidMarketArg(f"Вариант ответа не длиннее {OPTION_LABEL_MAX_LEN} символов")
 
     duration = parse_duration(duration_raw)
     if not (MIN_DURATION <= duration <= MAX_DURATION):

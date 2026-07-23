@@ -387,9 +387,7 @@ async def test_confirm_releases_full_escrow_to_buyer(session):
     )
     await exchange_service.claim_listing(session, chat_id, listing.id, buyer_id)
 
-    result = await exchange_service.confirm_fulfillment(
-        session, chat_id, listing.id, seller_id, "test_confirm_ref"
-    )
+    result = await exchange_service.confirm_fulfillment(session, chat_id, listing.id, seller_id)
 
     assert result["status"] == "fulfilled"
     assert result["released"] == 100
@@ -416,7 +414,7 @@ async def test_confirm_by_non_seller_raises(session):
     await exchange_service.claim_listing(session, chat_id, listing.id, buyer_id)
 
     with pytest.raises(exchange_service.ExchangeError):
-        await exchange_service.confirm_fulfillment(session, chat_id, listing.id, buyer_id, "test_confirm_stranger_ref")
+        await exchange_service.confirm_fulfillment(session, chat_id, listing.id, buyer_id)
 
     listing_row = await _get_listing(session, listing.id)
     assert listing_row.status == "claimed"
@@ -433,9 +431,7 @@ async def test_confirm_before_claim_is_noop(session):
         session, chat_id, seller_id, 100, "что-то", "test_confirm_no_claim_create"
     )
 
-    result = await exchange_service.confirm_fulfillment(
-        session, chat_id, listing.id, seller_id, "test_confirm_no_claim_ref"
-    )
+    result = await exchange_service.confirm_fulfillment(session, chat_id, listing.id, seller_id)
 
     assert result["status"] == "open"
     assert result["released"] == 0
@@ -457,17 +453,58 @@ async def test_confirm_idempotent_second_call_does_not_double_release(session):
     )
     await exchange_service.claim_listing(session, chat_id, listing.id, buyer_id)
 
-    first = await exchange_service.confirm_fulfillment(
-        session, chat_id, listing.id, seller_id, "test_confirm_twice_ref_1"
-    )
-    second = await exchange_service.confirm_fulfillment(
-        session, chat_id, listing.id, seller_id, "test_confirm_twice_ref_2"
-    )
+    first = await exchange_service.confirm_fulfillment(session, chat_id, listing.id, seller_id)
+    second = await exchange_service.confirm_fulfillment(session, chat_id, listing.id, seller_id)
 
     assert first["released"] == 100
     assert second["released"] == 0
     assert second["status"] == "fulfilled"
     assert await _get_user_balance(session, chat_id, buyer_id) == buyer_before + 100
+
+
+@pytest.mark.asyncio
+async def test_confirm_ref_id_is_per_listing_not_client_supplied(session):
+    """Regression (review 2026-07-23): confirm_fulfillment used to take a
+    caller-supplied `ref_id` and pass it straight to `economy_service.credit`
+    with no listing-level namespacing. A seller could reuse the same ref_id
+    across two of their own listings — the second `credit` silently returned
+    False (ref_id collision), but the code never checked it and marked the
+    listing `fulfilled` anyway, permanently losing the escrowed amount (not
+    in seller balance, not in buyer balance, not in chat_bank) and locking
+    out `admin_force_release` (which requires status=="claimed"). Fixed by
+    deriving the credit ref_id internally from `listing_id`
+    (f"exchange:{listing_id}:release"), same as cancel_listing/
+    admin_force_cancel/admin_force_release already do — confirm_fulfillment
+    no longer takes a ref_id parameter at all. This test proves two
+    different listings from the same seller each release correctly and
+    independently (their internal ref_ids can't collide with each other)."""
+    chat_id = -100920028
+    seller_id, buyer_a_id, buyer_b_id = 920028, 920029, 920030
+    await _ensure_user(session, seller_id)
+    await _ensure_user(session, buyer_a_id)
+    await _ensure_user(session, buyer_b_id)
+    await _fund(session, chat_id, seller_id)
+    buyer_a_before = await _fund(session, chat_id, buyer_a_id)
+    buyer_b_before = await _fund(session, chat_id, buyer_b_id)
+
+    listing_a = await exchange_service.create_listing(
+        session, chat_id, seller_id, 50, "что-то A", "test_confirm_perlisting_create_a"
+    )
+    listing_b = await exchange_service.create_listing(
+        session, chat_id, seller_id, 75, "что-то B", "test_confirm_perlisting_create_b"
+    )
+    await exchange_service.claim_listing(session, chat_id, listing_a.id, buyer_a_id)
+    await exchange_service.claim_listing(session, chat_id, listing_b.id, buyer_b_id)
+
+    result_a = await exchange_service.confirm_fulfillment(session, chat_id, listing_a.id, seller_id)
+    result_b = await exchange_service.confirm_fulfillment(session, chat_id, listing_b.id, seller_id)
+
+    assert result_a["status"] == "fulfilled"
+    assert result_a["released"] == 50
+    assert result_b["status"] == "fulfilled"
+    assert result_b["released"] == 75
+    assert await _get_user_balance(session, chat_id, buyer_a_id) == buyer_a_before + 50
+    assert await _get_user_balance(session, chat_id, buyer_b_id) == buyer_b_before + 75
 
 
 # --- admin_force_cancel / admin_force_release (диспуты) ----------------------

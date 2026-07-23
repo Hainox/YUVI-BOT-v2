@@ -256,16 +256,36 @@ async def cancel_listing(session: AsyncSession, chat_id: int, listing_id: int, a
 # --- confirm_fulfillment (продавец подтверждает оплату вне бота) -----------
 
 
-async def confirm_fulfillment(
-    session: AsyncSession, chat_id: int, listing_id: int, actor_id: int, ref_id: str
-) -> dict:
+async def confirm_fulfillment(session: AsyncSession, chat_id: int, listing_id: int, actor_id: int) -> dict:
     """Продавец подтверждает, что реально получил оплату вне бота —
     освобождает эскроу заклеймившему покупателю. Только продавец, только
-    пока status == "claimed". Статус-переход — гард идемпотентности: повтор
-    на уже не-claimed листинге — no-op (деньги не двигаются повторно), плюс
-    `ref_id` на самом `credit` — тот же двойной пояс, что у
-    duel_service.accept_duel. Поднимает ListingNotFound; ExchangeError, если
-    actor_id не продавец."""
+    пока status == "claimed". Статус-переход (под FOR UPDATE-локом строки,
+    взятым в `_get_listing_for_update` выше) — ЕДИНСТВЕННЫЙ и достаточный
+    гард идемпотентности: повторный вызов на уже не-claimed листинге —
+    no-op, деньги не двигаются повторно.
+
+    БЕЗ клиентского `ref_id` (WR-01, найдено ревью 2026-07-23): `ref_id`
+    релизного `credit` — ДЕТЕРМИНИРОВАННЫЙ `f"exchange:{listing_id}:release"`,
+    та же форма, что у `cancel_listing`/`admin_force_cancel`/
+    `admin_force_release` в этом же файле — НЕ клиентский параметр, как было
+    раньше. Раньше вызывающий (API/бот) передавал произвольный `ref_id`;
+    продавец мог переиспользовать один и тот же `ref_id` на ДВУХ разных
+    своих листингах — `economy_service.credit` на втором листинге молча
+    возвращал `False` (коллизия ref_id), а код НЕ проверял это и всё равно
+    помечал листинг `fulfilled` — эскроированные ювики не доходили ни до
+    покупателя, ни обратно до продавца, безвозвратно исчезая из экономики, и
+    `admin_force_release` больше не мог помочь (требует status=="claimed", а
+    статус уже "fulfilled"). Детерминированный ref_id закрывает дыру
+    структурно: единственный способ вызвать этот `credit` дважды на один
+    `listing_id` — дважды пройти FOR UPDATE-гард выше, что статус-переход
+    уже исключает.
+
+    `released_ok` теперь ПРОВЕРЯЕТСЯ: при False (в норме недостижимо после
+    фикса выше, но проверяем defensively) статус НЕ переводится в
+    `fulfilled` — листинг остаётся `claimed`, доступным `admin_force_release`
+    как раньше, вместо того чтобы тихо застрять в неразрешимом состоянии.
+
+    Поднимает ListingNotFound; ExchangeError, если actor_id не продавец."""
     listing = await _get_listing_for_update(session, chat_id, listing_id)
     if listing.status != STATUS_CLAIMED:
         await session.commit()
@@ -277,15 +297,29 @@ async def confirm_fulfillment(
 
     claimed_by = listing.claimed_by_user_id
     released_ok = await economy_service.credit(
-        session, chat_id, claimed_by, listing.yuvik_amount, kind="exchange_release", ref_id=ref_id
+        session,
+        chat_id,
+        claimed_by,
+        listing.yuvik_amount,
+        kind="exchange_release",
+        ref_id=f"exchange:{listing_id}:release",
     )
+    if not released_ok:
+        logger.error(
+            "confirm_fulfillment: credit не применился для listing_id=%s "
+            "(ref_id уже использован) — статус НЕ переводится в fulfilled",
+            listing_id,
+        )
+        await session.commit()
+        return {"status": listing.status, "listing_id": listing_id, "released": 0}
+
     listing.status = STATUS_FULFILLED
     listing.resolved_at = datetime.utcnow()
     await session.commit()
     return {
         "status": STATUS_FULFILLED,
         "listing_id": listing_id,
-        "released": listing.yuvik_amount if released_ok else 0,
+        "released": listing.yuvik_amount,
         "claimed_by_user_id": claimed_by,
     }
 
