@@ -72,6 +72,12 @@ class Settings(BaseSettings):
     # фактически лимита сверх баланса нет — economy_service._guarded_debit уже
     # естественно запрещает ставить больше баланса).
     casino_max_bet_pct: float = Field(default=1.0, alias="CASINO_MAX_BET_PCT")
+    # Минимальный интервал между спинами ОДНОГО игрока в слотах, мс — анти-абьюз
+    # для авто-спина в miniapp (клиентский цикл повторных ставок): раньше в API
+    # не было вообще никакого троттлинга частоты ставок, обычный ручной спин и
+    # так не бывает быстрее реального времени анимации барабана (~840мс), но
+    # авто-спин — это официально поощряемый быстрый повтор запросов.
+    casino_spin_min_interval_ms: int = Field(default=600, alias="CASINO_SPIN_MIN_INTERVAL_MS")
 
     # --- Mini App (auth, D-01) ---
     # initData также передаётся query-параметром для SSE (EventSource не умеет

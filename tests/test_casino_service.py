@@ -388,3 +388,53 @@ async def test_payout_capped_to_bank_balance(session, monkeypatch):
     assert result["payout"] == game.payout
     # выигрыш урезан — не полная сумма 1980
     assert result["payout"] < int(bet * casino_service.COINFLIP_MULT)
+
+
+# --- Троттлинг слотов (анти-абьюз авто-спина) --------------------------------
+
+
+@pytest.mark.asyncio
+async def test_slots_second_spin_too_soon_raises_rate_limited(session, monkeypatch):
+    chat_id = -100900011
+    user_id = 900011
+    await _ensure_user(session, user_id)
+    await _fund(session, chat_id, user_id)
+    monkeypatch.setattr(casino_service, "_last_slots_spin_at", {})
+
+    first = await casino_service.play_slots(session, chat_id, user_id, 100, "test_throttle_spin_1")
+    balance_after_first = await _get_user_balance(session, chat_id, user_id)
+
+    with pytest.raises(casino_service.RateLimited):
+        await casino_service.play_slots(session, chat_id, user_id, 100, "test_throttle_spin_2")
+
+    # второй (отклонённый) спин не двинул деньги и не создал свою запись
+    assert await _get_user_balance(session, chat_id, user_id) == balance_after_first
+    games = (
+        await session.execute(
+            select(CasinoGame).where(
+                CasinoGame.user_id == user_id, CasinoGame.idem_key == "test_throttle_spin_2"
+            )
+        )
+    ).scalars().all()
+    assert games == []
+    assert first["game"] == "slots"
+
+
+@pytest.mark.asyncio
+async def test_slots_spin_allowed_once_interval_elapsed(session, monkeypatch):
+    chat_id = -100900012
+    user_id = 900012
+    await _ensure_user(session, user_id)
+    await _fund(session, chat_id, user_id)
+    monkeypatch.setattr(casino_service, "_last_slots_spin_at", {})
+
+    await casino_service.play_slots(session, chat_id, user_id, 100, "test_throttle_elapsed_1")
+
+    # Симулируем, что интервал уже прошёл — сдвигаем сохранённую отметку
+    # времени в прошлое, не подставляя реальный sleep() в тест.
+    casino_service._last_slots_spin_at[user_id] -= (
+        casino_service.settings.casino_spin_min_interval_ms / 1000 + 1
+    )
+
+    second = await casino_service.play_slots(session, chat_id, user_id, 100, "test_throttle_elapsed_2")
+    assert second["game"] == "slots"

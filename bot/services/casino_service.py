@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import logging
 import secrets
+import time
 from datetime import datetime
 from datetime import timedelta
 
@@ -91,6 +92,10 @@ class GameNotActive(CasinoError):
 
 class DuplicateRound(CasinoError):
     """Раунд с этим idem_key уже обрабатывается конкурентным запросом (race, не обычный replay)."""
+
+
+class RateLimited(CasinoError):
+    """Слишком частые спины одного игрока (анти-абьюз авто-спина, см. `_check_slots_throttle`)."""
 
 
 # --- Валидация ставки (D-04/D-05) --------------------------------------------
@@ -339,6 +344,26 @@ async def play_roulette(
 
 # --- slots (D-05/D-06: Azumanga, RTP ~92.78%) --------------------------------
 
+# Анти-абьюз авто-спина (миниапп крутит слоты в цикле без ручного тапа на
+# каждый раунд): последний момент времени спина по user_id, in-memory —
+# защитный троттлинг, не бизнес-данные, потеря при рестарте процесса не
+# страшна (просто разрешит один спин чуть раньше срока). Ключ — user_id, не
+# (chat_id, user_id): один и тот же игрок, спамящий из нескольких чатов
+# параллельно, — тот же паттерн злоупотребления, который стоит гасить.
+_last_slots_spin_at: dict[int, float] = {}
+
+
+def _check_slots_throttle(user_id: int) -> None:
+    """Отклоняет спин, если предыдущий спин ЭТОГО игрока был меньше
+    `settings.casino_spin_min_interval_ms` назад. Вызывается ПЕРВЫМ в
+    `play_slots`, до валидации ставки/идемпотентности — намеренно грубая
+    защита по частоте запросов, не завязанная на исход конкретного раунда."""
+    now = time.monotonic()
+    last = _last_slots_spin_at.get(user_id)
+    _last_slots_spin_at[user_id] = now
+    if last is not None and (now - last) * 1000 < settings.casino_spin_min_interval_ms:
+        raise RateLimited("Слишком часто — подождите немного между спинами")
+
 
 async def play_slots(
     session: AsyncSession, chat_id: int, user_id: int, bet: int, idem_key: str
@@ -355,7 +380,12 @@ async def play_slots(
     `_rng` этого модуля (НЕ через собственный `slot_engine._rng` — тот
     используется только для внутреннего авто-розыгрыша фриспинов). Деньги
     двигает исключительно `_settle` (стейк -> RNG -> капнутая банком выплата
-    -> `CasinoGame`), здесь — только сборка `compute()`-замыкания."""
+    -> `CasinoGame`), здесь — только сборка `compute()`-замыкания.
+
+    Первым делом проверяет `_check_slots_throttle` (`RateLimited`, если
+    слишком рано) — единственная игра казино с клиентским авто-повтором
+    ставок (авто-спин в miniapp), поэтому единственная с троттлингом частоты."""
+    _check_slots_throttle(user_id)
     if bet <= 0 or bet % slot_engine.TOTAL_LINES != 0:
         raise InvalidBet(
             f"Ставка должна быть положительным кратным {slot_engine.TOTAL_LINES} "

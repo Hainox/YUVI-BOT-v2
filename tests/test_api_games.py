@@ -723,6 +723,37 @@ async def test_slots_bet_not_multiple_of_lines_returns_400(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_slots_rapid_second_spin_returns_429(monkeypatch):
+    """Анти-абьюз авто-спина (casino_service._check_slots_throttle): два спина
+    одного игрока без реальной паузы между ними — второй получает 429, а не
+    случайно проходит из-за скорости тестового раннера."""
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    monkeypatch.setattr(casino_service, "_last_slots_spin_at", {})
+    user_id = 300406
+    await _ensure_user(user_id)
+    await _topup(SLOTS_CHAT_ID, user_id)
+    init_data = _build_init_data(user_id=user_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        first = await client.post(
+            "/api/v1/games/slots",
+            params={"chat_id": SLOTS_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={"bet": 100, "idem_key": str(uuid.uuid4())},
+        )
+        second = await client.post(
+            "/api/v1/games/slots",
+            params={"chat_id": SLOTS_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={"bet": 100, "idem_key": str(uuid.uuid4())},
+        )
+
+    assert first.status_code == 200
+    assert second.status_code == 429
+
+
+@pytest.mark.asyncio
 async def test_slots_ignores_foreign_user_id_in_body_idor(monkeypatch):
     """T-04.2-02: та же IDOR-защита, что и у coinflip/dice/roulette выше."""
     monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
