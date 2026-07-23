@@ -1,22 +1,30 @@
 <script lang="ts">
 	// Slot ("Azumanga") — server-side port of webapp/slot-machine.jsx +
-	// slot-reel.jsx (04.2-10, polished per user request). Server is the SOLE
-	// source of truth for the grid/wins/freespins (D-03/T-04.1-01,
-	// slot_engine.py) — this screen only animates a cosmetic reel-drum
-	// spin (random filler symbols scrolling, landing on whatever
-	// POST /games/slots actually returned) and a win/lose color-grade
-	// flash. No client-side RNG affects payout, no client-side win
-	// computation (SLOT_SYMBOLS/SLOT_PAYLINES in lib/slotData.ts are
-	// rendering metadata only — name/tint/cell-highlighting, filler
-	// symbols during the spin are cosmetic noise, never probability/payout).
+	// slot-reel.jsx (04.2-10, polished per user request; 04.2-11 added the
+	// mid-bonus retrigger reveal below). Server is the SOLE source of truth
+	// for the grid/wins/freespins/retriggers (D-03/T-04.1-01, slot_engine.py)
+	// — this screen only animates a cosmetic reel-drum spin (random filler
+	// symbols scrolling, landing on whatever POST /games/slots actually
+	// returned), a win/lose color-grade flash, and — new — a cosmetic
+	// step-by-step REPLAY of the bonus round the server already fully
+	// resolved in one shot (scatter glow -> freespin badge -> one toast per
+	// `outcome.retrigger_awards` entry). No client-side RNG affects payout,
+	// no client-side win computation (SLOT_SYMBOLS/SLOT_PAYLINES in
+	// lib/slotData.ts are rendering metadata only — name/tint/cell-
+	// highlighting, filler symbols during the spin are cosmetic noise, never
+	// probability/payout). The replay pacing is informational only — it does
+	// not invent outcomes, it only staggers the reveal of numbers the server
+	// already sent in `outcome`.
 	import { apiFetch, ApiError } from '$lib/api';
 	import { haptic } from '$lib/tg';
 	import { SLOT_SYMBOLS, SLOT_PAYLINES, symbolSrc } from '$lib/slotData';
 
 	const BET_CHIPS = [10, 50, 100, 500, 1000]; // все кратны TOTAL_LINES=10 (slot_engine.py)
-	const SPIN_BASE_MS = 700;
-	const SPIN_PER_COL_MS = 140;
-	const REVEAL_DELAY_MS = SPIN_BASE_MS + SPIN_PER_COL_MS * 4 + 80;
+	// Скорость барабана (04.2-11: заметно быстрее прежних 700/140/1340мс —
+	// "быстрый и хлёсткий" базовый спин).
+	const SPIN_BASE_MS = 420;
+	const SPIN_PER_COL_MS = 90;
+	const REVEAL_DELAY_MS = SPIN_BASE_MS + SPIN_PER_COL_MS * 4 + 60;
 
 	// Visual drum: FILLER_ROWS of cosmetic random symbols scroll past before
 	// the strip settles on the real final 3 rows for that column. Row count
@@ -24,13 +32,34 @@
 	const FILLER_ROWS = 9;
 	const STRIP_ROWS = FILLER_ROWS + 3;
 
+	// Пэйсинг реплея бонуса (04.2-11) — сколько держится scatter-пульс до
+	// объявления счётчика фриспинов, и тайминг тост-реплея ретриггеров.
+	// Чисто информационная задержка (не "motion"), поэтому НЕ гейтится
+	// prefers-reduced-motion — сама анимация (пульс/тост) гейтится в CSS.
+	const SCATTER_GLOW_MS = 650;
+	const RETRIGGER_TOAST_GAP_MS = 350;
+	const RETRIGGER_TOAST_VISIBLE_MS = 900;
+	const BONUS_SETTLE_MS = 350;
+
 	type SlotWin = { line_index: number; symbol: string; count: number; payout: number };
 	type SlotResult = {
 		game: string;
 		bet: number;
 		payout: number;
-		outcome: { grid: string[][]; wins: SlotWin[]; freespins: number; scatter: number };
+		outcome: {
+			grid: string[][];
+			wins: SlotWin[];
+			freespins: number;
+			scatter: number;
+			retrigger_awards: number[];
+		};
 	};
+
+	// Символ-scatter выводится из той же метаданной, что рисует ячейки
+	// (SLOT_SYMBOLS[id].role) — не дублируем ID отдельной строкой.
+	const SCATTER_SYMBOL_ID = Object.keys(SLOT_SYMBOLS).find(
+		(id) => SLOT_SYMBOLS[id].role === 'scatter'
+	)!;
 
 	let bet = $state(BET_CHIPS[0]);
 	let spinning = $state(false);
@@ -43,6 +72,13 @@
 	let activeWinIdx = $state(0);
 	let error = $state<string | null>(null);
 	let outcomeTint = $state<'win' | 'lose' | null>(null);
+
+	// 04.2-11: scatter-глоу (до объявления счётчика) + реплей бонусного
+	// раунда (растущий счётчик + тост на каждый ретриггер).
+	let scatterGlow = $state(false);
+	let bonusActive = $state(false);
+	let bonusFreespinsShown = $state(0);
+	let bonusToast = $state<string | null>(null);
 
 	function _placeholderGrid(): string[][] {
 		const ids = Object.keys(SLOT_SYMBOLS);
@@ -74,6 +110,20 @@
 		return new Set(line.map((row, col) => `${row}:${col}`));
 	});
 
+	// (c) Клетки со scatter на приземлившейся сетке — подсвечиваются глоу-
+	// пульсом СРАЗУ при посадке барабанов, пока scatterGlow==true (см.
+	// _revealScatterAndBonus), т.е. ДО того как объявлен счётчик фриспинов.
+	const scatterCellKeys = $derived.by(() => {
+		if (!scatterGlow) return new Set<string>();
+		const keys = new Set<string>();
+		for (let row = 0; row < 3; row++) {
+			for (let col = 0; col < 5; col++) {
+				if (grid[row][col] === SCATTER_SYMBOL_ID) keys.add(`${row}:${col}`);
+			}
+		}
+		return keys;
+	});
+
 	// Cycle through multiple line-wins every 1.3s (mirrors webapp/slot-machine.jsx).
 	$effect(() => {
 		if (spinning || wins.length <= 1) {
@@ -86,12 +136,66 @@
 		return () => clearInterval(t);
 	});
 
+	function _wait(ms: number): Promise<void> {
+		return new Promise((resolve) => window.setTimeout(resolve, ms));
+	}
+
+	// (c)+(d) Реплей бонусного раунда ПОСЛЕ того, как барабаны уже
+	// приземлились на стартовую сетку. Сервер уже всё решил одним расчётом
+	// (slot_engine.evaluate_grid) — здесь только пэйсинг показа готовых
+	// чисел: scatter-глоу -> счётчик фриспинов -> по тосту на каждый
+	// ретриггер из `outcome.retrigger_awards`, пока счётчик не дойдёт до
+	// итогового `outcome.freespins` (это ИТОГО сыграно, включая ретриггеры —
+	// см. докстринг SlotResult.freespins в slot_engine.py).
+	async function _revealScatterAndBonus(res: SlotResult): Promise<void> {
+		const scatterN = res.outcome.scatter;
+		const totalFreespins = res.outcome.freespins;
+
+		if (scatterN < 3) {
+			scatterCount = scatterN;
+			freespins = totalFreespins;
+			return;
+		}
+
+		// scatterCount выставляется СРАЗУ (не после паузы) — тикер ниже уже
+		// может честно показать "СКАТТЕР ×N!" во время глоу-паузы, но именно
+		// БЕЗ числа фриспинов (freespins/bonusFreespinsShown ещё не тронуты
+		// на этом шаге) — это и есть "глоу до объявления счётчика" из (c).
+		scatterCount = scatterN;
+		scatterGlow = true;
+		haptic('scatter');
+		await _wait(SCATTER_GLOW_MS);
+		scatterGlow = false;
+
+		const retriggerAwards = res.outcome.retrigger_awards ?? [];
+		const initialAward = totalFreespins - retriggerAwards.reduce((sum, n) => sum + n, 0);
+		bonusActive = true;
+		bonusFreespinsShown = initialAward;
+		freespins = initialAward;
+
+		for (const award of retriggerAwards) {
+			await _wait(RETRIGGER_TOAST_GAP_MS);
+			bonusFreespinsShown += award;
+			freespins = bonusFreespinsShown;
+			bonusToast = `+${award} ФРИСПИНОВ — РЕТРИГГЕР!`;
+			haptic('retrigger');
+			await _wait(RETRIGGER_TOAST_VISIBLE_MS);
+			bonusToast = null;
+		}
+
+		await _wait(BONUS_SETTLE_MS);
+		bonusActive = false;
+	}
+
 	async function spin() {
-		if (spinning) return;
+		if (spinning || bonusActive) return;
 		error = null;
 		wins = [];
 		lastPayout = null;
 		scatterCount = 0;
+		freespins = 0;
+		scatterGlow = false;
+		bonusToast = null;
 		outcomeTint = null;
 		spinning = true;
 		haptic('spin');
@@ -121,22 +225,24 @@
 		window.setTimeout(() => {
 			grid = res.outcome.grid;
 			wins = res.outcome.wins;
-			freespins = res.outcome.freespins;
-			scatterCount = res.outcome.scatter;
 			lastPayout = res.payout;
 			spinning = false;
 			outcomeTint = res.payout > 0 ? 'win' : 'lose';
 			haptic('reel-stop');
 
-			if (scatterCount >= 3) {
-				haptic('scatter');
-			} else if (res.payout >= bet * 20) {
-				haptic('big-win');
-			} else if (res.payout > 0) {
-				haptic('win');
-			} else {
-				haptic('lose');
+			// Scatter haptic/reveal is handled inside _revealScatterAndBonus
+			// (fires at the glow moment, not here) so it isn't duplicated.
+			if (res.outcome.scatter < 3) {
+				if (res.payout >= bet * 20) {
+					haptic('big-win');
+				} else if (res.payout > 0) {
+					haptic('win');
+				} else {
+					haptic('lose');
+				}
 			}
+
+			void _revealScatterAndBonus(res);
 		}, REVEAL_DELAY_MS);
 	}
 </script>
@@ -147,8 +253,23 @@
 		<div class="menu-sub">3×5 · 10 линий · вайлд/скаттер/фриспины</div>
 	</div>
 
-	{#if freespins > 0}
+	{#if bonusActive}
+		<!-- (d) Живой бэдж бонуса: счётчик растёт по ходу реплея ретриггеров
+		     (см. _revealScatterAndBonus). {#key} пересоздаёт узел на каждое
+		     изменение числа, чтобы CSS-анимация "бампа" реально переигрывала. -->
+		<div class="slot-bonus-badge">
+			<span class="slot-bonus-badge-label">✦ БОНУС</span>
+			{#key bonusFreespinsShown}
+				<span class="slot-bonus-badge-count">{bonusFreespinsShown}</span>
+			{/key}
+			<span class="slot-bonus-badge-sub">фриспинов</span>
+		</div>
+	{:else if freespins > 0}
 		<div class="slot-freespins-pill">✦ {freespins} фриспинов доиграно автоматически</div>
+	{/if}
+
+	{#if bonusToast}
+		<div class="slot-bonus-toast">{bonusToast}</div>
 	{/if}
 
 	<div
@@ -158,7 +279,10 @@
 	>
 		{#each [0, 1, 2, 3, 4] as col (col)}
 			{#if spinning}
-				<div class="slot-col-viewport" style={`--col-delay: ${col * SPIN_PER_COL_MS}ms`}>
+				<div
+					class="slot-col-viewport"
+					style={`--col-delay: ${col * SPIN_PER_COL_MS}ms; --spin-duration: ${SPIN_BASE_MS}ms`}
+				>
 					<div class="slot-reel-strip">
 						{#each reelStrips[col] as symId, i (i)}
 							{@const sym = SLOT_SYMBOLS[symId]}
@@ -174,7 +298,13 @@
 						{@const symId = grid[row][col]}
 						{@const sym = SLOT_SYMBOLS[symId]}
 						{@const hit = highlightCells.has(`${row}:${col}`)}
-						<div class="slot-cell {hit ? 'slot-cell-hit' : ''}" style={`--tint: ${sym?.tint ?? '#333'}`}>
+						{@const scatterHit = scatterCellKeys.has(`${row}:${col}`)}
+						<div
+							class="slot-cell {hit ? 'slot-cell-hit' : ''} {scatterHit
+								? 'slot-cell-scatter-glow'
+								: ''}"
+							style={`--tint: ${sym?.tint ?? '#333'}`}
+						>
 							<img src={symbolSrc(symId)} alt={sym?.name ?? symId} draggable="false" />
 							{#if sym?.role === 'wild'}<span class="slot-badge slot-badge-wild">WILD</span>{/if}
 							{#if sym?.role === 'scatter'}<span class="slot-badge slot-badge-scatter"
@@ -190,6 +320,12 @@
 	<div class="slot-ticker">
 		{#if spinning}
 			<span class="slot-ticker-spin">крутимся…</span>
+		{:else if scatterGlow}
+			<!-- (c) Scatter уже виден (глоу на клетках), но число фриспинов ещё
+			     сознательно не объявлено — см. _revealScatterAndBonus. -->
+			<span class="slot-ticker-scatter">СКАТТЕР ×{scatterCount}!</span>
+		{:else if bonusActive}
+			<span class="slot-ticker-scatter">СКАТТЕР ×{scatterCount}! бонус в разгаре…</span>
 		{:else if scatterCount >= 3}
 			<span class="slot-ticker-scatter"
 				>СКАТТЕР ×{scatterCount}! → {freespins} фриспинов отыграно</span
@@ -226,7 +362,7 @@
 				<button
 					type="button"
 					class={`chip ${bet === v ? 'chip-on' : ''}`}
-					disabled={spinning}
+					disabled={spinning || bonusActive}
 					onclick={() => (bet = v)}
 				>
 					{v}
@@ -235,9 +371,11 @@
 		</div>
 	</div>
 
-	<button type="button" class="slot-cta" disabled={spinning} onclick={spin}>
-		<span class="slot-cta-label">{spinning ? 'крутим…' : 'КРУТИТЬ'}</span>
-		<span class="slot-cta-sub">{spinning ? '' : `ставка ${bet}¥`}</span>
+	<button type="button" class="slot-cta" disabled={spinning || bonusActive} onclick={spin}>
+		<span class="slot-cta-label"
+			>{spinning ? 'крутим…' : bonusActive ? 'БОНУС…' : 'КРУТИТЬ'}</span
+		>
+		<span class="slot-cta-sub">{spinning || bonusActive ? '' : `ставка ${bet}¥`}</span>
 	</button>
 </div>
 
@@ -275,6 +413,81 @@
 		font-size: 12px;
 		font-weight: 700;
 		font-family: var(--font-body);
+	}
+
+	/* 04.2-11: живой бэдж бонуса — тот же жёлтый акцент, что и у финального
+	   .slot-freespins-pill выше (эта же смысловая роль "бонус/фриспины"), но
+	   крупнее и со sticker-обводкой/тенью (общий приём кнопок этого экрана,
+	   см. .slot-cta ниже) — читается как "активный счётчик", а не пассивная
+	   плашка-факт. */
+	.slot-bonus-badge {
+		align-self: flex-start;
+		display: flex;
+		align-items: baseline;
+		gap: 6px;
+		background: var(--accent-yellow);
+		color: #1a0f12;
+		border: 2px solid #111;
+		border-radius: 10px;
+		padding: 5px 12px;
+		box-shadow: 3px 3px 0 #111;
+		font-family: var(--font-body);
+	}
+	.slot-bonus-badge-label {
+		font-size: 11px;
+		font-weight: 900;
+		letter-spacing: 0.06em;
+	}
+	.slot-bonus-badge-count {
+		display: inline-block;
+		font-family: var(--font-numeric);
+		font-size: 22px;
+		font-weight: 900;
+		line-height: 1;
+		animation: slotBonusCountBump 0.3s ease-out;
+	}
+	.slot-bonus-badge-sub {
+		font-size: 11px;
+		opacity: 0.8;
+	}
+	@keyframes slotBonusCountBump {
+		0% {
+			transform: scale(1.5);
+		}
+		100% {
+			transform: scale(1);
+		}
+	}
+
+	/* (d) Тост на каждый ретриггер (см. _revealScatterAndBonus) — тот же
+	   sticker-приём (жёсткая тень/2px обводка), что у .slot-bonus-badge, но
+	   в тёмной инверсии, чтобы читаться как "уведомление поверх", не как
+	   часть основного счётчика. Полностью пересоздаётся Svelte-ом на каждый
+	   новый текст ({#if bonusToast}), поэтому анимация ниже переигрывает
+	   сама, без {#key}. */
+	.slot-bonus-toast {
+		align-self: center;
+		background: #1a0f12;
+		color: var(--accent-yellow);
+		border: 2px solid var(--accent-yellow);
+		border-radius: 10px;
+		padding: 8px 16px;
+		font-family: var(--font-shout);
+		font-size: var(--font-heading-size);
+		letter-spacing: 0.04em;
+		text-align: center;
+		box-shadow: 3px 3px 0 #111;
+		animation: slotToastPop 0.25s ease-out;
+	}
+	@keyframes slotToastPop {
+		0% {
+			transform: translateY(-6px) scale(0.9);
+			opacity: 0;
+		}
+		100% {
+			transform: translateY(0) scale(1);
+			opacity: 1;
+		}
 	}
 
 	.slot-reels {
@@ -332,6 +545,28 @@
 		border-color: var(--accent-pink);
 		box-shadow: 0 0 0 2px var(--accent-pink);
 	}
+	/* (c) Scatter-глоу: пульс на каждой scatter-ячейке В МОМЕНТ приземления,
+	   до того как объявлен счётчик фриспинов (scatterGlow — короткое окно
+	   времени, см. _revealScatterAndBonus). Жёлтый — та же роль-акцента
+	   "бонус/scatter", что и .slot-bonus-badge/.slot-ticker-scatter ниже, не
+	   смешивается с розовым (.slot-cell-hit — обычные выигрышные линии). */
+	.slot-cell-scatter-glow {
+		border-color: var(--accent-yellow);
+		animation: slotScatterPulse 0.42s ease-in-out 2;
+	}
+	@keyframes slotScatterPulse {
+		0%,
+		100% {
+			box-shadow: 0 0 0 2px var(--accent-yellow);
+			transform: scale(1);
+		}
+		50% {
+			box-shadow:
+				0 0 0 3px var(--accent-yellow),
+				0 0 16px rgba(255, 216, 74, 0.85);
+			transform: scale(1.06);
+		}
+	}
 	.slot-badge {
 		position: absolute;
 		bottom: 2px;
@@ -373,7 +608,9 @@
 		inset: 0;
 		/* STRIP_ROWS visible rows stacked = STRIP_ROWS/3 × viewport height */
 		height: calc(100% * 12 / 3);
-		animation: slotReelSpin 700ms cubic-bezier(0.16, 0.86, 0.32, 1) both;
+		/* Длительность идёт из --spin-duration (JS SPIN_BASE_MS), не задублирована
+		   магическим числом — 04.2-11 ускорил базовый спин до 420мс. */
+		animation: slotReelSpin var(--spin-duration, 420ms) cubic-bezier(0.16, 0.86, 0.32, 1) both;
 		animation-delay: var(--col-delay);
 	}
 	.slot-cell-strip {
@@ -508,5 +745,27 @@
 		font-size: 12px;
 		color: #3a1420;
 		font-family: var(--font-body);
+	}
+
+	/* Respect prefers-reduced-motion: kill translateY drum spin, the scatter
+	   pulse and the toast pop-in — all pure "motion" pieces. Timing/pacing
+	   (setTimeout delays in the script) is left alone, that's informational
+	   sequencing, not motion, and reduced-motion doesn't require collapsing
+	   it. The reel strip snaps straight to its landed position (-75%) so
+	   there's no jump once the real grid swaps in. */
+	@media (prefers-reduced-motion: reduce) {
+		.slot-reel-strip {
+			animation: none;
+			transform: translateY(-75%);
+		}
+		.slot-cell-scatter-glow {
+			animation: none;
+		}
+		.slot-bonus-badge-count {
+			animation: none;
+		}
+		.slot-bonus-toast {
+			animation: none;
+		}
 	}
 </style>

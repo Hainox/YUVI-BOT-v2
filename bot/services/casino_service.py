@@ -371,6 +371,7 @@ async def play_slots(
             "wins": result.line_wins,
             "freespins": result.freespins,
             "scatter": result.scatter_count,
+            "retrigger_awards": result.retrigger_awards,
         }
 
     return await _settle(session, chat_id, user_id, "slots", bet, idem_key, compute)

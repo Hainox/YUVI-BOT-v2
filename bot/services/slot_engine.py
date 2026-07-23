@@ -10,8 +10,10 @@
 seam `casino_service._rng`, `secrets.SystemRandom()`) — server-authoritative,
 никогда клиентский `Math.random()` (D-05/T-04.1-05). Собственный модульный
 `_rng` здесь используется ТОЛЬКО для авто-розыгрыша фриспинов внутри
-`evaluate_grid` (бонусные спины без дополнительной ставки игрока) — это
-внутренняя деталь движка, а не альтернативный источник исхода основной сдачи.
+`evaluate_grid` (бонусные спины без дополнительной ставки игрока, включая
+ретриггеры — см. докстринг `evaluate_grid`, ограничены `FREESPINS_HARD_CAP`)
+— это внутренняя деталь движка, а не альтернативный источник исхода основной
+сдачи.
 """
 
 from __future__ import annotations
@@ -29,12 +31,26 @@ _rng = secrets.SystemRandom()
 
 @dataclass
 class SlotResult:
-    """Итог одной сдачи (включая авто-доигранные фриспины)."""
+    """Итог одной сдачи (включая авто-доигранные фриспины и ретриггеры).
+
+    `freespins` — ИТОГОВОЕ число бонусных спинов, реально разыгранных за этот
+    вызов `evaluate_grid` (изначальная выдача + все ретриггеры), НЕ только
+    изначальная выдача по стартовой сетке — фронту нужно именно это число,
+    чтобы проанимировать правильное количество бонусных спинов.
+
+    `retrigger_awards` — список размеров КАЖДОГО отдельного ретриггера
+    (>=3 scatter на бонусном спине) в порядке их наступления, например
+    `[6]` значит "один ретриггер добавил 6 спинов". Пустой список — ретриггеров
+    не было. Изначальная выдача восстанавливается как
+    `freespins - sum(retrigger_awards)` при отсутствии срабатывания
+    хардкапа (см. `evaluate_grid`); фронт использует список, чтобы показать
+    тост/бейдж на каждый ретриггер по ходу бонусной серии."""
 
     grid: list[list[str]]
     line_wins: list[dict]
     scatter_count: int
     freespins: int
+    retrigger_awards: list[int]
     total_payout: int
 
 
@@ -136,27 +152,72 @@ def _freespins_for(scatter_count: int) -> int:
     return slot_data.FREESPIN_TABLE[5]
 
 
+# Хардкап на СУММАРНОЕ число бонусных спинов, разыгрываемых за один вызов
+# `evaluate_grid` (изначальная выдача + все ретриггеры вместе). Нужен, чтобы
+# патологическая (сколь угодно маловероятная) цепочка ретриггеров не привела
+# к неограниченному расчёту/выплате за один HTTP-запрос — `_settle` всё равно
+# капает выплату остатком банка, но сам расчёт (и время ответа) должен быть
+# ограничен независимо от банка.
+#
+# 100 выбрано с большим запасом от реалистичного случая: вероятность >=3
+# scatter на ОДНОМ спине мала (per-column вес scatter 2-3 из ~47-48, т.е.
+# scatter — редкий символ и на каждой колонне по 3 независимые ячейки), так
+# что уже второй-третий подряд ретриггер — статистически исчезающе редкое
+# событие; калибровочный RTP-тест (`test_sampled_rtp_in_band`,
+# 200k сэмплированных спинов) эмпирически подтверждает, что цепочки такой
+# длины практически не влияют на средний RTP. 100 бонусных спинов на одну
+# сдачу — на несколько порядков больше любого правдоподобного исхода, поэтому
+# кап отсекает только адверсариальный/патологический RNG-стрик, а не
+# легитимный выигрыш игрока.
+FREESPINS_HARD_CAP = 100
+
+
 def evaluate_grid(grid: list[list[str]], bet_per_line: int) -> SlotResult:
     """Считает линии + scatter/freespins для сдачи `grid`, затем автоматически
-    доигрывает `freespins` дополнительных бонусных спинов на том же
-    `bet_per_line` (без ставки игрока) и суммирует их линейные выигрыши в
-    `total_payout` — сервер сам "проигрывает" фриспины одним расчётом
-    (никакого повторного ретриггера фриспинов внутри бонусных спинов, чтобы
-    исключить неограниченную рекурсию)."""
+    доигрывает бонусные спины на том же `bet_per_line` (без ставки игрока) и
+    суммирует их линейные выигрыши в `total_payout`.
+
+    Ретриггер: если НА САМОМ бонусном спине выпадает >=3 scatter, к остатку
+    доигрываемых спинов добавляется соответствующее число из того же
+    `FREESPIN_TABLE` (D-05), что и для изначальной выдачи — реализовано
+    ограниченным while-циклом (не рекурсией и не range на фиксированное
+    число), с бегущим счётчиком "сколько ещё доиграть" (`remaining`) и
+    "сколько уже сыграно" (`played`). Суммарная выдача (изначальная +
+    все ретриггеры) не может превысить `FREESPINS_HARD_CAP` — как только порог
+    достигнут, новые ретриггеры больше не засчитываются, но уже накопленный
+    остаток доигрывается до конца (до нуля), см. комментарий у константы."""
     line_wins, line_total = _sum_line_wins(grid, bet_per_line)
     scatter_count = _count_scatter(grid)
-    freespins = _freespins_for(scatter_count)
+    initial_freespins = _freespins_for(scatter_count)
 
     total_payout = line_total
-    for _ in range(freespins):
+    remaining = initial_freespins
+    played = 0
+    total_awarded = initial_freespins  # played + remaining, монотонно растёт до капа
+    retrigger_awards: list[int] = []
+
+    while remaining > 0:
         fs_grid = spin_grid(_rng)
         _fs_wins, fs_total = _sum_line_wins(fs_grid, bet_per_line)
         total_payout += fs_total
+        played += 1
+        remaining -= 1
+
+        fs_scatter_count = _count_scatter(fs_grid)
+        award = _freespins_for(fs_scatter_count)
+        if award > 0 and total_awarded + award <= FREESPINS_HARD_CAP:
+            remaining += award
+            total_awarded += award
+            retrigger_awards.append(award)
+        # else: award == 0 (нет ретриггера на этом бонусном спине) ИЛИ кап
+        # уже достигнут/был бы превышен — ретриггер не засчитывается, но
+        # `remaining` уже накопленный ранее доигрывается как обычно.
 
     return SlotResult(
         grid=grid,
         line_wins=line_wins,
         scatter_count=scatter_count,
-        freespins=freespins,
+        freespins=played,
+        retrigger_awards=retrigger_awards,
         total_payout=total_payout,
     )

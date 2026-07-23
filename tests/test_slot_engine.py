@@ -8,7 +8,12 @@ webapp/slot-data.jsx на Python. Доказывают:
 - wild (muscle) подставляется вместо любого символа кроме scatter.
 - scatter (keffiyeh) платит ТОЛЬКО фриспинами, не по линиям.
 - spin_grid возвращает корректную форму сетки 3x5.
-- Сэмплированный RTP укладывается в широкий диапазон вокруг 92.78%.
+- Сэмплированный RTP укладывается в широкий диапазон вокруг 92.78% (включая
+  эффект ретриггеров фриспинов во время бонуса, см. ниже).
+- Ретриггер фриспинов: >=3 scatter НА бонусном спине добавляет ещё фриспинов
+  к остатку (тот же FREESPIN_TABLE), `freespins` в результате — ИТОГО сыграно
+  (изначальные + все ретриггеры), с хардкапом FREESPINS_HARD_CAP на суммарную
+  выдачу за один вызов `evaluate_grid`, исключающим неограниченный цикл.
 - play_slots settles через идемпотентное ядро 04.1-01 (`_settle`), выигрыш
   урезается до остатка банка (D-06).
 
@@ -150,6 +155,77 @@ def test_scatter_pays_freespins_not_lines():
 
 def test_scatter_freespin_table_4_and_5():
     assert slot_data.FREESPIN_TABLE == {3: 4, 4: 6, 5: 7}
+
+
+# --- Bonus retrigger (>=3 scatter on a bonus spin extends the bonus round) ----
+
+
+def test_mid_bonus_retrigger_extends_total(monkeypatch):
+    """Стартовая сдача даёт 3 scatter -> 4 фриспина (D-05). Форсируем, что
+    ВТОРОЙ бонусный спин сам содержит 3 scatter -> ретриггер должен добавить
+    ещё FREESPIN_TABLE[3]=4 к остатку, и итоговый `freespins` (ИТОГО сыгранных
+    бонусных спинов) должен вырасти до 4+4=8, а не остаться на изначальных 4."""
+    trigger_grid = [
+        ["keffiyeh", "sakaki", "keffiyeh", "sakaki", "sakaki"],
+        ["sakaki", "sakaki", "sakaki", "sakaki", "keffiyeh"],
+        ["sakaki", "sakaki", "sakaki", "sakaki", "sakaki"],
+    ]
+    # spin_grid делает 15 rng.choice(...) на сетку (5 столбцов x 3 строки,
+    # column-major порядок, см. slot_engine.spin_grid) — раскладываем
+    # forced-последовательность по бонусным спинам вручную.
+    no_scatter_spin = ["sakaki"] * 15
+    retrigger_spin = [
+        "keffiyeh", "sakaki", "sakaki",
+        "sakaki", "sakaki", "sakaki",
+        "keffiyeh", "sakaki", "sakaki",
+        "sakaki", "sakaki", "sakaki",
+        "keffiyeh", "sakaki", "sakaki",
+    ]
+    # Бонусный спин #1 — без scatter, #2 — ретриггер (3 scatter), #3..#8 — без
+    # scatter (после ретриггера остаток спинов вырастает до 4+4=8 суммарно).
+    forced_sequence = no_scatter_spin + retrigger_spin + no_scatter_spin * 6
+    monkeypatch.setattr(slot_engine, "_rng", _ForcedGridRng(forced_sequence))
+
+    result = slot_engine.evaluate_grid(trigger_grid, bet_per_line=1)
+
+    assert result.scatter_count == 3
+    initial_award = slot_data.FREESPIN_TABLE[3]
+    assert result.retrigger_awards == [slot_data.FREESPIN_TABLE[3]]
+    assert result.freespins == initial_award + slot_data.FREESPIN_TABLE[3] == 8
+
+
+def test_bonus_retrigger_hard_cap_stops_unbounded_growth(monkeypatch):
+    """Патологический стрик: КАЖДЫЙ бонусный спин (форсированно) содержит
+    scatter >= 3 -> без хардкапа remaining бы только рос (net +6 на каждой
+    итерации: -1 сыгранный + 7 добавленных) и цикл никогда бы не завершился.
+    С хардкапом (`FREESPINS_HARD_CAP=100`) ретриггеры перестают засчитываться,
+    как только суммарная выдача уже достигла/превысила бы порог, а уже
+    накопленный остаток доигрывается до нуля — цикл гарантированно
+    завершается, и итоговое число сыгранных спинов остаётся <= порога."""
+    trigger_grid = [
+        ["keffiyeh", "sakaki", "keffiyeh", "sakaki", "sakaki"],
+        ["sakaki", "sakaki", "sakaki", "sakaki", "keffiyeh"],
+        ["sakaki", "sakaki", "sakaki", "sakaki", "sakaki"],
+    ]
+    # 15 scatter подряд -> _count_scatter=15 (>=5) -> FREESPIN_TABLE[5]=7 на
+    # КАЖДОМ бонусном спине. _ForcedGridRng циклит эту 15-символьную
+    # последовательность бесконечно (по модулю), так что ЛЮБОЕ число бонусных
+    # спинов, сколько бы их ни было сыграно, будет "видеть" >=3 scatter.
+    always_scatter_spin = ["keffiyeh"] * 15
+    monkeypatch.setattr(slot_engine, "_rng", _ForcedGridRng(always_scatter_spin))
+
+    result = slot_engine.evaluate_grid(trigger_grid, bet_per_line=1)
+
+    assert result.freespins <= slot_engine.FREESPINS_HARD_CAP
+    initial_award = slot_data.FREESPIN_TABLE[3]
+    assert initial_award + sum(result.retrigger_awards) == result.freespins
+    # Каждый ЕДИНСТВЕННЫЙ бонусный спин форсированно ретриггерящий, но
+    # засчитанных ретриггеров в разы меньше, чем сыгранных спинов — значит
+    # хардкап реально подавил дальнейшие ретриггеры, а не просто "повезло"
+    # закончиться естественно.
+    assert len(result.retrigger_awards) < result.freespins
+    assert result.freespins == 95
+    assert result.retrigger_awards == [slot_data.FREESPIN_TABLE[5]] * 13
 
 
 # --- Grid shape ---------------------------------------------------------------
