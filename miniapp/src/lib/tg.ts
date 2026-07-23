@@ -75,6 +75,7 @@ export type HapticKind =
 	| 'big-win'
 	| 'lose'
 	| 'scatter'
+	| 'retrigger'
 	| 'error';
 
 export function haptic(kind: HapticKind): void {
@@ -97,6 +98,9 @@ export function haptic(kind: HapticKind): void {
 				break;
 			case 'scatter':
 				raw!.HapticFeedback.notificationOccurred('warning');
+				break;
+			case 'retrigger':
+				raw!.HapticFeedback.impactOccurred('heavy');
 				break;
 			case 'error':
 				raw!.HapticFeedback.notificationOccurred('error');
