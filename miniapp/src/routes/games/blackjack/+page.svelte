@@ -13,6 +13,7 @@
 	// (D-07/D-08, resolve_blackjack_timeouts) settles it for the player.
 	import { apiFetch, ApiError } from '$lib/api';
 	import { haptic } from '$lib/tg';
+	import { parseCard, cardImage, SUIT_THEME } from '$lib/blackjackTheme';
 
 	const BET_CHIPS = [10, 50, 100, 500, 1000];
 
@@ -54,10 +55,13 @@
 		return Number(rank);
 	}
 	// Informational mirror of blackjack_engine.hand_value — label only,
-	// never used to decide anything server-authoritative.
+	// never used to decide anything server-authoritative. Cards are
+	// "rank+suit" tokens (e.g. "A♠") since the Miku/Teto redesign, so the
+	// suit glyph is stripped before rank lookup.
 	function handTotal(cards: string[]): { value: number; soft: boolean } {
-		let total = cards.reduce((s, c) => s + _rankValue(c), 0);
-		let aces = cards.filter((c) => c === 'A').length;
+		const ranks = cards.map((c) => parseCard(c).rank);
+		let total = ranks.reduce((s, r) => s + _rankValue(r), 0);
+		let aces = ranks.filter((r) => r === 'A').length;
 		while (total > 21 && aces > 0) {
 			total -= 10;
 			aces -= 1;
@@ -137,10 +141,38 @@
 	}
 </script>
 
+<svelte:head>
+	<link rel="preconnect" href="https://fonts.googleapis.com" />
+	<link
+		href="https://fonts.googleapis.com/css2?family=Fredoka:wght@600;700&display=swap"
+		rel="stylesheet"
+	/>
+</svelte:head>
+
+{#snippet themedCard(token: string)}
+	{@const { rank, suit } = parseCard(token)}
+	{@const theme = SUIT_THEME[suit]}
+	<span class="bj-card" style={`border-color:${theme.main}`}>
+		<img class="bj-card-img" src={cardImage(rank, suit)} alt={`${rank}${suit}`} />
+		<span class="bj-card-badge bj-card-badge-tl" style={`background:${theme.main}`}>
+			<span class="bj-card-rank">{rank}</span>
+			<span class="bj-card-suit">{suit}</span>
+		</span>
+		<span class="bj-card-badge bj-card-badge-br" style={`background:${theme.main}`}>
+			<span class="bj-card-rank">{rank}</span>
+			<span class="bj-card-suit">{suit}</span>
+		</span>
+	</span>
+{/snippet}
+
+{#snippet cardBack()}
+	<span class="bj-card bj-card-back"></span>
+{/snippet}
+
 <div class="bj-screen">
 	<div class="menu-head">
 		<h1 class="menu-title">Блэкджек</h1>
-		<div class="menu-sub">натурал 2.5× · дилер бьёт с мягких 17</div>
+		<div class="menu-sub">Мику ♠♣ · Тето ♥♦ · натурал 2.5× · дилер бьёт с мягких 17</div>
 	</div>
 
 	{#if phase !== 'idle'}
@@ -154,12 +186,12 @@
 				<div class="bj-cards">
 					{#if phase === 'active'}
 						{#if dealerUpcard}
-							<span class="bj-card">{dealerUpcard}</span>
+							{@render themedCard(dealerUpcard)}
 						{/if}
-						<span class="bj-card bj-card-hidden">?</span>
+						{@render cardBack()}
 					{:else if dealer}
 						{#each dealer as c, i (i)}
-							<span class="bj-card">{c}</span>
+							{@render themedCard(c)}
 						{/each}
 					{/if}
 				</div>
@@ -171,7 +203,7 @@
 				</div>
 				<div class="bj-cards">
 					{#each player as c, i (i)}
-						<span class="bj-card bj-card-player">{c}</span>
+						{@render themedCard(c)}
 					{/each}
 				</div>
 			</div>
@@ -301,26 +333,65 @@
 		gap: 6px;
 	}
 	.bj-card {
-		min-width: 40px;
-		height: 56px;
-		border-radius: 8px;
+		position: relative;
+		width: 60px;
+		height: 84px;
+		flex-shrink: 0;
+		border-radius: 9px;
+		overflow: hidden;
 		background: var(--bg-primary, #111);
 		border: 2px solid var(--border-secondary);
+		box-shadow: 0 2px 5px rgba(0, 0, 0, 0.35);
+	}
+	.bj-card-img {
+		position: absolute;
+		inset: 0;
+		width: 100%;
+		height: 100%;
+		object-fit: cover;
+	}
+	.bj-card-badge {
+		position: absolute;
 		display: flex;
+		flex-direction: column;
 		align-items: center;
-		justify-content: center;
-		font-family: var(--font-numeric);
-		font-weight: 900;
-		font-size: 18px;
-		color: var(--text-primary);
-		padding: 0 6px;
+		line-height: 1;
+		padding: 2px 4px;
+		border-radius: 5px;
+		box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+		font-family: 'Fredoka', var(--font-chrome);
 	}
-	.bj-card-player {
-		border-color: var(--accent-pink);
+	.bj-card-badge-tl {
+		top: 4px;
+		left: 4px;
 	}
-	.bj-card-hidden {
-		color: var(--text-muted);
-		border-style: dashed;
+	.bj-card-badge-br {
+		bottom: 4px;
+		right: 4px;
+		transform: rotate(180deg);
+	}
+	.bj-card-rank {
+		font-weight: 700;
+		font-size: 12px;
+		color: #fff;
+	}
+	.bj-card-suit {
+		font-size: 8px;
+		color: #fff;
+	}
+	.bj-card-back {
+		background: linear-gradient(135deg, #123c3a 0%, #15171c 52%, #3a1420 100%);
+		border-color: #ede3ce;
+	}
+	.bj-card-back::before {
+		content: '';
+		position: absolute;
+		inset: 0;
+		background: repeating-linear-gradient(
+			45deg,
+			rgba(46, 196, 182, 0.12) 0px 8px,
+			rgba(214, 56, 89, 0.12) 8px 16px
+		);
 	}
 
 	.bj-result {
