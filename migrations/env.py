@@ -22,6 +22,7 @@ from common.models import daily_stat  # noqa: F401
 from common.models import duel  # noqa: F401
 from common.models import economy_tx  # noqa: F401
 from common.models import emoji_frequency  # noqa: F401
+from common.models import exchange_listing  # noqa: F401
 from common.models import feedback  # noqa: F401
 from common.models import gacha_collection  # noqa: F401
 from common.models import market  # noqa: F401
