@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import logging
 import pkgutil
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -57,6 +58,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await app.state.redis.aclose()
 
 
+logging.basicConfig(level=settings.log_level)
+logger = logging.getLogger(__name__)
+
 app = FastAPI(title="Yuvi Bot v2 API", version="0.1.0", lifespan=lifespan)
 
 # Mini App frontend (miniapp/, port 8003) is a different origin than this api
@@ -77,7 +81,12 @@ for _router in _discover_routers():
 @app.exception_handler(InvalidInitData)
 async def handle_invalid_init_data(request: Request, exc: InvalidInitData) -> JSONResponse:
     """Маппит InvalidInitData -> 401 без утечки текста исключения клиенту
-    (Information Disclosure) — см. api/deps.py::validate_init_data (D-01)."""
+    (Information Disclosure) — см. api/deps.py::validate_init_data (D-01).
+
+    Короткая причина (напр. "hash mismatch", "expired") логируется на
+    сервере — это категория ошибки, не сами данные initData, безопасно для
+    постоянного логирования и сильно ускоряет диагностику живых 401."""
+    logger.info("invalid init data: %s (path=%s)", exc, request.url.path)
     return JSONResponse(status_code=401, content={"detail": "invalid init data"})
 
 
