@@ -24,6 +24,9 @@
 	const TAP_UPGRADE_BASE = 50;
 	const AUTO_UPGRADE_BASE = 200;
 	const UPGRADE_GROWTH = 1.15;
+	const ANCHOR_CP_PER_HRYVNA = 100;
+	const TIER_FRACTIONS = [0.1, 0.25, 0.5, 0.75, 1];
+	const QUOTE_DEBOUNCE_MS = 250;
 
 	type FarmState = {
 		cp: number;
@@ -32,13 +35,21 @@
 		cp_per_sec?: number;
 		accepted?: number;
 	};
+	type MarketQuote = { cp_in: number; hryvnia_out: number };
 	type MarketState = {
 		price: number | string;
 		r_cp: number | string;
 		r_h: number | string;
 		history: { price: number | string; created_at: string }[];
+		quotes: MarketQuote[];
 	};
 	type ConvertResult = { cp_in: number; hryvnia_out: number; price: number | string };
+	type TierQuote = {
+		amount: number;
+		hryvniaOut: number;
+		effectivePrice: number | null;
+		impactPct: number | null;
+	};
 
 	let loading = $state(true);
 	let error = $state<string | null>(null);
@@ -84,12 +95,76 @@
 		}
 	}
 
-	async function loadMarket() {
+	async function loadMarket(amounts: number[] = []) {
 		try {
-			market = await apiFetch<MarketState>('/api/v1/farm/market');
+			const qs = amounts.length ? `?${amounts.map((a) => `amounts=${a}`).join('&')}` : '';
+			market = await apiFetch<MarketState>(`/api/v1/farm/market${qs}`);
 		} catch {
-			// AMM-график — некритичное украшение экрана, не блокирует остальное.
+			// AMM-график/котировки — некритичное украшение экрана, не блокирует остальное.
 		}
+	}
+
+	function tierAmounts(currentCp: number): number[] {
+		if (currentCp <= 0) return [];
+		const raw = TIER_FRACTIONS.map((f) => Math.floor(currentCp * f));
+		return [...new Set(raw)].filter((v) => v > 0).sort((a, b) => a - b);
+	}
+
+	function computeTierQuotes(mkt: MarketState | null, currentCp: number): TierQuote[] {
+		if (!mkt) return [];
+		const spotPrice = Number(mkt.price);
+		const result: TierQuote[] = [];
+		for (const amount of tierAmounts(currentCp)) {
+			const q = mkt.quotes.find((qq) => qq.cp_in === amount);
+			if (!q) continue;
+			const effectivePrice = q.hryvnia_out > 0 ? amount / q.hryvnia_out : null;
+			const impactPct =
+				effectivePrice !== null && spotPrice > 0
+					? ((spotPrice - effectivePrice) / spotPrice) * 100
+					: null;
+			result.push({ amount, hryvniaOut: q.hryvnia_out, effectivePrice, impactPct });
+		}
+		return result;
+	}
+
+	function findQuote(mkt: MarketState | null, amount: number): number | null {
+		if (!mkt || amount <= 0) return null;
+		const q = mkt.quotes.find((qq) => qq.cp_in === Math.floor(amount));
+		return q ? q.hryvnia_out : null;
+	}
+
+	function formatCp(n: number): string {
+		if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
+		if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+		return `${n}`;
+	}
+
+	function anchorRatioLabel(price: number | null): string | null {
+		if (price === null) return null;
+		const ratio = price / ANCHOR_CP_PER_HRYVNA;
+		if (Math.abs(ratio - 1) < 0.01) return null;
+		return ratio > 1
+			? `CP дешевле анкера в ${ratio.toFixed(1)}×`
+			: `CP дороже анкера в ${(1 / ratio).toFixed(1)}×`;
+	}
+
+	function historyRange(history: MarketState['history']): { min: string; max: string } | null {
+		if (history.length < 2) return null;
+		const prices = history.map((h) => Number(h.price));
+		return { min: Math.min(...prices).toFixed(1), max: Math.max(...prices).toFixed(1) };
+	}
+
+	function impactCurvePoints(quotes: TierQuote[]): string {
+		if (quotes.length < 2) return '';
+		const vals = quotes.map((q) => Math.abs(q.impactPct ?? 0));
+		const max = Math.max(...vals, 0.0001);
+		return vals
+			.map((v, i) => {
+				const x = (i / (vals.length - 1)) * 100;
+				const y = 32 - (v / max) * 32;
+				return `${x.toFixed(1)},${y.toFixed(1)}`;
+			})
+			.join(' ');
 	}
 
 	function tapOnce() {
@@ -154,7 +229,6 @@
 			cp -= res.cp_in;
 			optimisticCp = cp;
 			haptic('win');
-			loadMarket();
 		} catch (err) {
 			error = describeError(err);
 			haptic('error');
@@ -169,6 +243,11 @@
 
 	let tapUpgradeCost = $derived(upgradeCost(TAP_UPGRADE_BASE, tapLevel));
 	let autoUpgradeCost = $derived(upgradeCost(AUTO_UPGRADE_BASE, autoLevel));
+
+	let tierQuotes = $derived(computeTierQuotes(market, cp));
+	let liveHryvniaOut = $derived(findQuote(market, convertAmount));
+	let priceRange = $derived(market ? historyRange(market.history) : null);
+	let ratioLabel = $derived(anchorRatioLabel(market ? Number(market.price) : null));
 
 	function priceHistoryPoints(history: MarketState['history']): string {
 		if (history.length < 2) return '';
@@ -186,15 +265,27 @@
 	}
 
 	let flushIntervalId: ReturnType<typeof setInterval> | undefined;
+	let quoteTimeoutId: ReturnType<typeof setTimeout> | undefined;
+
+	// Живая котировка (T-04.2-квота-превью): при изменении суммы/баланса CP
+	// перезапрашивает /farm/market с нужными amounts (тиры + введённая
+	// сумма), debounced — не долбит бэкенд на каждый символ ввода.
+	$effect(() => {
+		const typed = Math.floor(convertAmount);
+		const amounts = [...new Set([...tierAmounts(cp), ...(typed > 0 ? [typed] : [])])];
+		clearTimeout(quoteTimeoutId);
+		if (amounts.length === 0) return;
+		quoteTimeoutId = setTimeout(() => loadMarket(amounts), QUOTE_DEBOUNCE_MS);
+	});
 
 	onMount(() => {
 		loadFarm();
-		loadMarket();
 		flushIntervalId = setInterval(flushTaps, FLUSH_INTERVAL_MS);
 	});
 
 	onDestroy(() => {
 		if (flushIntervalId) clearInterval(flushIntervalId);
+		clearTimeout(quoteTimeoutId);
 		flushTaps();
 	});
 </script>
@@ -245,8 +336,32 @@
 		</div>
 
 		<div class="farm-convert feature-card">
-			<span class="fc-title">Обмен CP → ювики</span>
-			<span class="fc-desc">анкер 100 CP = 1 ювик · реальный курс — AMM (см. график ниже)</span>
+			<span class="fc-title">Обмен CP → ¥</span>
+			<span class="fc-desc">
+				спот-курс {market ? Number(market.price).toFixed(1) : '…'} CP за 1¥ · анкер {ANCHOR_CP_PER_HRYVNA}
+				{#if ratioLabel}
+					· {ratioLabel}
+				{/if}
+			</span>
+
+			{#if market && market.history.length > 1}
+				<svg viewBox="0 0 100 32" class="farm-market-chart" preserveAspectRatio="none" aria-hidden="true">
+					<polyline
+						points={priceHistoryPoints(market.history)}
+						fill="none"
+						stroke="var(--accent-cyan)"
+						stroke-width="1.5"
+					/>
+				</svg>
+				{#if priceRange}
+					<div class="farm-chart-range">
+						<span>мин {priceRange.min}</span>
+						<span>сейчас {Number(market.price).toFixed(1)}</span>
+						<span>макс {priceRange.max}</span>
+					</div>
+				{/if}
+			{/if}
+
 			<div class="farm-convert-row">
 				<input
 					class="farm-convert-input"
@@ -259,39 +374,78 @@
 				/>
 				<button
 					type="button"
-					class="chip chip-all"
-					disabled={converting || convertAmount <= 0 || convertAmount > cp}
-					onclick={convert}
+					class="chip"
+					disabled={converting || cp <= 0}
+					onclick={() => (convertAmount = Math.min(1000, cp))}
 				>
-					{converting ? '…' : 'обменять'}
+					1k
+				</button>
+				<button
+					type="button"
+					class="chip"
+					disabled={converting || cp <= 0}
+					onclick={() => (convertAmount = Math.min(10000, cp))}
+				>
+					10k
+				</button>
+				<button
+					type="button"
+					class="chip chip-all"
+					disabled={converting || cp <= 0}
+					onclick={() => (convertAmount = cp)}
+				>
+					max
 				</button>
 			</div>
+
+			<div class="farm-convert-preview">
+				{#if convertAmount <= 0}
+					<span class="fc-desc">введи сумму</span>
+				{:else if convertAmount > cp}
+					<span class="farm-preview-err">недостаточно CP (есть {cp})</span>
+				{:else if liveHryvniaOut !== null}
+					<span class="farm-preview-val">получишь ≈ {liveHryvniaOut}¥</span>
+				{:else}
+					<span class="fc-desc">считаем…</span>
+				{/if}
+			</div>
+
+			<button
+				type="button"
+				class="chip chip-all farm-convert-btn"
+				disabled={converting || convertAmount <= 0 || convertAmount > cp}
+				onclick={convert}
+			>
+				{converting ? 'обмениваем…' : 'обменять'}
+			</button>
+
 			{#if convertResult}
 				<div class="farm-convert-result">получено {convertResult.hryvnia_out}¥</div>
 			{/if}
-		</div>
 
-		{#if market}
-			<div class="farm-market feature-card">
-				<span class="fc-title">Курс AMM</span>
-				<span class="fc-desc">{Number(market.price).toFixed(2)} CP за 1 ювик</span>
-				{#if market.history.length > 1}
-					<svg
-						viewBox="0 0 100 32"
-						class="farm-market-chart"
-						preserveAspectRatio="none"
-						aria-hidden="true"
-					>
+			{#if tierQuotes.length > 0}
+				<div class="farm-impact">
+					<span class="fc-desc">чем больше продаёшь за раз — тем хуже курс (price impact):</span>
+					<svg viewBox="0 0 100 32" class="farm-impact-chart" preserveAspectRatio="none" aria-hidden="true">
 						<polyline
-							points={priceHistoryPoints(market.history)}
+							points={impactCurvePoints(tierQuotes)}
 							fill="none"
-							stroke="var(--accent-cyan)"
+							stroke="var(--accent-pink)"
 							stroke-width="1.5"
 						/>
 					</svg>
-				{/if}
-			</div>
-		{/if}
+					<div class="farm-impact-table">
+						{#each tierQuotes as tq (tq.amount)}
+							<div class="farm-impact-row">
+								<span class="fir-amount">{formatCp(tq.amount)} CP</span>
+								<span class="fir-out">{tq.hryvniaOut}¥</span>
+								<span class="fir-impact">{tq.impactPct !== null ? `${tq.impactPct.toFixed(1)}%` : '—'}</span>
+							</div>
+						{/each}
+					</div>
+				</div>
+			{/if}
+		</div>
 	</div>
 {/if}
 
@@ -399,11 +553,12 @@
 
 	.farm-convert-row {
 		display: flex;
+		flex-wrap: wrap;
 		gap: var(--space-sm);
 		align-items: center;
 	}
 	.farm-convert-input {
-		flex: 1;
+		flex: 1 1 100%;
 		background: var(--bg-dominant);
 		border: 2px solid var(--border-secondary);
 		border-radius: 8px;
@@ -412,6 +567,28 @@
 		font-family: var(--font-numeric);
 		font-size: var(--font-heading-size);
 	}
+	.farm-convert-row .chip {
+		flex: 1;
+	}
+	.farm-convert-preview {
+		min-height: 20px;
+		display: flex;
+		align-items: center;
+	}
+	.farm-preview-val {
+		font-family: var(--font-numeric);
+		font-size: var(--font-heading-size);
+		color: var(--accent-cyan);
+		font-weight: 900;
+	}
+	.farm-preview-err {
+		font-size: var(--font-body-size);
+		color: var(--destructive-text);
+		font-family: var(--font-body);
+	}
+	.farm-convert-btn {
+		width: 100%;
+	}
 	.farm-convert-result {
 		font-family: var(--font-numeric);
 		font-size: var(--font-heading-size);
@@ -419,9 +596,50 @@
 		font-weight: 900;
 	}
 
-	.farm-market-chart {
+	.farm-market-chart,
+	.farm-impact-chart {
 		width: 100%;
 		height: 32px;
 		margin-top: var(--space-xs);
+	}
+	.farm-chart-range {
+		display: flex;
+		justify-content: space-between;
+		font-size: 11px;
+		color: var(--text-muted);
+		font-family: var(--font-body);
+	}
+
+	.farm-impact {
+		border-top: 1px solid var(--border-secondary);
+		padding-top: var(--space-sm);
+		margin-top: var(--space-xs);
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-xs);
+	}
+	.farm-impact-table {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
+	.farm-impact-row {
+		display: grid;
+		grid-template-columns: 1fr 1fr auto;
+		gap: var(--space-sm);
+		font-family: var(--font-numeric);
+		font-size: 12px;
+		padding: 4px 0;
+	}
+	.fir-amount {
+		color: var(--text-secondary);
+	}
+	.fir-out {
+		color: var(--accent-cyan);
+		text-align: right;
+	}
+	.fir-impact {
+		color: var(--destructive-text);
+		text-align: right;
 	}
 </style>

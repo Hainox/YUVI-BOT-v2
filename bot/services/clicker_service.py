@@ -441,11 +441,26 @@ async def buy_cp(
     return {"hryvnia_in": hryvnia_in, "cp_out": cp_out, "price": price}
 
 
-async def get_market_state(session: AsyncSession, chat_id: int, history_limit: int = 200) -> dict:
+async def get_market_state(
+    session: AsyncSession,
+    chat_id: int,
+    history_limit: int = 200,
+    quote_amounts: list[int] | None = None,
+) -> dict:
     """Read-путь AMM-рынка (get-or-create пула + текущий курс + ограниченная
     история котировок — до `history_limit` последних снапшотов
     `ClickerMarketPrice`, по умолчанию 200). Самодостаточная read-операция —
-    коммитит сама (форма `economy_service.get_balance`)."""
+    коммитит сама (форма `economy_service.get_balance`).
+
+    `quote_amounts` (Claude's discretion, withdraw-UX план 2026-07-23):
+    опциональный список сумм CP — для каждой тем же залоченным снапшотом
+    пула считается `quote_convert`-превью БЕЗ исполнения свопа (чистая
+    функция, резервы пула не мутируются). Даёт клиенту таблицу деградации
+    курса (price impact) и живой "получишь ≈ X" ДО подтверждения обмена, не
+    открывая отдельный мутирующий эндпоинт. `effective_price`/`impact` тут
+    же не считаются — фронтенд выводит их из `price` + `hryvnia_out`, тот же
+    паттерн "клиентское зеркало формулы", что уже используют
+    tap_level/upgrade-cost на экране фермы."""
     pool = await _get_or_create_pool(session, chat_id)
     price = _pool_price(pool)
 
@@ -458,6 +473,13 @@ async def get_market_state(session: AsyncSession, chat_id: int, history_limit: i
         )
     ).scalars().all()
 
+    quotes = []
+    for amount in quote_amounts or []:
+        if amount <= 0:
+            continue
+        hryvnia_out, _new_r_cp, _new_r_h = quote_convert(pool, amount)
+        quotes.append({"cp_in": amount, "hryvnia_out": hryvnia_out})
+
     await session.commit()
     return {
         "price": price,
@@ -466,6 +488,7 @@ async def get_market_state(session: AsyncSession, chat_id: int, history_limit: i
         "history": [
             {"price": row.price, "created_at": row.created_at} for row in reversed(history_rows)
         ],
+        "quotes": quotes,
     }
 
 

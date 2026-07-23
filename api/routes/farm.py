@@ -23,6 +23,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 from fastapi import Depends
 from fastapi import HTTPException
+from fastapi import Query
 from fastapi import Request
 from pydantic import BaseModel
 from pydantic import Field
@@ -127,6 +128,9 @@ async def post_buy(
 
 
 @router.get("/api/v1/farm/market")
-async def get_market(auth: AuthContext = Depends(require_membership)) -> dict:
+async def get_market(
+    amounts: list[int] = Query(default=[]),
+    auth: AuthContext = Depends(require_membership),
+) -> dict:
     async with SessionLocal() as session:
-        return await clicker_service.get_market_state(session, auth.chat_id)
+        return await clicker_service.get_market_state(session, auth.chat_id, quote_amounts=amounts or None)
