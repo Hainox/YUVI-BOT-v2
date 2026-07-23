@@ -6,7 +6,11 @@ from pydantic_settings import SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    # extra="ignore": .env — общий файл для этого приложения И docker-compose/
+    # nginx (DOMAIN/CERTBOT_EMAIL/COMPOSE_PROFILES/STAGING — только для HTTPS-
+    # деплоя, см. docker-compose.yml/nginx/https.conf.template); приложение их
+    # не читает, но обязано терпеть их присутствие в общем .env.
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     bot_token: str = Field(alias="BOT_TOKEN")
     chat_id: int = Field(alias="CHAT_ID")
