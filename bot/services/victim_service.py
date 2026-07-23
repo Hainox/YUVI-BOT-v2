@@ -15,20 +15,31 @@
 
 from __future__ import annotations
 
+import html
+import logging
 from datetime import datetime
 from datetime import timedelta
 
+from aiogram import Bot
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from bot.config import settings
 from bot.services import daily_pick_service
 from bot.services import economy_service
+from bot.services import tag_service
+from common.db.session import SessionLocal
 from common.models.daily_pick import DailyPick
 from common.models.daily_stat import DailyStat
+from common.models.user import User
+
+logger = logging.getLogger(__name__)
 
 VICTIM_PRIZE = 228  # D-05: мемная сумма (та же серия, что AWARDS-02 228/322)
 VICTIM_DEBUFF_HOURS = 24  # D-06
 VICTIM_FEE_MULTIPLIER = 2.0  # D-06
+VICTIM_TITLE = "Пидор дня"
 
 
 async def _active_candidates(session: AsyncSession, chat_id: int) -> list[int]:
@@ -112,3 +123,85 @@ async def is_active_victim(session: AsyncSession, chat_id: int, user_id: int) ->
         )
     ).scalar_one_or_none()
     return exists is not None
+
+
+# --- register_daily_autopost (APScheduler, форма lottery_service.register_daily_reset) --
+
+_AUTOPOST_JOB_ID = "victim_daily_autopost"
+
+
+def register_daily_autopost(scheduler: AsyncIOScheduler, bot: Bot) -> None:
+    """Регистрирует проактивный автопост «Жертвы дня» 10:00 МСК (cron), по
+    образцу lottery_service.register_daily_reset/tag_service.register_title_expiry:
+    своя SessionLocal, broad-except — тик обязан пережить любую ошибку и не
+    уронить планировщик. coalesce+max_instances=1 — пропущенные срабатывания
+    не постят несколько раз. Титул выдаётся ТОЛЬКО при is_new=True (та же
+    идемпотентность, что и ручная /victim — если жертву уже выбрали вручную
+    раньше этого же дня, тик просто анонсирует уже выданный приз, не
+    перевыдаёт титул и не платит повторно)."""
+
+    async def _job() -> None:
+        async with SessionLocal() as session:
+            try:
+                result = await run_victim(session, settings.chat_id)
+                if result["winner"] is None:
+                    return
+
+                name = (
+                    await session.execute(
+                        select(User.first_name).where(User.id == result["winner"])
+                    )
+                ).scalar_one_or_none() or str(result["winner"])
+                name = html.escape(name)
+
+                if not result["is_new"]:
+                    await bot.send_message(
+                        settings.chat_id,
+                        f"🎯 {VICTIM_TITLE} уже выбран: <b>{name}</b>\n"
+                        f"Приз {VICTIM_PRIZE} ювиков уже выплачен, титул и дебафф действуют 24ч.",
+                        parse_mode="HTML",
+                    )
+                    return
+
+                try:
+                    await tag_service.grant_title(
+                        bot,
+                        session,
+                        settings.chat_id,
+                        result["winner"],
+                        VICTIM_TITLE,
+                        source="victim",
+                        expires_at=result["expires_at"],
+                    )
+                    await session.commit()
+                except Exception:  # noqa: BLE001 - форма victim.py: приз уже выплачен run_victim
+                    await session.rollback()
+                    logger.exception(
+                        "victim_daily_autopost: не удалось выдать тег chat_id=%s user_id=%s",
+                        settings.chat_id,
+                        result["winner"],
+                    )
+
+                await bot.send_message(
+                    settings.chat_id,
+                    f"🎯 <b>{VICTIM_TITLE}: {name}</b>\n"
+                    f"Приз: {result['prize']} ювиков из банка чата.\n"
+                    f"Титул «{VICTIM_TITLE}» на 24ч.\n"
+                    "Дебафф: удвоенная комиссия перевода на 24ч.",
+                    parse_mode="HTML",
+                )
+            except Exception:  # noqa: BLE001 - тик обязан пережить любую ошибку
+                logger.exception("victim_daily_autopost: тик упал")
+
+    scheduler.add_job(
+        _job,
+        "cron",
+        hour=10,
+        minute=0,
+        timezone=daily_pick_service.MSK,
+        coalesce=True,
+        max_instances=1,
+        misfire_grace_time=3600,
+        id=_AUTOPOST_JOB_ID,
+        replace_existing=True,
+    )

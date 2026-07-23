@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 router = Router()
 
-TITLE = "Жертва дня"
+TITLE = victim_service.VICTIM_TITLE
 
 
 async def _display_name(session: AsyncSession, user_id: int) -> str:
@@ -57,7 +57,7 @@ async def victim_command(message: Message, session: AsyncSession, bot: Bot) -> N
 
     if not result["is_new"]:
         await message.answer(
-            f"Сегодняшняя жертва дня уже выбрана: <b>{name}</b> "
+            f"Сегодняшний {TITLE} уже выбран: <b>{name}</b> "
             "(приз уже выплачен, титул и дебафф действуют 24ч).",
             parse_mode="HTML",
         )
@@ -90,7 +90,7 @@ async def victim_command(message: Message, session: AsyncSession, bot: Bot) -> N
         )
 
     await message.answer(
-        f"🎯 <b>Жертва дня: {name}</b>\n"
+        f"🎯 <b>{TITLE}: {name}</b>\n"
         f"Приз: {result['prize']} ювиков из банка чата.\n"
         f"Титул «{TITLE}» на 24ч.\n"
         "Дебафф: удвоенная комиссия перевода на 24ч.",

@@ -64,7 +64,7 @@ _PUBLIC_COMMANDS: list[BotCommand] = [
     BotCommand(command="twin_pause", description="Приостановить AI-двойника"),
     BotCommand(command="twin_resume", description="Возобновить AI-двойника"),
     BotCommand(command="twin_optout", description="Отключить AI-двойника"),
-    BotCommand(command="victim", description="Жертва дня"),
+    BotCommand(command="victim", description="Пидор дня"),
     BotCommand(command="awards", description="Итоги дня (номинации)"),
     BotCommand(command="yuvi", description="Yuvi_Yuvi дня (лотерея)"),
 ]
