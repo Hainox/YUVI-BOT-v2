@@ -454,6 +454,15 @@
 		gap: 6px;
 	}
 	.bj-card {
+		/* Explicit display required: this is a <span>, and a bare <span> is
+		   inline, which ignores width/height entirely (CSS spec). It used to
+		   sit directly inside the flex .bj-cards container, which blockifies
+		   direct flex children automatically — but the entrance/flip wrappers
+		   below now nest it one level deeper, outside that automatic
+		   blockification, so it needs its own display here or it collapses
+		   to 0x0 (found live in prod: cards render invisible, badges pile up
+		   at the page's top-left corner instead of inside the card). */
+		display: inline-block;
 		position: relative;
 		width: 60px;
 		height: 84px;
