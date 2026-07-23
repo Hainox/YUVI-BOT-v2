@@ -50,19 +50,19 @@ async def run() -> None:
 
     await setup_bot_commands(bot)
 
-    # TEMPORARY: авто-закреп меню отключён по просьбе пользователя — откатить,
-    # раскомментировав блок ниже.
-    # Короткая самодостаточная сессия только для авто-закрепа (D-01/D-02) —
-    # форма scheduler.py::register (сам открывает SessionLocal), в run() нет
-    # долгоживущей AsyncSession.
-    # Best-effort: авто-закреп — это одноразовая UX-плюшка (входное сообщение),
-    # а не критичная для работы бота операция, поэтому любая непредвиденная
-    # ошибка здесь логируется и не должна блокировать старт поллинга (CR-01).
-    # try:
-    #     async with SessionLocal() as pinned_menu_session:
-    #         await ensure_pinned_menu(bot, pinned_menu_session, settings.chat_id)
-    # except Exception:
-    #     logger.exception("run(): ensure_pinned_menu failed, continuing startup without pin")
+    # Короткая самодостаточная сессия только для авто-поста входного сообщения
+    # (D-01/D-02) — форма scheduler.py::register (сам открывает SessionLocal),
+    # в run() нет долгоживущей AsyncSession.
+    # Best-effort: это одноразовая UX-плюшка (входное сообщение с кнопкой
+    # Mini App, отправляется и закрепляется — если есть право — ровно один
+    # раз за всю историю чата, см. pinned_menu_service.py), а не критичная
+    # для работы бота операция, поэтому любая непредвиденная ошибка здесь
+    # логируется и не должна блокировать старт поллинга (CR-01).
+    try:
+        async with SessionLocal() as pinned_menu_session:
+            await ensure_pinned_menu(bot, pinned_menu_session, settings.chat_id)
+    except Exception:
+        logger.exception("run(): ensure_pinned_menu failed, continuing startup without pin")
 
     # Middleware регистрируется до подключения роутеров ниже: DbSession — для
     # каждого апдейта, Collector — только для message-апдейтов (DATA-01, команды

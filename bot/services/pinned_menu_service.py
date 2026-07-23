@@ -1,11 +1,21 @@
-"""Автозакреп входного сообщения Mini App при старте бота (D-01/D-02/D-03).
+"""Автопост входного сообщения Mini App при старте бота (D-01/D-02/D-03).
 
-При старте проверяет, есть ли уже своё закреплённое сообщение (message_id
-хранится в `bot_settings` через `settings_service`, ключ `PINNED_MESSAGE_KEY`);
-если найдено и всё ещё реально закреплено этим же сообщением — no-op
-(идемпотентно, D-02). Иначе отправляет сообщение с inline URL-кнопкой
-deep-link (`t.me/<bot>?startapp=<chat_id>`), закрепляет его и сохраняет
-новый message_id.
+При старте проверяет, отправлялось ли уже это сообщение (message_id хранится
+в `bot_settings` через `settings_service`, ключ `PINNED_MESSAGE_KEY`); если
+да — no-op НАВСЕГДА, без повторной проверки текущего состояния закрепа чата.
+Иначе отправляет сообщение с inline URL-кнопкой deep-link
+(`t.me/<bot>?startapp=<chat_id>`), пробует закрепить и сохраняет message_id.
+
+Раньше идемпотентность сверялась с `chat.pinned_message` (это ТОЛЬКО самое
+верхнее закреплённое сообщение чата, не список всех пинов) — если админ
+закреплял что-то своё поверх (или у бота изначально нет права
+`can_pin_messages`, как в этом чате — попытка закрепа тихо проваливается),
+`chat.pinned_message` переставал совпадать с нашим message_id, и при каждом
+рестарте бота сообщение репостилось заново, засоряя чат дублями и/или
+вытесняя чужие закрепы. Зафиксировано на живом чате при частых рестартах во
+время деплоя. Теперь закреп — best-effort попытка ровно один раз в жизни
+чата; дальше сообщение просто существует (закреплённым или нет — не важно),
+рестарты бота его больше не трогают.
 
 Вызывается из `bot/main.py::run()` сразу после `setup_bot_commands(bot)`, с
 собственной короткой `SessionLocal()`-сессией (форма `scheduler.py::
@@ -40,19 +50,10 @@ _BUTTON_LABEL = "🎰 Открыть казино"
 
 
 async def ensure_pinned_menu(bot: Bot, session: AsyncSession, chat_id: int) -> None:
-    """Постит и закрепляет входное сообщение казино ровно один раз (D-02)."""
+    """Постит входное сообщение казино ровно один раз за всю историю чата (D-02)."""
     stored_id = await settings_service.get_setting(session, chat_id, PINNED_MESSAGE_KEY, default="")
     if stored_id:
-        try:
-            chat = await bot.get_chat(chat_id)
-            if chat.pinned_message is not None and chat.pinned_message.message_id == int(stored_id):
-                return  # уже закреплено этим же сообщением — не постим повторно
-        except TelegramBadRequest:
-            logger.info(
-                "ensure_pinned_menu: getChat(%s) не удался (сообщение удалено/чат "
-                "недоступен) — постим заново",
-                chat_id,
-            )
+        return  # уже отправляли раньше — больше никогда не трогаем закреп чата
 
     bot_user = await bot.get_me()
     url = f"https://t.me/{bot_user.username}?startapp={chat_id}"
