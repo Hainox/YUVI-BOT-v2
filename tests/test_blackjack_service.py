@@ -107,24 +107,24 @@ async def _set_turn_deadline_past(session, game_id: int) -> None:
 
 
 def test_hand_value_and_soft_ace():
-    value, soft = blackjack_engine.hand_value(["A", "K"])
+    value, soft = blackjack_engine.hand_value(["A♠", "K♥"])
     assert (value, soft) == (21, True)
 
-    value, soft = blackjack_engine.hand_value(["A", "6"])
+    value, soft = blackjack_engine.hand_value(["A♠", "6♥"])
     assert (value, soft) == (17, True)  # soft 17
 
-    value, soft = blackjack_engine.hand_value(["A", "6", "10"])
+    value, soft = blackjack_engine.hand_value(["A♠", "6♥", "10♣"])
     assert (value, soft) == (17, False)  # туз перешёл в 1, чтобы не было перебора
 
-    assert blackjack_engine.is_natural(["A", "K"]) is True
-    assert blackjack_engine.is_natural(["9", "9"]) is False
-    assert blackjack_engine.is_natural(["A", "K", "2"]) is False  # не 2 карты
+    assert blackjack_engine.is_natural(["A♠", "K♥"]) is True
+    assert blackjack_engine.is_natural(["9♠", "9♣"]) is False
+    assert blackjack_engine.is_natural(["A♠", "K♥", "2♣"]) is False  # не 2 карты
 
 
 def test_dealer_stands_on_soft_17():
-    deck = ["9", "9"]
-    final_deck, dealer_final = blackjack_engine.dealer_play(list(deck), ["A", "6"])
-    assert dealer_final == ["A", "6"]  # soft 17 — дилер НЕ добирает (D-03 S17)
+    deck = ["9♠", "9♣"]
+    final_deck, dealer_final = blackjack_engine.dealer_play(list(deck), ["A♠", "6♥"])
+    assert dealer_final == ["A♠", "6♥"]  # soft 17 — дилер НЕ добирает (D-03 S17)
     assert final_deck == deck  # колода не тронута
 
 
@@ -138,7 +138,7 @@ async def test_start_deals_two_each_and_debits(session, monkeypatch):
     await _ensure_user(session, user_id)
     balance_before = await _fund(session, chat_id, user_id)
 
-    monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["8", "4", "7", "5"]))
+    monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["8♠", "4♠", "7♠", "5♠"]))
 
     bet = 100
     result = await casino_service.start_blackjack(
@@ -167,7 +167,7 @@ async def test_start_idempotent_on_idem_key(session, monkeypatch):
     await _ensure_user(session, user_id)
     balance_before = await _fund(session, chat_id, user_id)
 
-    monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["8", "4", "7", "5"]))
+    monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["8♠", "4♠", "7♠", "5♠"]))
 
     idem_key = "test_bj_start_idem"
     bet = 100
@@ -200,7 +200,7 @@ async def test_natural_pays_2_5x(session, monkeypatch):
     await _seed_bank(session, chat_id, 100_000, "test_bj_natural_seed_bank")
 
     # p1=A, p2=K (натурал 21), d1=8, d2=4 (12, не натурал)
-    monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["A", "K", "8", "4"]))
+    monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["A♠", "K♠", "8♠", "4♠"]))
 
     bet = 100
     result = await casino_service.start_blackjack(session, chat_id, user_id, bet, "test_bj_natural")
@@ -225,7 +225,7 @@ async def test_regular_win_pays_2x(session, monkeypatch):
     await _seed_bank(session, chat_id, 100_000, "test_bj_win_seed_bank")
 
     # p1=10,p2=10 (20, не натурал); d1=10,d2=5 (15); стенд -> дилер добирает 2 -> 17
-    monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["10", "10", "10", "5", "2"]))
+    monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["10♠", "10♣", "10♥", "5♠", "2♠"]))
 
     bet = 100
     started = await casino_service.start_blackjack(session, chat_id, user_id, bet, "test_bj_win")
@@ -250,7 +250,7 @@ async def test_push_refunds_1x(session, monkeypatch):
     await _seed_bank(session, chat_id, 100_000, "test_bj_push_seed_bank")
 
     # p1=9,p2=9 (18); d1=9,d2=9 (18, дилер стоит сразу — уже >=17)
-    monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["9", "9", "9", "9"]))
+    monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["9♠", "9♣", "9♥", "9♦"]))
 
     bet = 100
     started = await casino_service.start_blackjack(session, chat_id, user_id, bet, "test_bj_push")
@@ -273,7 +273,7 @@ async def test_bust_loses(session, monkeypatch):
     await _seed_bank(session, chat_id, 100_000, "test_bj_bust_seed_bank")
 
     # p1=10,p2=6 (16); d1=7,d2=5 (12, неважно); hit-карта=10 -> 26 перебор
-    monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["10", "6", "7", "5", "10"]))
+    monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["10♠", "6♠", "7♠", "5♠", "10♣"]))
 
     bet = 100
     started = await casino_service.start_blackjack(session, chat_id, user_id, bet, "test_bj_bust")
@@ -301,7 +301,7 @@ async def test_double_doubles_stake_one_card_then_stands(session, monkeypatch):
     # p1=8,p2=4 (12); d1=6,d2=5 (11); double draws 9 -> player 21; dealer
     # добирает 6 -> 17 (стоит)
     monkeypatch.setattr(
-        casino_service, "_rng", _FixedDeckRng(["8", "4", "6", "5", "9", "6"])
+        casino_service, "_rng", _FixedDeckRng(["8♠", "4♠", "6♠", "5♠", "9♠", "6♣"])
     )
 
     bet = 100
@@ -340,7 +340,7 @@ async def test_double_raises_when_debit_replayed(session, monkeypatch):
     balance_before = await _fund(session, chat_id, user_id)
     await _seed_bank(session, chat_id, 100_000, "test_bj_double_replay_seed_bank")
 
-    monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["8", "4", "6", "5", "9", "6"]))
+    monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["8♠", "4♠", "6♠", "5♠", "9♠", "6♣"]))
 
     bet = 100
     started = await casino_service.start_blackjack(session, chat_id, user_id, bet, "test_bj_double_replay")
@@ -370,7 +370,7 @@ async def test_action_on_settled_hand_is_idempotent(session, monkeypatch):
     await _fund(session, chat_id, user_id)
     await _seed_bank(session, chat_id, 100_000, "test_bj_idem_action_seed_bank")
 
-    monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["A", "K", "8", "4"]))
+    monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["A♠", "K♠", "8♠", "4♠"]))
 
     bet = 100
     started = await casino_service.start_blackjack(session, chat_id, user_id, bet, "test_bj_idem_action")
@@ -399,7 +399,7 @@ async def test_timeout_auto_stands(session, monkeypatch):
     await _seed_bank(session, chat_id, 100_000, "test_bj_timeout_seed_bank")
 
     # p1=10,p2=10 (20); d1=10,d2=5 (15); авто-стенд -> дилер добирает 2 -> 17
-    monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["10", "10", "10", "5", "2"]))
+    monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["10♠", "10♣", "10♥", "5♠", "2♠"]))
 
     bet = 100
     started = await casino_service.start_blackjack(session, chat_id, user_id, bet, "test_bj_timeout")
@@ -438,11 +438,11 @@ async def test_timeout_batch_does_not_clobber_concurrently_settled_row(session, 
     await _fund(session, chat_id, user_b)
     await _seed_bank(session, chat_id, 100_000, "test_bj_batch_race_seed_bank")
 
-    monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["10", "10", "10", "5", "2"]))
+    monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["10♠", "10♣", "10♥", "5♠", "2♠"]))
     game_a = await casino_service.start_blackjack(session, chat_id, user_a, 100, "test_bj_batch_race_a")
     await _set_turn_deadline_past(session, game_a["id"])
 
-    monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["9", "9", "9", "9"]))
+    monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["9♠", "9♣", "9♥", "9♦"]))
     game_b = await casino_service.start_blackjack(session, chat_id, user_b, 100, "test_bj_batch_race_b")
     await _set_turn_deadline_past(session, game_b["id"])
 
@@ -493,7 +493,7 @@ async def test_payout_capped_to_bank(session, monkeypatch):
     small_bank = 5
     await _seed_bank(session, chat_id, small_bank, "test_bj_bank_cap_seed_bank")
 
-    monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["A", "K", "8", "4"]))
+    monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["A♠", "K♠", "8♠", "4♠"]))
 
     bet = 1000
     result = await casino_service.start_blackjack(session, chat_id, user_id, bet, "test_bj_bank_cap")
