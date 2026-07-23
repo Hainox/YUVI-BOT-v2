@@ -204,6 +204,243 @@ async def test_list_markets_missing_init_data_returns_401():
     assert resp.status_code == 401
 
 
+# --- POST /api/v1/markets (создание рынка, D-05) --------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_market_valid_returns_200_debits_fee_and_creates_options(monkeypatch):
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    creator_id = 400201
+    await _ensure_user(creator_id)
+    await _fund(creator_id)
+    init_data = _build_init_data(user_id=creator_id)
+    balance_before = await _get_balance(creator_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/markets",
+            params={"chat_id": CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={
+                "question": "Пойдёт ли завтра снег?",
+                "options": ["Да", "Нет"],
+                "duration": "1h",
+                "ref_id": str(uuid.uuid4()),
+            },
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["question"] == "Пойдёт ли завтра снег?"
+    assert body["status"] == "open"
+    assert {opt["label"] for opt in body["options"]} == {"Да", "Нет"}
+    assert "user_balance_after" in body
+
+    balance_after = await _get_balance(creator_id)
+    assert balance_before - balance_after == settings.market_creation_fee
+
+    async with SessionLocal() as verify_session:
+        market_row = (
+            await verify_session.execute(select(Market).where(Market.id == body["id"]))
+        ).scalar_one()
+    assert market_row.chat_id == CHAT_ID
+    assert market_row.creator_id == creator_id
+
+
+@pytest.mark.asyncio
+async def test_create_market_question_too_short_returns_400(monkeypatch):
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    creator_id = 400202
+    await _ensure_user(creator_id)
+    await _fund(creator_id)
+    init_data = _build_init_data(user_id=creator_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/markets",
+            params={"chat_id": CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={"question": "Да?", "options": ["Да", "Нет"], "duration": "1h", "ref_id": str(uuid.uuid4())},
+        )
+
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_create_market_single_option_returns_400(monkeypatch):
+    """D-05: меньше MIN_OPTIONS=2 вариантов — InvalidMarketArg из сервиса,
+    роут отвечает 400 (не 422 — CreateMarketBody намеренно не дублирует этот
+    бизнес-лимит в Pydantic, см. докстринг модели)."""
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    creator_id = 400203
+    await _ensure_user(creator_id)
+    await _fund(creator_id)
+    init_data = _build_init_data(user_id=creator_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/markets",
+            params={"chat_id": CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={
+                "question": "Валидный вопрос рынка?",
+                "options": ["Единственный вариант"],
+                "duration": "1h",
+                "ref_id": str(uuid.uuid4()),
+            },
+        )
+
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_create_market_bad_duration_returns_400(monkeypatch):
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    creator_id = 400204
+    await _ensure_user(creator_id)
+    await _fund(creator_id)
+    init_data = _build_init_data(user_id=creator_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/markets",
+            params={"chat_id": CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={
+                "question": "Валидный вопрос рынка?",
+                "options": ["Да", "Нет"],
+                "duration": "notaduration",
+                "ref_id": str(uuid.uuid4()),
+            },
+        )
+
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_create_market_insufficient_funds_returns_400(monkeypatch):
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    creator_id = 400205
+    await _ensure_user(creator_id)
+    # НЕ вызываем _fund — свежий пользователь получает только economy_start_bonus,
+    # который может быть ниже settings.market_creation_fee в тестовом окружении;
+    # чтобы не зависеть от значения бонуса, явно списываем баланс до нуля.
+    async with SessionLocal() as db_session:
+        balance = await economy_service.get_balance(db_session, CHAT_ID, creator_id)
+        if balance > 0:
+            await economy_service.debit(
+                db_session,
+                CHAT_ID,
+                creator_id,
+                balance,
+                kind="test_drain",
+                ref_id=f"test_drain:{uuid.uuid4()}",
+            )
+            await db_session.commit()
+    init_data = _build_init_data(user_id=creator_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/markets",
+            params={"chat_id": CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={
+                "question": "Валидный вопрос рынка?",
+                "options": ["Да", "Нет"],
+                "duration": "1h",
+                "ref_id": str(uuid.uuid4()),
+            },
+        )
+
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_create_market_repeated_ref_id_returns_409(monkeypatch):
+    """Повтор ref_id создания — DuplicateRequest из сервиса (в отличие от
+    place_bet, create_market НЕ возвращает None на повтор), роут отвечает 409
+    тем же кодом, что уже занят casino_service.DuplicateRound в games.py."""
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    creator_id = 400206
+    await _ensure_user(creator_id)
+    await _fund(creator_id)
+    init_data = _build_init_data(user_id=creator_id)
+    ref_id = str(uuid.uuid4())
+    payload = {
+        "question": "Валидный вопрос рынка?",
+        "options": ["Да", "Нет"],
+        "duration": "1h",
+        "ref_id": ref_id,
+    }
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        first = await client.post(
+            "/api/v1/markets",
+            params={"chat_id": CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json=payload,
+        )
+        assert first.status_code == 200
+
+        second = await client.post(
+            "/api/v1/markets",
+            params={"chat_id": CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json=payload,
+        )
+
+    assert second.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_create_market_ignores_foreign_creator_id_in_body_idor(monkeypatch):
+    """T-04.2-02 (IDOR): creator_id берётся ТОЛЬКО из AuthContext — поддельное
+    поле в теле запроса не должно повлиять на то, кто на самом деле создатель
+    и с чьего баланса спишется комиссия."""
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    attacker_id = 400207
+    victim_id = 400208
+    await _ensure_user(attacker_id)
+    await _fund(attacker_id)
+    await _ensure_user(victim_id)
+    await _fund(victim_id)
+    init_data = _build_init_data(user_id=attacker_id)
+    victim_before = await _get_balance(victim_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/markets",
+            params={"chat_id": CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={
+                "question": "Валидный вопрос рынка?",
+                "options": ["Да", "Нет"],
+                "duration": "1h",
+                "ref_id": str(uuid.uuid4()),
+                "creator_id": victim_id,  # атакующий пытается подставить чужой creator_id
+                "user_id": victim_id,
+            },
+        )
+
+    assert resp.status_code == 200
+
+    async with SessionLocal() as verify_session:
+        market_row = (
+            await verify_session.execute(select(Market).where(Market.id == resp.json()["id"]))
+        ).scalar_one()
+    assert market_row.creator_id == attacker_id
+
+    victim_after = await _get_balance(victim_id)
+    assert victim_after == victim_before  # жертва не затронута вовсе
+
+
 # --- GET /api/v1/markets/{id} --------------------------------------------
 
 

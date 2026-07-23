@@ -8,11 +8,19 @@
 молча игнорирует, роут никогда его не читает.
 
 Исключения `markets_service`/`economy_service` маппятся на HTTP:
-`InvalidMarketArg` -> 400, `MarketClosed` -> 409, `MarketNotFound` -> 404,
-`economy_service.InsufficientFunds` -> 400 (RESEARCH.md Route-to-Service
-Mapping). `place_bet` возвращает `None` на повтор `ref_id` (идемпотентный
-no-op, а НЕ ошибка) — роут отвечает тем же успешным телом с
-`replayed: true`, деньги повторно не двигаются.
+`InvalidMarketArg`/`DurationError` -> 400, `MarketClosed` -> 409,
+`MarketNotFound` -> 404, `economy_service.InsufficientFunds` -> 400
+(RESEARCH.md Route-to-Service Mapping). `place_bet` возвращает `None` на
+повтор `ref_id` (идемпотентный no-op, а НЕ ошибка) — роут отвечает тем же
+успешным телом с `replayed: true`, деньги повторно не двигаются.
+
+`POST /api/v1/markets` (создание рынка, D-05) — единственная операция
+модуля, где повтор `ref_id` НЕ возвращает `None`, а поднимает
+`DuplicateRequest` (`create_market` уже создал рынок при первом успешном
+вызове и это не идемпотентная запись поверх существующей строки) —
+маппится на 409, тем же кодом, что уже занят `casino_service.DuplicateRound`
+в `api/routes/games.py` для того же класса "конфликт с уже обработанным
+запросом".
 
 `GET /api/v1/markets/portfolio` регистрируется ДО `GET /api/v1/markets/
 {market_id}` в этом файле — иначе Starlette матчил бы литеральный путь
@@ -52,10 +60,61 @@ class PlaceBetBody(BaseModel):
     ref_id: str
 
 
+class CreateMarketBody(BaseModel):
+    # Намеренно БЕЗ Field(min_length=...) на question/options (в отличие от
+    # PlaceBetBody.amount's Field(ge=1) — там это защита от отрицательного
+    # числа, класс входа, который market_service ниже даже не пытается
+    # прогнать через бизнес-диапазон осмысленно). Здесь длина/количество —
+    # ПОЛНОЦЕННЫЕ бизнес-лимиты D-05 (QUESTION_MIN_LEN/MAX_LEN,
+    # MIN_OPTIONS/MAX_OPTIONS), которые markets_service.create_market уже
+    # корректно проверяет на 0/малых значениях без исключений — дублирование
+    # тех же порогов в Pydantic дало бы 422 вместо задокументированного 400
+    # для ровно того кейса ("меньше двух вариантов"), который должен идти
+    # через единую таблицу маппинга InvalidMarketArg -> 400 этого файла.
+    question: str
+    options: list[str]
+    duration: str
+    ref_id: str
+
+
 @router.get("/api/v1/markets")
 async def list_markets(auth: AuthContext = Depends(require_membership)) -> list[dict]:
     async with SessionLocal() as session:
         return await markets_service.get_open_markets(session, auth.chat_id)
+
+
+@router.post("/api/v1/markets")
+async def post_create_market(
+    body: CreateMarketBody,
+    request: Request,
+    auth: AuthContext = Depends(require_membership),
+) -> dict:
+    async with SessionLocal() as session:
+        try:
+            market = await markets_service.create_market(
+                session,
+                auth.chat_id,
+                auth.user_id,
+                body.question,
+                body.options,
+                body.duration,
+                body.ref_id,
+            )
+        except (markets_service.DurationError, markets_service.InvalidMarketArg) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except economy_service.InsufficientFunds as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except markets_service.DuplicateRequest as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+        detail = await markets_service.get_market_detail(session, auth.chat_id, market.id)
+
+        balance = await economy_service.get_balance(session, auth.chat_id, auth.user_id)
+        await balance_events.publish_balance(
+            request.app.state.redis, auth.chat_id, auth.user_id, balance
+        )
+        detail["user_balance_after"] = balance
+        return detail
 
 
 @router.get("/api/v1/markets/portfolio")

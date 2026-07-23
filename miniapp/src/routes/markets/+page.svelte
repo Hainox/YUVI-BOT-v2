@@ -58,6 +58,10 @@
 		<div class="menu-sub">ставь на исход, следи за котировкой</div>
 	</div>
 
+	<button type="button" class="mk-create-btn" onclick={() => goto('/markets/create')}>
+		+ создать рынок
+	</button>
+
 	{#if loading}
 		<div class="screen-loading"><span>загрузка рынков…</span></div>
 	{:else if error}
@@ -66,7 +70,7 @@
 		<div class="mk-empty">
 			<div class="mk-empty-jp">しずか</div>
 			<div class="mk-empty-ru">тихо</div>
-			<div class="mk-empty-hint">рынков пока нет. Создай через /market_create в чате — появится здесь.</div>
+			<div class="mk-empty-hint">рынков пока нет — создай первый кнопкой выше.</div>
 		</div>
 	{:else}
 		<div class="mk-list">
@@ -116,6 +120,23 @@
 		margin-top: var(--space-xs);
 		letter-spacing: 0.04em;
 		font-family: var(--font-body);
+	}
+
+	.mk-create-btn {
+		align-self: flex-start;
+		background: transparent;
+		border: 2px solid var(--accent-pink);
+		color: var(--accent-pink);
+		border-radius: 10px;
+		padding: var(--space-xs) var(--space-md);
+		font-family: var(--font-chrome);
+		font-size: var(--font-body-size);
+		font-weight: 700;
+		cursor: pointer;
+		transition: transform 0.08s;
+	}
+	.mk-create-btn:active {
+		transform: scale(0.97);
 	}
 
 	.mk-error {
