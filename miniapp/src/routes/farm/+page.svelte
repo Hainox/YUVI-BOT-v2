@@ -53,6 +53,7 @@
 
 	let loading = $state(true);
 	let error = $state<string | null>(null);
+	let sessionExpired = $state(false);
 
 	let cp = $state(0);
 	let optimisticCp = $state(0);
@@ -168,6 +169,7 @@
 	}
 
 	function tapOnce() {
+		if (sessionExpired) return;
 		optimisticCp += tapLevel;
 		pendingCount += 1;
 		if (batchStartedAt === null) batchStartedAt = Date.now();
@@ -190,7 +192,22 @@
 				})
 			);
 		} catch (err) {
-			error = describeError(err);
+			// initData is captured once per WebApp launch and has a server-side
+			// TTL (MINI_APP_INIT_DATA_TTL_SEC, default 1h) — Telegram gives no
+			// way to refresh it without reopening the app. Without this check,
+			// this interval-driven flush kept retrying every FLUSH_INTERVAL_MS
+			// forever after expiry (found live in prod: two sessions alone
+			// generated 3000+ back-to-back 401s over several hours), while
+			// optimisticCp kept climbing from taps that could never actually be
+			// saved — so stop counting new taps and tell the user to reopen
+			// instead of silently losing them.
+			if (err instanceof ApiError && err.status === 401) {
+				sessionExpired = true;
+				if (flushIntervalId) clearInterval(flushIntervalId);
+				error = 'Сессия истекла — закрой и снова открой мини-приложение';
+			} else {
+				error = describeError(err);
+			}
 		} finally {
 			flushing = false;
 		}
@@ -309,7 +326,7 @@
 			<div class="farm-cp-rate">+{cpPerSec.toFixed(2)} CP/сек (авто + коллекция)</div>
 		</div>
 
-		<button type="button" class="farm-tap-btn" onclick={tapOnce}>
+		<button type="button" class="farm-tap-btn" disabled={sessionExpired} onclick={tapOnce}>
 			<span class="farm-tap-label">ТАП</span>
 			<span class="farm-tap-sub">+{tapLevel} CP за тап</span>
 		</button>
@@ -529,6 +546,10 @@
 	.farm-tap-btn:active {
 		transform: translate(2px, 2px) scale(0.97);
 		box-shadow: 2px 2px 0 #111;
+	}
+	.farm-tap-btn:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
 	}
 	.farm-tap-label {
 		font-family: var(--font-shout);

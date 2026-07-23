@@ -252,11 +252,16 @@
 		display: flex;
 		justify-content: center;
 		padding: var(--space-sm) 0 var(--space-xs);
-		perspective: 900px;
 	}
 	.cf-coin-wrap {
 		width: 128px;
 		height: 128px;
+		/* perspective has to sit here, not on .cf-coin-stage: it only projects
+		   onto an element's DIRECT children's 3D transforms, and .cf-coin-wrap
+		   (default transform-style: flat) sits between the stage and .cf-coin's
+		   rotateY, flattening it before the stage's perspective could ever
+		   apply — the flip rendered as a 2D squish instead of a real 3D turn. */
+		perspective: 900px;
 		transition: transform var(--toss-dur, 260ms) cubic-bezier(0.34, 1.4, 0.64, 1);
 	}
 	/* Pre-flip toss cue: the coin lifts and grows slightly before it starts

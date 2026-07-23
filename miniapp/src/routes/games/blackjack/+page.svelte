@@ -578,6 +578,12 @@
 	   .bj-flip-inner is the rotating unit, the two faces are stacked and
 	   backface-hidden so only one is ever visible at a time. ───────────── */
 	.bj-flip {
+		/* Same accident-of-nesting trap as .bj-card above: currently a direct
+		   flex child so it blockifies automatically, but its sibling wrappers
+		   (.bj-card-enter, .bj-card-settle) both declare this explicitly —
+		   matching them here so a future wrapper around this branch can't
+		   silently collapse it to 0x0 again. */
+		display: inline-block;
 		position: relative;
 		width: 60px;
 		height: 84px;
