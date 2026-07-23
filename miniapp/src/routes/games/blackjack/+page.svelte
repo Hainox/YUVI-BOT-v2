@@ -505,9 +505,9 @@
 	}
 
 	/* ─── Deal / hit entrance — cards fly in from the top of the shoe,
-	   staggered via the --enter-delay custom property set inline (see
-	   DEAL_DELAY_*/script). Wraps the themedCard/cardBack snippets without
-	   touching their markup. ──────────────────────────────────────────── */
+	   staggered via the --enter-delay custom property set inline (see the
+	   DEAL_DELAY_* constants in the script block). Wraps the themedCard/
+	   cardBack snippets without touching their markup. ─────────────────── */
 	.bj-card-enter {
 		display: inline-block;
 		flex-shrink: 0;
