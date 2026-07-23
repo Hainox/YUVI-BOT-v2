@@ -18,6 +18,7 @@ from aiogram.types import BotCommandScopeDefault
 
 _PUBLIC_COMMANDS: list[BotCommand] = [
     BotCommand(command="start", description="Начать работу с ботом"),
+    BotCommand(command="casino", description="Открыть казино (Mini App)"),
     BotCommand(command="balance", description="Мой баланс ювиков"),
     BotCommand(command="transfer", description="Перевести ювики участнику"),
     BotCommand(command="leaderboard", description="Топ по балансу"),

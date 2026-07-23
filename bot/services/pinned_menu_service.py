@@ -49,6 +49,19 @@ _PINNED_MESSAGE_TEXT = (
 _BUTTON_LABEL = "🎰 Открыть казино"
 
 
+def casino_message_content(bot_username: str, chat_id: int) -> tuple[str, InlineKeyboardMarkup]:
+    """Текст + inline-кнопка входного сообщения казино.
+
+    Общий контент для ensure_pinned_menu (один раз при старте) и
+    /casino-команды (bot/handlers/casino.py, по запросу в любой момент).
+    """
+    url = f"https://t.me/{bot_username}?startapp={chat_id}"
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text=_BUTTON_LABEL, url=url)]]
+    )
+    return _PINNED_MESSAGE_TEXT, keyboard
+
+
 async def ensure_pinned_menu(bot: Bot, session: AsyncSession, chat_id: int) -> None:
     """Постит входное сообщение казино ровно один раз за всю историю чата (D-02)."""
     stored_id = await settings_service.get_setting(session, chat_id, PINNED_MESSAGE_KEY, default="")
@@ -56,13 +69,8 @@ async def ensure_pinned_menu(bot: Bot, session: AsyncSession, chat_id: int) -> N
         return  # уже отправляли раньше — больше никогда не трогаем закреп чата
 
     bot_user = await bot.get_me()
-    url = f"https://t.me/{bot_user.username}?startapp={chat_id}"
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text=_BUTTON_LABEL, url=url)]]
-    )
-    message = await bot.send_message(
-        chat_id, _PINNED_MESSAGE_TEXT, reply_markup=keyboard, parse_mode="HTML"
-    )
+    text, keyboard = casino_message_content(bot_user.username, chat_id)
+    message = await bot.send_message(chat_id, text, reply_markup=keyboard, parse_mode="HTML")
     try:
         await bot.pin_chat_message(chat_id, message.message_id, disable_notification=True)
     except (TelegramBadRequest, TelegramForbiddenError):
