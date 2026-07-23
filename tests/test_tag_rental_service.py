@@ -123,8 +123,7 @@ async def test_rent_charges_and_grants(session, bot):
     assert await _get_user_balance(session, chat_id, user_id) == balance_before - price
     assert await _get_bank_balance(session, chat_id) == bank_before + price
 
-    bot.promote_chat_member.assert_awaited_once()
-    bot.set_chat_administrator_custom_title.assert_awaited_once()
+    bot.set_chat_member_tag.assert_awaited_once_with(chat_id=chat_id, user_id=user_id, tag="Босс")
 
     expected_expiry = datetime.utcnow() + timedelta(days=3)
     assert abs((row.expires_at - expected_expiry).total_seconds()) < 5
@@ -146,7 +145,7 @@ async def test_rent_rejects_bad_days(session, bot):
         )
 
     assert await _get_user_balance(session, chat_id, user_id) == balance_before
-    bot.promote_chat_member.assert_not_awaited()
+    bot.set_chat_member_tag.assert_not_awaited()
 
 
 # --- rent_title: title длиннее title_max отклоняется ДО списания (T-05-01) ---
@@ -166,7 +165,7 @@ async def test_rent_rejects_long_title(session, bot):
         )
 
     assert await _get_user_balance(session, chat_id, user_id) == balance_before
-    bot.promote_chat_member.assert_not_awaited()
+    bot.set_chat_member_tag.assert_not_awaited()
 
 
 # --- rent_title: недостаток средств -------------------------------------------
@@ -195,7 +194,7 @@ async def test_rent_insufficient_funds(session, bot):
         )
 
     assert await _get_active_title(session, chat_id, user_id, "rental") is None
-    bot.promote_chat_member.assert_not_awaited()
+    bot.set_chat_member_tag.assert_not_awaited()
 
 
 # --- rent_title: идемпотентность повтора ref_id -------------------------------
@@ -226,8 +225,7 @@ async def test_rent_idempotent_on_retry(session, bot):
 
     assert second.id == first.id
     assert await _get_user_balance(session, chat_id, user_id) == balance_after_first
-    bot.promote_chat_member.assert_not_awaited()
-    bot.set_chat_administrator_custom_title.assert_not_awaited()
+    bot.set_chat_member_tag.assert_not_awaited()
 
 
 # --- WR-01 (05-REVIEW.md): ретрай возвращает ИМЕННО свою строку, не самую свежую --
@@ -335,10 +333,10 @@ async def test_cancel_idempotent(session, bot):
     stored = await _get_active_title(session, chat_id, user_id, "rental")
     assert stored is not None
     assert stored.status == "cancelled"
-    bot.promote_chat_member.assert_awaited()  # демот (снятие тега)
+    bot.set_chat_member_tag.assert_awaited_with(chat_id=chat_id, user_id=user_id, tag=None)  # снятие тега
 
     bot.reset_mock()
     cancelled_again = await tag_rental_service.cancel_rental(session, chat_id, user_id, bot)
     await session.commit()
     assert cancelled_again is False
-    bot.promote_chat_member.assert_not_awaited()
+    bot.set_chat_member_tag.assert_not_awaited()

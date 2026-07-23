@@ -1,8 +1,7 @@
-"""Единственный владелец Telegram custom_title и таблицы `active_titles`
+"""Единственный владелец Telegram member-тега и таблицы `active_titles`
 (TAG-01/02, D-07/D-10) — жертва дня (source='victim', план 05-04) и рынок
 аренды тегов (source='rental', план 05-07) строятся поверх этого модуля, ни
-один из них не зовёт `bot.promote_chat_member`/`bot.set_chat_administrator_
-custom_title` напрямую.
+один из них не зовёт Bot API напрямую.
 
 Контракт порядка блокировок: активная строка `active_titles` того же
 `(chat_id, user_id)` блокируется `FOR UPDATE` ПЕРВОЙ (частичный
@@ -19,21 +18,25 @@ UNIQUE — та же идемпотентная дисциплина, что `ec
 для денег, только здесь конфликт разрешается перечитыванием состояния и
 повтором state machine один раз, а не молчаливым no-op.
 
-Pitfall 1 (verified aiogram 3.27.0): `set_chat_administrator_custom_title`
-работает ТОЛЬКО на админах, реально promoted этим ботом — `grant_title`
-ВСЕГДА зовёт `promote_chat_member` ПЕРЕД `set_chat_administrator_custom_title`,
-без исключений.
+Ревизия 2026-07-23: изначально тег ставился через `promote_chat_member` +
+`set_chat_administrator_custom_title` (единственный способ на момент
+написания этой фазы) — участник формально становился админом с пустым
+набором прав, только чтобы Telegram показал текст рядом с именем. Мартовское
+обновление Bot API 2026 добавило `setChatMemberTag` — прямой способ
+поставить тег ОБЫЧНОМУ участнику без промоута в админы вообще, нужно только
+право бота `can_manage_tags` (не `can_promote_members`). Заменено полностью:
+владелец чата справедливо не хотел выдавать боту право назначать админов
+ради косметического тега — новый API убирает необходимость в этом праве
+целиком, а не просто обещает его безвредность. Какого цвета выйдет тег,
+поставленный ботом через `can_manage_tags` (серый, как у самостоятельно
+поставленных через `ChatPermissions.can_edit_tag`, или зелёный, как у
+тегов от реальных админов) — не задокументировано и не проверено на
+момент этой правки; участник по крайней мере не становится видимым в
+списке "Администраторы" чата, в отличие от старого подхода.
 
-Pitfall 3: демот/повторный промоут НЕ сохраняет `custom_title` сам по себе —
-`custom_title` это отдельный API-вызов, полностью независимый от
-promote_chat_member. `expire_due` при восстановлении подвешенной аренды
-ВСЕГДА повторно зовёт `set_chat_administrator_custom_title` со стёртым в
-`active_titles.title` значением.
-
-Любой сбой Telegram API (пользователь — реальный, НЕ promoted этим ботом
-админ; бот потерял `can_promote_members`) ловится defensively
-(TelegramBadRequest/TelegramForbiddenError логируется, не пробрасывается) —
-та же дисциплина, что мут проигравшего дуэли
+Любой сбой Telegram API (боту не хватает `can_manage_tags`) ловится
+defensively (TelegramBadRequest/TelegramForbiddenError логируется, не
+пробрасывается) — та же дисциплина, что мут проигравшего дуэли
 (`test_duel_accept_handler_survives_mute_failure`): состояние `active_titles`
 уже согласовано, побочный эффект Telegram-стороны не должен ронять
 вызывающий флоу (awards/victim payout, аренда).
@@ -88,54 +91,31 @@ def validate_title(title: str) -> str:
 # --- Telegram-эффекты (защищённые от сбоя API) -------------------------------
 
 
-async def _promote_and_set_title(bot: Bot, chat_id: int, user_id: int, title: str) -> None:
-    """Pitfall 1: promote_chat_member ВСЕГДА первым, ПОТОМ
-    set_chat_administrator_custom_title. Сбой любого из двух вызовов
-    ловится, не пробрасывается (Pitfall 2 — реальный не-bot-promoted админ
-    или бот без can_promote_members)."""
+async def _set_tag(bot: Bot, chat_id: int, user_id: int, title: str) -> None:
+    """Ставит member-тег напрямую (`setChatMemberTag`, Bot API 2026-03) —
+    работает на ЛЮБОМ участнике, без промоута в админы, нужно только право
+    бота `can_manage_tags`. Сбой ловится, не пробрасывается (боту не хватает
+    can_manage_tags, или участник вне чата)."""
     try:
-        await bot.promote_chat_member(
-            chat_id=chat_id,
-            user_id=user_id,
-            is_anonymous=False,
-            can_invite_users=True,  # безобидное право, как в других сервисах
-        )
-        await bot.set_chat_administrator_custom_title(
-            chat_id=chat_id,
-            user_id=user_id,
-            custom_title=title,
-        )
+        await bot.set_chat_member_tag(chat_id=chat_id, user_id=user_id, tag=title)
     except (TelegramBadRequest, TelegramForbiddenError):
         logger.warning(
-            "tag_service: promote+custom_title не удался для chat_id=%s user_id=%s "
-            "(не bot-promoted админ или боту не хватает can_promote_members, "
-            "см. docs/botfather-setup.md) — active_titles-строка остаётся на месте",
+            "tag_service: set_chat_member_tag не удался для chat_id=%s user_id=%s "
+            "(боту не хватает can_manage_tags, см. docs/botfather-setup.md) — "
+            "active_titles-строка остаётся на месте",
             chat_id,
             user_id,
         )
 
 
 async def _demote(bot: Bot, chat_id: int, user_id: int) -> None:
-    """Демот = promote_chat_member со всеми правами явно False (снятие тега).
-    Defensive-catch — та же дисциплина, что _promote_and_set_title."""
+    """Снятие тега = set_chat_member_tag(tag=None). Defensive-catch — та же
+    дисциплина, что _set_tag."""
     try:
-        await bot.promote_chat_member(
-            chat_id=chat_id,
-            user_id=user_id,
-            is_anonymous=False,
-            can_manage_chat=False,
-            can_delete_messages=False,
-            can_manage_video_chats=False,
-            can_restrict_members=False,
-            can_promote_members=False,
-            can_change_info=False,
-            can_invite_users=False,
-            can_pin_messages=False,
-            can_manage_topics=False,
-        )
+        await bot.set_chat_member_tag(chat_id=chat_id, user_id=user_id, tag=None)
     except (TelegramBadRequest, TelegramForbiddenError):
         logger.warning(
-            "tag_service: демот не удался для chat_id=%s user_id=%s — "
+            "tag_service: снятие тега не удалось для chat_id=%s user_id=%s — "
             "active_titles-строка всё равно помечается expired",
             chat_id,
             user_id,
@@ -236,7 +216,7 @@ async def grant_title(
             continue
 
     if new_status == "active":
-        await _promote_and_set_title(bot, chat_id, user_id, validated_title)
+        await _set_tag(bot, chat_id, user_id, validated_title)
 
     return row
 
@@ -326,7 +306,7 @@ async def expire_due(bot: Bot, session: AsyncSession) -> int:
 
         # Pitfall 3: титул не переживает demote/promote сам по себе —
         # повторный set_chat_administrator_custom_title обязателен.
-        await _promote_and_set_title(bot, suspended.chat_id, suspended.user_id, suspended.title)
+        await _set_tag(bot, suspended.chat_id, suspended.user_id, suspended.title)
 
     return processed
 
