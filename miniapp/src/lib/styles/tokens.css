@@ -185,6 +185,27 @@ body {
 	opacity: 0.9;
 	letter-spacing: 0.02em;
 }
+.bc-handle-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--space-sm);
+}
+.bc-id {
+	background: rgba(255, 255, 255, 0.16);
+	border: none;
+	border-radius: 999px;
+	color: #fff;
+	font-family: inherit;
+	font-size: 12px;
+	font-weight: 600;
+	padding: 4px 10px;
+	cursor: pointer;
+	white-space: nowrap;
+}
+.bc-id:active {
+	background: rgba(255, 255, 255, 0.28);
+}
 .bc-amount {
 	display: flex;
 	align-items: baseline;

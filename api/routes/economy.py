@@ -33,6 +33,8 @@ from fastapi import Query
 from fastapi import Request
 from pydantic import BaseModel
 from pydantic import Field
+from sqlalchemy import or_
+from sqlalchemy import select
 
 from api import telegram_client
 from api.deps import AuthContext
@@ -40,6 +42,8 @@ from api.deps import require_membership
 from bot.services import balance_events
 from bot.services import economy_service
 from common.db.session import SessionLocal
+from common.models.user import User
+from common.models.user_balance import UserBalance
 
 router = APIRouter()
 
@@ -61,6 +65,40 @@ async def get_me(auth: AuthContext = Depends(require_membership)) -> dict:
         # client-side hub-tile gate only; every /api/v1/admin/* route
         # independently re-validates via require_admin server-side.
         "is_admin": telegram_client.is_admin_status(auth.status),
+        # user_id (feedback #8) — свой Telegram ID, чтобы показать/скопировать
+        # в miniapp: раньше единственным способом сообщить его получателю
+        # перевода/дуэли было написать числом в чате вручную.
+        "user_id": auth.user_id,
+    }
+
+
+@router.get("/api/v1/members")
+async def search_members(
+    q: str = Query(default="", max_length=64),
+    limit: int = Query(default=10, ge=1, le=30),
+    auth: AuthContext = Depends(require_membership),
+) -> dict:
+    """Автокомплит участников чата по @username/имени (feedback #8) — для
+    выбора получателя в переводе/дуэли вместо ручного ввода числового ID.
+    Только участники этого чата (join user_balance по chat_id — тот же
+    список, что видит /leaderboard), сам себя не находит."""
+    async with SessionLocal() as session:
+        stmt = (
+            select(User.id, User.username, User.first_name)
+            .join(UserBalance, UserBalance.user_id == User.id)
+            .where(UserBalance.chat_id == auth.chat_id, User.id != auth.user_id)
+        )
+        cleaned = q.strip()
+        if cleaned:
+            pattern = f"%{cleaned}%"
+            stmt = stmt.where(or_(User.username.ilike(pattern), User.first_name.ilike(pattern)))
+        stmt = stmt.order_by(UserBalance.balance.desc()).limit(limit)
+        rows = (await session.execute(stmt)).all()
+    return {
+        "items": [
+            {"tg_id": row.id, "username": row.username, "fullname": row.first_name}
+            for row in rows
+        ]
     }
 
 

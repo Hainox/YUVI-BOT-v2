@@ -2,10 +2,12 @@
 	// Transfer — destination of the "Перевод" hub tile (CASINO-02).
 	// 04-UI-SPEC.md §Component Inventory "Transfer screen": single form —
 	// recipient picker + amount chips (reuse BET_CHIPS shape) + primary CTA
-	// (locked copy "Перевести"). No username-search API exists in this phase
-	// (same gap already documented in duel/+page.svelte's Claude's Discretion
-	// note) — recipient identity is the raw numeric Telegram user_id, same
-	// as the duel challenge form's opponentId field.
+	// (locked copy "Перевести").
+	//
+	// Recipient selection (feedback #8, resolved 2026-07-23): GET
+	// /api/v1/members now exists, so this uses UserPicker (search by
+	// @username/name) instead of a raw numeric-ID text field — manual ID
+	// entry still works as a fallback inside that same component.
 	//
 	// POST /api/v1/transfer's TransferBody carries no from-user field at all
 	// (api/routes/economy.py) — from_user is exclusively auth.user_id
@@ -15,6 +17,7 @@
 	// max(1, ceil(amount*0.05)) formula the server applies.
 	import { apiFetch, ApiError } from '$lib/api';
 	import { haptic } from '$lib/tg';
+	import UserPicker from '$lib/components/UserPicker.svelte';
 
 	const BET_CHIPS = [10, 50, 100, 500, 1000];
 	const TRANSFER_FEE_PCT = 0.05;
@@ -24,7 +27,7 @@
 		balance: number;
 	};
 
-	let toUserId = $state('');
+	let toUserId = $state<number | null>(null);
 	let amount = $state(BET_CHIPS[0]);
 	let sending = $state(false);
 	let error = $state<string | null>(null);
@@ -33,18 +36,13 @@
 	let fee = $derived(Math.max(1, Math.ceil(amount * TRANSFER_FEE_PCT)));
 	let received = $derived(amount - fee);
 
-	function parsedRecipient(): number | null {
-		const id = Number(toUserId);
-		return toUserId.trim() && Number.isInteger(id) && id > 0 ? id : null;
-	}
-
 	async function send() {
-		const recipient = parsedRecipient();
 		if (sending) return;
-		if (recipient === null) {
-			error = 'Введи корректный ID получателя (число).';
+		if (toUserId === null) {
+			error = 'Выбери получателя (по @нику или ID).';
 			return;
 		}
+		const recipient = toUserId;
 		sending = true;
 		error = null;
 		result = null;
@@ -74,17 +72,7 @@
 		<div class="menu-sub">закинь другу ювиков</div>
 	</div>
 
-	<label class="tr-field">
-		<span class="tr-field-label">ID получателя в Telegram</span>
-		<input
-			class="tr-input"
-			type="text"
-			inputmode="numeric"
-			placeholder="например 123456789"
-			bind:value={toUserId}
-			disabled={sending}
-		/>
-	</label>
+	<UserPicker bind:value={toUserId} label="Получатель" placeholder="@ник, имя или ID" />
 
 	<div class="bet-row">
 		<div class="bet-display">
@@ -152,31 +140,6 @@
 		margin-top: var(--space-xs);
 		letter-spacing: 0.04em;
 		font-family: var(--font-body);
-	}
-
-	.tr-field {
-		display: flex;
-		flex-direction: column;
-		gap: var(--space-xs);
-	}
-	.tr-field-label {
-		font-size: var(--font-label-size);
-		text-transform: uppercase;
-		letter-spacing: 0.08em;
-		color: var(--text-muted);
-	}
-	.tr-input {
-		background: var(--bg-secondary-2);
-		border: 2px solid var(--border-secondary);
-		border-radius: 10px;
-		padding: var(--space-sm) var(--space-md);
-		font-family: var(--font-numeric);
-		font-size: var(--font-heading-size);
-		color: var(--text-primary);
-	}
-	.tr-input:focus {
-		outline: none;
-		border-color: var(--accent-pink);
 	}
 
 	.bet-row {

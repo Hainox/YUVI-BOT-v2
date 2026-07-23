@@ -13,10 +13,30 @@
 	let loading = $state(true);
 	let error = $state<string | null>(null);
 	let sse: EventSource | null = null;
+	let userId = $state<number | null>(null);
+	let idCopied = $state(false);
 
 	const handle = tg.user
 		? `@${tg.user.username || tg.user.first_name || `id${tg.user.id}`}`
 		: 'гость';
+
+	// feedback #8: раньше единственным способом сообщить свой ID
+	// получателю перевода/дуэли было написать его числом в чате вручную —
+	// нет ни отображения, ни копирования. userId приходит из /me (ниже),
+	// не из initDataUnsafe.user.id (не валидированное Telegram-поле, api.ts
+	// его специально не использует ни для чего серверного).
+	async function copyUserId() {
+		if (userId === null) return;
+		try {
+			await navigator.clipboard.writeText(String(userId));
+			idCopied = true;
+			tg.haptic('light');
+			setTimeout(() => (idCopied = false), 1500);
+		} catch {
+			// Clipboard API недоступен (старый WebView) — тихо игнорируем,
+			// ID всё равно виден на экране для ручного копирования.
+		}
+	}
 
 	onMount(async () => {
 		tg.init();
@@ -26,8 +46,9 @@
 		if (parsed?.chatId != null) setChatId(parsed.chatId);
 
 		try {
-			const me = await apiFetch<{ balance: number }>('/api/v1/me');
+			const me = await apiFetch<{ balance: number; user_id: number }>('/api/v1/me');
 			balance.set(me.balance);
+			userId = me.user_id;
 		} catch (err) {
 			// Spoofing mitigation (T-04.2-05): on 401/membership failure, show the
 			// locked error screen — never fall back to a degraded/fake-data mode.
@@ -86,7 +107,14 @@
 	<div class="webapp-root">
 		<div class="screen">
 			<div class="balance-card app-balance-header">
-				<div class="bc-handle">{handle}</div>
+				<div class="bc-handle-row">
+					<div class="bc-handle">{handle}</div>
+					{#if userId !== null}
+						<button type="button" class="bc-id" onclick={copyUserId} title="Скопировать свой ID">
+							{idCopied ? 'скопировано ✓' : `ID ${userId}`}
+						</button>
+					{/if}
+				</div>
 				<div class="bc-amount">
 					<span class="bc-val">{($balance ?? 0).toLocaleString('ru-RU')}</span>
 					<span class="bc-unit">¥ юви</span>

@@ -14,14 +14,18 @@
 	// Scope note (Claude's Discretion, 04.2-06-PLAN.md): this plan's backend
 	// surface is exactly 5 POST routes (create/accept/decline/cancel/
 	// duelbot) — no GET /duel/{id} lookup route exists in this phase, so
-	// there is no server-side way to search/resolve a Telegram username to
-	// a user_id, or to list "my pending duels". The challenge form therefore
-	// takes the opponent's numeric Telegram user_id directly (same identity
-	// the server already expects), and the manage tab takes a duel_id the
-	// same way the bot commands already do (`/duel_accept <id>` — the
-	// challenger announces this id to the opponent when creating the duel).
+	// there is no server-side way to list "my pending duels". The manage
+	// tab still takes a duel_id the same way the bot commands already do
+	// (`/duel_accept <id>` — the challenger announces this id to the
+	// opponent when creating the duel).
+	//
+	// Opponent selection (feedback #8, resolved 2026-07-23): GET
+	// /api/v1/members now exists, so the challenge form uses UserPicker
+	// (search by @username/name) instead of a raw numeric-ID text field —
+	// manual ID entry still works as a fallback inside that same component.
 	import { apiFetch, ApiError } from '$lib/api';
 	import { haptic, user } from '$lib/tg';
+	import UserPicker from '$lib/components/UserPicker.svelte';
 
 	const BET_CHIPS = [10, 50, 100, 500, 1000];
 
@@ -64,16 +68,15 @@
 
 	// --- Challenge (POST /duel) ------------------------------------------
 
-	let opponentId = $state('');
+	let opponentId = $state<number | null>(null);
 	let challengeStake = $state(BET_CHIPS[0]);
 	let challenging = $state(false);
 	let challengeResult = $state<DuelCreateResult | null>(null);
 	let challengeError = $state<string | null>(null);
 
 	async function challenge() {
-		const opponent = Number(opponentId);
-		if (challenging || !opponentId.trim() || !Number.isInteger(opponent) || opponent <= 0) {
-			challengeError = 'Введи корректный ID соперника (число).';
+		if (challenging || opponentId === null) {
+			challengeError = 'Выбери соперника (по @нику или ID).';
 			return;
 		}
 		challenging = true;
@@ -83,7 +86,7 @@
 			const res = await apiFetch<DuelCreateResult>('/api/v1/duel', {
 				method: 'POST',
 				body: JSON.stringify({
-					opponent_id: opponent,
+					opponent_id: opponentId,
 					stake: challengeStake,
 					ref_id: `duel:${crypto.randomUUID()}`
 				})
@@ -228,17 +231,7 @@
 				комиссии, проигравший получает мут.
 			</div>
 
-			<label class="duel-field">
-				<span class="duel-field-label">ID соперника в Telegram</span>
-				<input
-					class="duel-input"
-					type="text"
-					inputmode="numeric"
-					placeholder="например 123456789"
-					bind:value={opponentId}
-					disabled={challenging}
-				/>
-			</label>
+			<UserPicker bind:value={opponentId} label="Соперник" placeholder="@ник, имя или ID" />
 
 			<div class="bet-row">
 				<div class="bet-display">
