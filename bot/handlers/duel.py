@@ -6,6 +6,17 @@
 duel_service вернул результат резолюции (форма markets.py + external_markets.py:
 "хендлер оркеструет побочные эффекты, сервис владеет деньгами/статусом").
 
+Кнопки принятия/отклонения (запрошено пользователем 2026-07-23, "свести
+написание команд к минимуму"): `/duel` теперь прикрепляет inline-клавиатуру
+(`_duel_keyboard`) прямо к сообщению вызова — оппоненту не нужно набирать
+`/duel_accept <id>` руками. `duel_accept_callback`/`duel_decline_callback`
+ниже вызывают ТЕ ЖЕ `duel_service.accept_duel`/`decline_duel`, что и текстовые
+команды (нулевое дублирование бизнес-логики) — IDOR-защита не в хендлере, а
+уже внутри сервиса (`opponent_id != accept_duel(...)`-аргумент), поэтому
+поддельный `callback_data` с чужим `duel_id` не даёт принять чужую дуэль,
+максимум — предсказуемую ошибку. Текстовые `/duel_accept`/`/duel_decline`
+НЕ удалены — работают как есть, кнопки лишь основной путь, не единственный.
+
 Мут проигравшего — D-01 (фиксированные 10 минут, MUTE_SECONDS сервиса) + D-02
 (стикер при муте и при снятии — MUTE_STICKER_ID/UNMUTE_STICKER_ID ниже,
 плейсхолдер file_id, Claude's Discretion по CONTEXT.md, заменяемо позже без
@@ -29,9 +40,13 @@ from datetime import datetime
 from datetime import timedelta
 
 from aiogram import Bot
+from aiogram import F
 from aiogram import Router
 from aiogram.filters import Command
+from aiogram.types import CallbackQuery
 from aiogram.types import ChatPermissions
+from aiogram.types import InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup
 from aiogram.types import Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -126,6 +141,17 @@ def _parse_id_arg(message: Message) -> int | None:
     return int(parts[1].strip())
 
 
+def _duel_keyboard(duel_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Принять", callback_data=f"duel_accept:{duel_id}"),
+                InlineKeyboardButton(text="❌ Отклонить", callback_data=f"duel_decline:{duel_id}"),
+            ]
+        ]
+    )
+
+
 def _parse_single_target_arg(message: Message) -> str | None:
     """Парсит `/unmute <@user>` (без reply) — единственный текстовый токен."""
     if message.text is None:
@@ -180,10 +206,9 @@ async def duel_command(message: Message, session: AsyncSession) -> None:
 
     await message.answer(
         f"<b>Дуэль #{duel.id}:</b> {_display_name(message)} вызывает "
-        f"{html.escape(opponent_name)} на ставку {amount} ювиков.\n"
-        f"Принять: /duel_accept {duel.id}\n"
-        f"Отклонить: /duel_decline {duel.id}",
+        f"{html.escape(opponent_name)} на ставку {amount} ювиков.",
         parse_mode="HTML",
+        reply_markup=_duel_keyboard(duel.id),
     )
 
 
@@ -313,6 +338,78 @@ async def duel_cancel_command(message: Message, session: AsyncSession) -> None:
         await message.answer(f"Дуэль #{duel_id} уже {result['status']}.")
         return
     await message.answer(f"Дуэль #{duel_id} отменена, ставка возвращена.")
+
+
+@router.callback_query(F.data.startswith("duel_accept:"))
+async def duel_accept_callback(callback: CallbackQuery, session: AsyncSession, bot: Bot) -> None:
+    """Кнопка «✅ Принять» на сообщении вызова — тот же `accept_duel`, что
+    `/duel_accept`, IDOR-гард уже внутри сервиса (см. модульный docstring)."""
+    if callback.from_user is None or callback.message is None or callback.data is None:
+        return
+    try:
+        duel_id = int(callback.data.split(":", 1)[1])
+    except ValueError:
+        await callback.answer("Некорректная дуэль.", show_alert=True)
+        return
+
+    ref_id = f"duel_accept:{callback.message.chat.id}:{callback.id}"
+    try:
+        result = await duel_service.accept_duel(
+            session, callback.message.chat.id, duel_id, callback.from_user.id, ref_id
+        )
+    except (duel_service.DuelNotFound, duel_service.DuelError) as exc:
+        await callback.answer(str(exc), show_alert=True)
+        return
+    except economy_service.InsufficientFunds as exc:
+        await callback.answer(str(exc), show_alert=True)
+        return
+
+    if result["status"] != "resolved":
+        await callback.answer(f"Дуэль #{duel_id} уже {result['status']}.", show_alert=True)
+        return
+
+    if result["loser_id"] is not None:
+        try:
+            await _apply_mute(bot, callback.message.chat.id, result["loser_id"], result["mute_seconds"])
+        except Exception:
+            # WR-05 (04.1-REVIEW): та же защита, что в duel_accept_command —
+            # деньги уже двинулись (accept_duel закоммитил).
+            logger.exception("duel_accept_callback: не удалось замутить loser_id=%s", result["loser_id"])
+
+    await callback.message.edit_text(
+        f"<b>Дуэль #{duel_id} завершена:</b> победитель забирает {result['pot']} ювиков "
+        f"(комиссия в банк: {result['fee']}). Проигравший замучен на "
+        f"{result['mute_seconds'] // 60} мин.",
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("duel_decline:"))
+async def duel_decline_callback(callback: CallbackQuery, session: AsyncSession) -> None:
+    """Кнопка «❌ Отклонить» — тот же `decline_duel`, что `/duel_decline`."""
+    if callback.from_user is None or callback.message is None or callback.data is None:
+        return
+    try:
+        duel_id = int(callback.data.split(":", 1)[1])
+    except ValueError:
+        await callback.answer("Некорректная дуэль.", show_alert=True)
+        return
+
+    try:
+        result = await duel_service.decline_duel(
+            session, callback.message.chat.id, duel_id, callback.from_user.id
+        )
+    except (duel_service.DuelNotFound, duel_service.DuelError) as exc:
+        await callback.answer(str(exc), show_alert=True)
+        return
+
+    if result["status"] != "declined":
+        await callback.answer(f"Дуэль #{duel_id} уже {result['status']}.", show_alert=True)
+        return
+
+    await callback.message.edit_text(f"Дуэль #{duel_id} отклонена, ставка возвращена.")
+    await callback.answer()
 
 
 @router.message(Command("unmute"))
