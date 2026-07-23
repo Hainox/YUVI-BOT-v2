@@ -57,6 +57,13 @@ _EMPTY_RESULT_ERROR = "Не удалось скачать медиа по это
 _RESOLVE_ERROR = "Не удалось обработать ссылку — сервис скачивания временно недоступен. Попробуйте позже."
 _DOWNLOAD_ERROR = "Не удалось скачать файл по ссылке — возможно, она устарела. Попробуйте отправить ссылку заново."
 _SEND_ERROR = "Не удалось отправить файл в чат — попробуйте ещё раз, деньги не списаны."
+def _daily_limit_error() -> str:
+    # Функция, а не строка-константа на уровне модуля: settings.mediadl_daily_limit
+    # читается на КАЖДЫЙ вызов, а не застывает значением на момент импорта модуля.
+    return (
+        f"Дневной лимит скачиваний ({settings.mediadl_daily_limit} видео) исчерпан. "
+        "Лимит обновится завтра по московскому времени."
+    )
 
 # Сетевые/протокольные сбои cobalt-клиента (WR-03): aiohttp.ClientError не
 # покрывает asyncio.TimeoutError (total-таймаут ClientTimeout поднимает его
@@ -94,16 +101,21 @@ async def _download_or_reply(message: Message, item_url: str) -> bytes | None:
     return file_bytes
 
 
-@router.message(
-    F.chat.type == "private",  # TEMPORARY: cobalt-скачивание временно только в ЛС, не в группе — откатить, убрав этот фильтр
-    F.text.regexp(media_dl_service.URL_RE, mode="search"),
-)
+@router.message(F.text.regexp(media_dl_service.URL_RE, mode="search"))
 async def on_media_url(message: Message, session: AsyncSession, bot: Bot) -> None:
     if message.from_user is None or message.text is None:
         return
 
     url = media_dl_service.extract_url(message.text)
     if url is None:
+        return
+
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+
+    used_today = await media_dl_service.count_today(session, chat_id, user_id)
+    if used_today >= settings.mediadl_daily_limit:
+        await message.reply(_daily_limit_error())
         return
 
     try:
@@ -118,8 +130,6 @@ async def on_media_url(message: Message, session: AsyncSession, bot: Bot) -> Non
         await message.reply(media_dl_service.map_error(result))
         return
 
-    chat_id = message.chat.id
-    user_id = message.from_user.id
     ref_id = f"mediadl:{message.message_id}"
 
     if status in ("tunnel", "redirect"):

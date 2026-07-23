@@ -553,3 +553,94 @@ async def test_charge_rolled_back_when_send_fails_then_retry_succeeds(session, m
         == settings.economy_start_bonus - settings.mediadl_cost
     )
     bot_mock_ok.send_video.assert_awaited_once()
+
+
+# --- дневной лимит на пользователя (возврат скачивания в группы) -----------
+
+
+@pytest.mark.asyncio
+async def test_count_today_scoped_to_user_chat_and_excludes_bank_leg(session):
+    """`count_today` считает ТОЛЬКО строки данного (chat_id, user_id) с
+    kind="mediadl_charge" — банковское зеркало той же операции (`user_id IS
+    NULL`, `debit_to_bank` пишет обе ноги одним kind) и строки другого
+    пользователя/чата в счёт попадать не должны."""
+    from bot.services import media_dl_service
+
+    chat_id, user_id, other_user_id = -900801, 900801, 900802
+    await _ensure_user(session, user_id)
+    await _ensure_user(session, other_user_id)
+    await economy_service.get_balance(session, chat_id, user_id)
+    await economy_service.get_balance(session, chat_id, other_user_id)
+
+    await economy_service.debit_to_bank(
+        session, chat_id, user_id, 10, kind="mediadl_charge", ref_id="mediadl:t1"
+    )
+    await economy_service.debit_to_bank(
+        session, chat_id, user_id, 10, kind="mediadl_charge", ref_id="mediadl:t2"
+    )
+    # Другой пользователь в том же чате — не должен попадать в счёт первого.
+    await economy_service.debit_to_bank(
+        session, chat_id, other_user_id, 10, kind="mediadl_charge", ref_id="mediadl:t3"
+    )
+    await session.commit()
+
+    assert await media_dl_service.count_today(session, chat_id, user_id) == 2
+    assert await media_dl_service.count_today(session, chat_id, other_user_id) == 1
+    # Чат без единой операции — ноль, а не ошибка.
+    assert await media_dl_service.count_today(session, -900899, user_id) == 0
+
+
+@pytest.mark.asyncio
+async def test_daily_limit_blocks_before_resolve_and_does_not_charge(session, monkeypatch):
+    """Исчерпанный дневной лимит обязан остановить хендлер ДО вызова
+    `resolve()` (не тратить впустую запрос к cobalt на заведомо отклонённую
+    попытку) и не двигать деньги вовсе. Лимит понижен монкипатчем до 2, чтобы
+    не гонять реальных 5 успешных загрузок в тесте."""
+    import bot.handlers.media_dl as media_dl
+    from bot.services import media_dl_service
+
+    monkeypatch.setattr(settings, "mediadl_daily_limit", 2)
+
+    chat_id, user_id = -900802, 900803
+    await _ensure_user(session, user_id)
+    await economy_service.get_balance(session, chat_id, user_id)
+
+    async def fake_resolve_tunnel(url: str) -> dict:
+        return {"status": "tunnel", "url": "http://cobalt:9000/tunnel/abc", "filename": "video.mp4"}
+
+    async def fake_download(item_url: str, max_bytes: int) -> bytes:
+        return b"fake-video-bytes"
+
+    monkeypatch.setattr(media_dl_service, "resolve", fake_resolve_tunnel)
+    monkeypatch.setattr(media_dl_service, "download", fake_download)
+
+    # Два успешных скачивания подряд — ровно на пороге лимита (2).
+    for message_id in (201, 202):
+        message = _fake_message(
+            chat_id, user_id, "Тест", "https://www.tiktok.com/@u/video/x", message_id=message_id
+        )
+        bot_mock = AsyncMock()
+        await media_dl.on_media_url(message, session, bot_mock)
+        bot_mock.send_video.assert_awaited_once()
+
+    assert await media_dl_service.count_today(session, chat_id, user_id) == 2
+    balance_after_two = await _get_user_balance(session, chat_id, user_id)
+    assert balance_after_two == settings.economy_start_bonus - 2 * settings.mediadl_cost
+
+    # Третья попытка — лимит исчерпан, resolve() вообще не должен вызваться.
+    async def fail_if_called(url: str) -> dict:
+        raise AssertionError("resolve() не должен вызываться после исчерпания дневного лимита")
+
+    monkeypatch.setattr(media_dl_service, "resolve", fail_if_called)
+
+    message3 = _fake_message(
+        chat_id, user_id, "Тест", "https://www.tiktok.com/@u/video/x", message_id=203
+    )
+    bot_mock3 = AsyncMock()
+    await media_dl.on_media_url(message3, session, bot_mock3)
+
+    bot_mock3.send_video.assert_not_awaited()
+    message3.reply.assert_awaited_once()
+    assert str(settings.mediadl_daily_limit) in message3.reply.await_args.args[0]
+    # Деньги за отклонённую попытку не двигались — баланс не изменился.
+    assert await _get_user_balance(session, chat_id, user_id) == balance_after_two

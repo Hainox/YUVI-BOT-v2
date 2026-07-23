@@ -106,6 +106,10 @@ class Settings(BaseSettings):
     cobalt_api_url: str = Field(default="http://cobalt:9000/", alias="COBALT_API_URL")
     mediadl_cost: int = Field(default=50, alias="MEDIADL_COST")
     mediadl_max_mb: int = Field(default=48, alias="MEDIADL_MAX_MB")
+    # Потолок скачиваний на пользователя в сутки (Europe/Moscow), считается
+    # по существующему журналу economy_tx (media_dl_service.count_today) —
+    # добавлено при возврате скачивания в группы (было ограничено ЛС).
+    mediadl_daily_limit: int = Field(default=5, alias="MEDIADL_DAILY_LIMIT")
     # Telegram Stars → ювики (D-09).
     stars_to_juvik_rate: int = Field(default=10, alias="STARS_TO_JUVIK_RATE")
     # Награда автору фидбека при закрытии заявки (D-14); complaint/other — без награды.

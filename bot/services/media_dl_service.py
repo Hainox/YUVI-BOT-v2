@@ -13,21 +13,41 @@ SSRF-whitelist (T-06-03): `URL_RE` распознаёт ТОЛЬКО TikTok / In
 / YouTube Shorts — произвольный URL (включая localhost/внутренние IP и даже
 обычные youtube.com/instagram.com ссылки, не reel/shorts) вообще не доходит
 до POST к cobalt.
+
+Дневной лимит на пользователя (`settings.mediadl_daily_limit`, по просьбе
+пользователя при включении скачивания в группах обратно): `count_today` —
+чистое чтение,
+СЧИТАЕТ уже существующие строки `economy_tx` с `kind="mediadl_charge"`
+(каждая успешная доставка пишет ровно одну такую строку на игрока,
+`economy_service.debit_to_bank`), отдельная таблица-счётчик не заводится.
+Граница дня — Europe/Moscow (та же конвенция, что `daily_pick_service.
+_today_msk()`/`stats_service.py`/`mood_service.py` — каждый модуль держит
+собственный self-contained `_today_msk()`-аналог, не импортирует чужой).
 """
 
 from __future__ import annotations
 
 import logging
 import re
+from datetime import datetime
+from datetime import time
+from zoneinfo import ZoneInfo
 
 import aiohttp
 from aiogram.types import InputMediaAnimation
 from aiogram.types import InputMediaPhoto
 from aiogram.types import InputMediaVideo
+from sqlalchemy import func
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
+from common.models.economy_tx import EconomyTx
 
 logger = logging.getLogger(__name__)
+
+MSK = ZoneInfo("Europe/Moscow")
+UTC = ZoneInfo("UTC")
 
 # SSRF-whitelist (T-06-03) — только три площадки из D-01/MEDIA-01. Обычные
 # youtube.com/watch и instagram.com/p (не reel) НАМЕРЕННО не матчатся —
@@ -67,6 +87,34 @@ def extract_url(text: str) -> str | None:
         return None
     match = URL_RE.search(text)
     return match.group(0) if match else None
+
+
+def _today_msk_start_utc() -> datetime:
+    """Начало текущих суток по Europe/Moscow, в наивном UTC — сравнимо
+    напрямую с `EconomyTx.created_at` (`DateTime` без таймзоны, пишется через
+    `func.now()`/`datetime.utcnow()` по всей кодовой базе, тот же контракт,
+    что и остальные `_today_msk()`-аналоги)."""
+    today_msk = datetime.now(MSK).date()
+    start_msk = datetime.combine(today_msk, time.min, tzinfo=MSK)
+    return start_msk.astimezone(UTC).replace(tzinfo=None)
+
+
+async def count_today(session: AsyncSession, chat_id: int, user_id: int) -> int:
+    """Сколько скачиваний (`kind="mediadl_charge"`, только строки игрока —
+    банковское зеркало имеет `user_id IS NULL` и в счёт не попадает) уже
+    списано с этого пользователя в этом чате с начала текущих MSK-суток.
+    Чистое чтение — не коммитит, ничего не пишет."""
+    count = (
+        await session.execute(
+            select(func.count()).where(
+                EconomyTx.chat_id == chat_id,
+                EconomyTx.user_id == user_id,
+                EconomyTx.kind == "mediadl_charge",
+                EconomyTx.created_at >= _today_msk_start_utc(),
+            )
+        )
+    ).scalar_one()
+    return count
 
 
 async def resolve(url: str) -> dict:
