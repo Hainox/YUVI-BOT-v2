@@ -28,3 +28,13 @@ def test_toxicity_scores_batch_range() -> None:
     assert len(scores) == 2
     for score in scores:
         assert 0.0 <= score <= 1.0
+
+
+def test_toxicity_scores_very_long_text_does_not_crash() -> None:
+    # Regression: tokenizer.model_max_length не всегда надёжен как единственная
+    # защита от переполнения — явный max_length страхует от того же класса
+    # краша, что нашли в sentiment.py на реальном бэкфилле.
+    long_text = "привет мир " * 1000
+    scores = toxicity_scores([long_text])
+    assert len(scores) == 1
+    assert 0.0 <= scores[0] <= 1.0

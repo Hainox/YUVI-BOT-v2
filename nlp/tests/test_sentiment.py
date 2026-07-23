@@ -30,3 +30,13 @@ def test_classify_sentiment_batch() -> None:
     for item in result:
         assert "sentiment_label" in item
         assert "sentiment_score" in item
+
+
+def test_classify_sentiment_very_long_text_does_not_crash() -> None:
+    # Regression: без явного truncation/max_length pipeline() не обрезает
+    # вход — длинный текст (найдено на реальном бэкфилле: 2173 токена) падал
+    # с RuntimeError на несовпадении размера position embeddings модели.
+    long_text = "привет мир " * 1000
+    result = classify_sentiment([long_text])
+    assert len(result) == 1
+    assert 0.0 <= result[0]["sentiment_score"] <= 1.0

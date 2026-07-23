@@ -17,6 +17,11 @@ from transformers import AutoModelForSequenceClassification, AutoTokenizer
 TOXICITY_MODEL = os.environ.get(
     "NLP_TOXICITY_MODEL", "cointegrated/rubert-tiny-toxicity"
 )
+# tokenizer.model_max_length по умолчанию не всегда корректно задан моделью
+# (иногда это sentinel-заглушка вместо реального лимита) — явный max_length
+# страхует от RuntimeError на несовпадении размера position embeddings, тот
+# же класс краша, что и в sentiment.py.
+NLP_MAX_LENGTH = int(os.environ.get("NLP_MAX_LENGTH", "512"))
 
 # Module-level singletons — модель и токенизатор грузятся один раз при импорте.
 _tox_tokenizer = AutoTokenizer.from_pretrained(TOXICITY_MODEL)
@@ -32,7 +37,9 @@ def toxicity_scores(texts: list[str]) -> list[float]:
     """
     if not texts:
         return []
-    inputs = _tox_tokenizer(texts, return_tensors="pt", truncation=True, padding=True)
+    inputs = _tox_tokenizer(
+        texts, return_tensors="pt", truncation=True, padding=True, max_length=NLP_MAX_LENGTH
+    )
     with torch.no_grad():
         logits = _tox_model(**inputs).logits
         proba = torch.sigmoid(logits).numpy()
