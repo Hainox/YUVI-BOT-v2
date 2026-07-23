@@ -12,11 +12,21 @@ services:
       - pgdata:/var/lib/postgresql/data
     ports:
       - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U yuvi -d yuvi"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   redis:
     image: redis:7-alpine
     restart: unless-stopped
     command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   migrations:
     build:
@@ -26,7 +36,8 @@ services:
       - .env
     command: alembic upgrade head
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
 
   # Self-hosted media-download backend (MEDIA-01/02, DEPLOY-01) — внутренний
   # сервис без внешних портов, как nlp/redis; бот обращается по внутреннему
@@ -60,10 +71,14 @@ services:
     volumes:
       - ./yuvi_backfill_session.session:/app/yuvi_backfill_session.session
     depends_on:
-      - migrations
-      - redis
-      - postgres
-      - cobalt
+      migrations:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      cobalt:
+        condition: service_started
 
   api:
     build:
@@ -73,8 +88,10 @@ services:
     env_file:
       - .env
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     ports:
       - "8002:8000"
 
@@ -85,6 +102,9 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
       - "8001:8000"
 
@@ -130,4 +150,3 @@ services:
 volumes:
   pgdata:
   nginx_https_secrets:
-
