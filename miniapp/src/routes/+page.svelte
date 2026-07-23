@@ -54,7 +54,9 @@
 			href: '/donate'
 		},
 		{ title: 'Правила', desc: 'как это всё работает', href: '/rules' },
-		{ title: 'Фидбек', desc: 'баг, идея или жалоба — админы увидят', href: '/feedback' }
+		{ title: 'Фидбек', desc: 'баг, идея или жалоба — админы увидят', href: '/feedback' },
+		{ title: 'Магазин', desc: 'поукай, обними, закажи анекдот или роаст', accent: 'pink', href: '/shop' },
+		{ title: 'Теги', desc: 'арендуй тег над своим именем', accent: 'yellow', href: '/tags' }
 	];
 
 	const adminTile: Tile = {
@@ -64,9 +66,7 @@
 	};
 
 	const lockedTiles: Tile[] = [
-		{ title: 'Гача', desc: 'временно отключено', locked: 'временно отключено' },
-		{ title: 'Магазин', desc: 'скоро', locked: 'скоро' },
-		{ title: 'Теги', desc: 'скоро', locked: 'скоро' }
+		{ title: 'Гача', desc: 'временно отключено', locked: 'временно отключено' }
 	];
 
 	let tiles = $derived([...baseTiles, ...(isAdmin ? [adminTile] : []), ...lockedTiles]);

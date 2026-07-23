@@ -76,7 +76,12 @@ async def poke_command(message: Message, session: AsyncSession) -> None:
 
     try:
         text = await social_service.do_poke(
-            session, message.chat.id, message.from_user.id, target_id, html.escape(target_name), message.message_id
+            session,
+            message.chat.id,
+            message.from_user.id,
+            target_id,
+            html.escape(target_name),
+            str(message.message_id),
         )
     except economy_service.InsufficientFunds:
         await message.answer("Недостаточно ювиков.")
@@ -110,7 +115,12 @@ async def hug_command(message: Message, session: AsyncSession) -> None:
 
     try:
         text = await social_service.do_hug(
-            session, message.chat.id, message.from_user.id, target_id, html.escape(target_name), message.message_id
+            session,
+            message.chat.id,
+            message.from_user.id,
+            target_id,
+            html.escape(target_name),
+            str(message.message_id),
         )
     except economy_service.InsufficientFunds:
         await message.answer("Недостаточно ювиков.")
@@ -168,7 +178,7 @@ async def joke_order_command(message: Message, session: AsyncSession) -> None:
             target_id,
             html.escape(target_name),
             topic,
-            message.message_id,
+            str(message.message_id),
         )
     except economy_service.InsufficientFunds:
         await message.answer("Недостаточно ювиков.")
@@ -199,7 +209,12 @@ async def roast_command(message: Message, session: AsyncSession) -> None:
 
     try:
         text = await social_service.do_roast(
-            session, message.chat.id, message.from_user.id, target_id, html.escape(target_name), message.message_id
+            session,
+            message.chat.id,
+            message.from_user.id,
+            target_id,
+            html.escape(target_name),
+            str(message.message_id),
         )
     except economy_service.InsufficientFunds:
         await message.answer("Недостаточно ювиков.")

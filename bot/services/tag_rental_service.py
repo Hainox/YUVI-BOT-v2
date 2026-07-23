@@ -27,13 +27,13 @@ from __future__ import annotations
 from datetime import datetime
 from datetime import timedelta
 
-from aiogram import Bot
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
 from bot.services import economy_service
 from bot.services import tag_service
+from bot.services.tag_service import TagBotLike
 from common.models.active_title import ActiveTitle
 
 
@@ -58,7 +58,7 @@ async def rent_title(
     title: str,
     days: int,
     ref_id: str,
-    bot: Bot,
+    bot: TagBotLike,
 ) -> ActiveTitle:
     """Аренда custom_title: days валидируется ПЕРВЫМ (дешёвая проверка без
     похода к деньгам/API), затем title через tag_service.validate_title
@@ -128,7 +128,7 @@ async def rent_title(
     )
 
 
-async def cancel_rental(session: AsyncSession, chat_id: int, user_id: int, bot: Bot) -> bool:
+async def cancel_rental(session: AsyncSession, chat_id: int, user_id: int, bot: TagBotLike) -> bool:
     """Отмена аренды (действует только на строку вызывающего, V4): FOR UPDATE
     активной/подвешенной 'rental'-строки (chat_id, user_id). Нет такой строки
     → False (идемпотентный no-op на повторный вызов). Иначе — status=
@@ -165,3 +165,24 @@ async def cancel_rental(session: AsyncSession, chat_id: int, user_id: int, bot: 
         await tag_service.clear_title(bot, session, chat_id, user_id)
 
     return True
+
+
+async def get_active_rental(session: AsyncSession, chat_id: int, user_id: int) -> ActiveTitle | None:
+    """Текущая незавершённая 'rental'-строка вызывающего ('active' или
+    'suspended' — см. `cancel_rental` про suspended: аренда ждёт истечения
+    приоритетного номинанта). Чистый read для Mini-App-экрана (`api/routes/
+    tags.py`) — показать текущую аренду вместо формы новой; НЕ блокирует
+    строку (`FOR UPDATE` не нужен — это просмотр, не мутация) и не
+    коммитит."""
+    return (
+        await session.execute(
+            select(ActiveTitle)
+            .where(
+                ActiveTitle.chat_id == chat_id,
+                ActiveTitle.user_id == user_id,
+                ActiveTitle.source == "rental",
+                ActiveTitle.status.in_(("active", "suspended")),
+            )
+            .order_by(ActiveTitle.id.desc())
+        )
+    ).scalars().first()
