@@ -15,6 +15,8 @@
 	let sse: EventSource | null = null;
 	let userId = $state<number | null>(null);
 	let idCopied = $state(false);
+	let showTwinPrompt = $state(false);
+	let twinDeciding = $state(false);
 
 	const handle = tg.user
 		? `@${tg.user.username || tg.user.first_name || `id${tg.user.id}`}`
@@ -35,6 +37,22 @@
 		} catch {
 			// Clipboard API недоступен (старый WebView) — тихо игнорируем,
 			// ID всё равно виден на экране для ручного копирования.
+		}
+	}
+
+	async function decideTwin(optIn: boolean) {
+		if (twinDeciding) return;
+		twinDeciding = true;
+		try {
+			await apiFetch(optIn ? '/api/v1/twin/optin' : '/api/v1/twin/decline', { method: 'POST' });
+			tg.haptic(optIn ? 'win' : 'tap');
+		} catch {
+			// Не удалось сохранить ответ — промпт всё равно закрываем, чтобы не
+			// блокировать вход; при следующем открытии status снова окажется
+			// "не спрошен" и вопрос повторится.
+		} finally {
+			showTwinPrompt = false;
+			twinDeciding = false;
 		}
 	}
 
@@ -66,6 +84,17 @@
 		}
 
 		loading = false;
+
+		// Onboarding-промпт AI-двойника (запрошено пользователем 2026-07-23):
+		// показывается ОДИН раз — пока у участника нет строки twin_opt_ins
+		// (asked=false). Best-effort, как и остальные некритичные фоновые
+		// вызовы этого layout — сбой не должен блокировать сам вход в приложение.
+		try {
+			const twinStatus = await apiFetch<{ asked: boolean }>('/api/v1/twin/status');
+			showTwinPrompt = !twinStatus.asked;
+		} catch {
+			// Не блокирует загрузку — просто не покажем промпт в этот раз.
+		}
 
 		if (parsed?.route) {
 			const target = `/${parsed.route}`;
@@ -123,10 +152,82 @@
 			{@render children()}
 		</div>
 	</div>
+
+	{#if showTwinPrompt}
+		<div class="twin-prompt-backdrop">
+			<div class="twin-prompt">
+				<div class="twin-prompt-title">🤖 AI-двойник</div>
+				<div class="twin-prompt-desc">
+					Хочешь подключить своего AI-двойника? Он сможет отвечать в твоём стиле, когда его
+					позовут командой /twin. Решение можно поменять в любой момент (/twin_pause,
+					/twin_optout).
+				</div>
+				<div class="twin-prompt-actions">
+					<button
+						type="button"
+						class="chip"
+						disabled={twinDeciding}
+						onclick={() => decideTwin(false)}
+					>
+						нет
+					</button>
+					<button
+						type="button"
+						class="chip chip-all"
+						disabled={twinDeciding}
+						onclick={() => decideTwin(true)}
+					>
+						подключить
+					</button>
+				</div>
+			</div>
+		</div>
+	{/if}
 {/if}
 
 <style>
 	.app-balance-header {
 		margin: var(--space-md) var(--space-md) 0;
+	}
+
+	.twin-prompt-backdrop {
+		position: fixed;
+		inset: 0;
+		background: rgba(0, 0, 0, 0.6);
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		padding: var(--space-lg);
+		z-index: 100;
+	}
+	.twin-prompt {
+		background: var(--bg-secondary-2);
+		border: 1px solid var(--border-secondary);
+		border-radius: 14px;
+		padding: var(--space-lg);
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-sm);
+		max-width: 360px;
+	}
+	.twin-prompt-title {
+		font-family: var(--font-chrome);
+		font-size: var(--font-heading-size);
+		font-weight: 700;
+		color: var(--text-primary);
+	}
+	.twin-prompt-desc {
+		font-size: var(--font-body-size);
+		color: var(--text-muted);
+		line-height: 1.5;
+		font-family: var(--font-body);
+	}
+	.twin-prompt-actions {
+		display: flex;
+		gap: var(--space-sm);
+		margin-top: var(--space-xs);
+	}
+	.twin-prompt-actions .chip {
+		flex: 1;
 	}
 </style>

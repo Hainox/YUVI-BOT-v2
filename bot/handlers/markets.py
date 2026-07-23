@@ -138,7 +138,7 @@ def format_markets_list(rows: list[dict]) -> str:
     for row in rows:
         question = html.escape(row["question"])
         closes_at = row["closes_at"].strftime("%d.%m.%Y %H:%M")
-        lines.append(f"#{row['id']}: {question} (закрытие {closes_at})")
+        lines.append(f"#{row['id']}: {question} (закрытие {closes_at} UTC)")
     return "\n".join(lines)
 
 

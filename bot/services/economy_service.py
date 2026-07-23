@@ -30,6 +30,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
+from bot.utils.time import to_utc_iso
 from common.models.chat_bank import ChatBank
 from common.models.economy_tx import EconomyTx
 from common.models.market import Market
@@ -401,7 +402,7 @@ async def get_transactions(
             "kind": row.kind,
             "ref_id": row.ref_id,
             "note": row.note,
-            "created_at": row.created_at,
+            "created_at": to_utc_iso(row.created_at),
         }
         for row in result.scalars().all()
     ]

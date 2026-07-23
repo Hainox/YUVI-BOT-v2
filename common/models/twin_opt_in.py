@@ -20,5 +20,5 @@ class TwinOptIn(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    status: Mapped[str] = mapped_column(String(16), nullable=False)  # 'active' | 'paused'
+    status: Mapped[str] = mapped_column(String(16), nullable=False)  # 'active' | 'paused' | 'declined'
     updated_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now())

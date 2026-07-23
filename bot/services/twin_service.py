@@ -96,9 +96,11 @@ async def build_twin_reply(
 
 
 async def set_opt_in(session: AsyncSession, chat_id: int, user_id: int, status: str) -> None:
-    """Upsert строки согласия (active/paused) — используется /twin_optin,
-    /twin_pause, /twin_resume. Пишет ТОЛЬКО переданный user_id (V4 — вызывающая
-    сторона в хендлере обязана передавать message.from_user.id, не @arg)."""
+    """Upsert строки согласия (active/paused/declined) — используется
+    /twin_optin, /twin_pause, /twin_resume и API-роуты /api/v1/twin/optin,
+    /api/v1/twin/decline (onboarding-промпт miniapp). Пишет ТОЛЬКО переданный
+    user_id (V4 — вызывающая сторона обязана передавать message.from_user.id/
+    auth.user_id, не @arg)."""
     stmt = pg_insert(TwinOptIn).values(chat_id=chat_id, user_id=user_id, status=status)
     stmt = stmt.on_conflict_do_update(
         index_elements=["chat_id", "user_id"],
@@ -117,7 +119,9 @@ async def opt_out(session: AsyncSession, chat_id: int, user_id: int) -> bool:
 
 
 async def get_status(session: AsyncSession, chat_id: int, user_id: int) -> str | None:
-    """Текущий статус согласия вызывающего: 'active' | 'paused' | None (не подключён)."""
+    """Текущий статус согласия вызывающего: 'active' | 'paused' | 'declined' |
+    None (ещё ни разу не решал(а) — только это значение показывает
+    onboarding-промпт miniapp, см. api/routes/twin.py::asked)."""
     return (
         await session.execute(
             select(TwinOptIn.status).where(
