@@ -34,4 +34,22 @@ aiohttp==3.13.5
 # specific code path actually runs against the real production image.
 # Version pinned to match root requirements.txt.
 openai==2.45.0
+# Transitive runtime dep of bot/services/tag_service.py (module-level
+# `import emoji`), now reachable from the api process because
+# api/routes/tags.py (TAG-02 Mini App route, added 2026-07-23) imports
+# bot/services/tag_rental_service.py -> tag_service.py. Same class of gap
+# as APScheduler/aiohttp/openai above — caught live in production
+# (ModuleNotFoundError on container start) for the identical reason: this
+# minimal api image's gaps only surface once the specific code path
+# actually runs against the real production image, not under pytest
+# (which runs inside yuvi-bot-dev:py311's full root requirements.txt).
+# Version pinned to match root requirements.txt.
+emoji==2.15.0
+# Transitive runtime dep of the SAME bot/services/tag_service.py import
+# above — module-level `from aiogram.exceptions import TelegramBadRequest,
+# TelegramForbiddenError`. Only the exceptions submodule is used (this
+# process never holds an aiogram Bot instance, see api/tag_apply.py's own
+# docstring), but the full package still has to be importable for that
+# submodule import to resolve. Same pin as root requirements.txt.
+aiogram==3.27.0
 
