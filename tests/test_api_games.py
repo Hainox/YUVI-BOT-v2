@@ -771,7 +771,7 @@ async def test_blackjack_start_valid_bet_returns_200_with_active_hand(monkeypatc
     monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
     # 8+4 = 12 (не натурал) — раздача остаётся "active", удобно проверить
     # ровно форму start-ответа без немедленного settle.
-    monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["8", "4", "7", "5"]))
+    monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["8♠", "4♠", "7♠", "5♠"]))
     user_id = 300501
     await _ensure_user(user_id)
     await _topup(BLACKJACK_CHAT_ID, user_id)
@@ -790,7 +790,7 @@ async def test_blackjack_start_valid_bet_returns_200_with_active_hand(monkeypatc
     body = resp.json()
     assert body["status"] == "active"
     assert body["bet"] == 100
-    assert body["player"] == ["8", "4"]
+    assert body["player"] == ["8♠", "4♠"]
     assert "dealer_upcard" in body
     assert "id" in body
 
@@ -921,7 +921,7 @@ async def test_blackjack_action_hit_steps_hand_and_stays_active(monkeypatch):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         # player=[8,4]=12, dealer=[7,5]=12; hit добирает "3" -> player=[8,4,3]=15 (не bust)
-        monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["8", "4", "7", "5", "3"]))
+        monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["8♠", "4♠", "7♠", "5♠", "3♠"]))
         game_id = await _start_fixed_hand(client, init_data, BLACKJACK_CHAT_ID, [])
 
         resp = await client.post(
@@ -934,7 +934,7 @@ async def test_blackjack_action_hit_steps_hand_and_stays_active(monkeypatch):
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "active"
-    assert body["player"] == ["8", "4", "3"]
+    assert body["player"] == ["8♠", "4♠", "3♠"]
 
     await _force_settle_leftover_game(game_id)
 
@@ -951,7 +951,7 @@ async def test_blackjack_action_stand_settles_hand(monkeypatch):
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         # player=[8,4]=12, dealer=[7,5]=12 -> stand доигрывает дилера: +"9" -> 21, дилер стоп.
         # player(12) < dealer(21) -> "lose".
-        monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["8", "4", "7", "5", "9"]))
+        monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["8♠", "4♠", "7♠", "5♠", "9♠"]))
         game_id = await _start_fixed_hand(client, init_data, BLACKJACK_CHAT_ID, [])
 
         resp = await client.post(
@@ -964,7 +964,7 @@ async def test_blackjack_action_stand_settles_hand(monkeypatch):
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "settled"
-    assert body["dealer"] == ["7", "5", "9"]
+    assert body["dealer"] == ["7♠", "5♠", "9♠"]
     assert body["outcome"]["result"] == "lose"
     assert body["payout"] == 0
 
@@ -984,7 +984,7 @@ async def test_blackjack_action_double_debits_second_stake_and_settles(monkeypat
         # "2" -> player=[8,4,2]=14 (не bust), затем дилер доигрывает "6" -> 18.
         # player(14) < dealer(18) -> "lose", ставка была удвоена (списана дважды).
         monkeypatch.setattr(
-            casino_service, "_rng", _FixedDeckRng(["8", "4", "7", "5", "2", "6"])
+            casino_service, "_rng", _FixedDeckRng(["8♠", "4♠", "7♠", "5♠", "2♠", "6♠"])
         )
         game_id = await _start_fixed_hand(client, init_data, BLACKJACK_CHAT_ID, [])
         balance_before_double = await _get_balance(BLACKJACK_CHAT_ID, user_id)
@@ -999,8 +999,8 @@ async def test_blackjack_action_double_debits_second_stake_and_settles(monkeypat
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "settled"
-    assert body["player"] == ["8", "4", "2"]
-    assert body["dealer"] == ["7", "5", "6"]
+    assert body["player"] == ["8♠", "4♠", "2♠"]
+    assert body["dealer"] == ["7♠", "5♠", "6♠"]
     assert body["outcome"]["result"] == "lose"
     assert body["payout"] == 0
 
@@ -1022,7 +1022,7 @@ async def test_blackjack_action_double_after_hit_returns_400(monkeypatch):
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["8", "4", "7", "5", "3"]))
+        monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["8♠", "4♠", "7♠", "5♠", "3♠"]))
         game_id = await _start_fixed_hand(client, init_data, BLACKJACK_CHAT_ID, [])
 
         hit_resp = await client.post(
@@ -1056,7 +1056,7 @@ async def test_blackjack_action_invalid_action_value_returns_400(monkeypatch):
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["8", "4", "7", "5"]))
+        monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["8♠", "4♠", "7♠", "5♠"]))
         game_id = await _start_fixed_hand(client, init_data, BLACKJACK_CHAT_ID, [])
 
         resp = await client.post(
@@ -1104,7 +1104,7 @@ async def test_blackjack_action_on_foreign_game_returns_404_idor(monkeypatch):
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["8", "4", "7", "5"]))
+        monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["8♠", "4♠", "7♠", "5♠"]))
         victim_game_id = await _start_fixed_hand(
             client, victim_init_data, BLACKJACK_CHAT_ID, []
         )
@@ -1147,7 +1147,7 @@ async def test_blackjack_action_on_settled_game_replays_stored_result(monkeypatc
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["8", "4", "7", "5", "9"]))
+        monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["8♠", "4♠", "7♠", "5♠", "9♠"]))
         game_id = await _start_fixed_hand(client, init_data, BLACKJACK_CHAT_ID, [])
 
         first = await client.post(

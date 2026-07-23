@@ -192,7 +192,10 @@ def test_validate_init_data_uses_compare_digest_not_equality():
 
 def _fake_request(headers: dict | None = None, query_params: dict | None = None, http_client=None):
     app = SimpleNamespace(state=SimpleNamespace(http_client=http_client))
-    return SimpleNamespace(headers=headers or {}, query_params=query_params or {}, app=app)
+    # url.path — реальный FastAPI Request всегда его имеет; handle_invalid_init_data
+    # (api/main.py) логирует его вместе с короткой причиной отказа.
+    url = SimpleNamespace(path="/api/v1/test")
+    return SimpleNamespace(headers=headers or {}, query_params=query_params or {}, app=app, url=url)
 
 
 def test_extract_init_data_from_header():
