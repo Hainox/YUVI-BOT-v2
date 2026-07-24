@@ -41,6 +41,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from bot.config import settings
 from bot.services import economy_service
 from bot.services import gacha_catalog
 from common.db.session import SessionLocal
@@ -257,11 +258,18 @@ async def tap(
 
 async def _upgrade(session: AsyncSession, chat_id: int, user_id: int, base: int, level_attr: str) -> dict:
     """Общее ядро апгрейда тапа/автокликера (T-04.1-14): cost считается ДО
-    списания, при нехватке CP апгрейд отклоняется без изменения состояния."""
+    списания, при нехватке CP апгрейд отклоняется без изменения состояния.
+
+    Потолок уровня (`settings.farm_max_level`, запрошено 2026-07-24: 50 до
+    выхода гачи, 70 — после) проверяется первым, до расчёта cost — апгрейд
+    выше потолка отклоняется без изменения состояния, как и нехватка CP."""
     farm = await _get_or_create_farm(session, chat_id, user_id)
     await _accrue_offline(session, chat_id, user_id, farm)
 
     level = getattr(farm, level_attr)
+    if level >= settings.farm_max_level:
+        raise ClickerError(f"Достигнут максимальный уровень ({settings.farm_max_level})")
+
     cost = _upgrade_cost(base, level)
     if farm.cp < cost:
         raise ClickerError(f"Недостаточно CP для апгрейда (нужно {cost}, есть {farm.cp})")

@@ -24,6 +24,10 @@
 	const TAP_UPGRADE_BASE = 50;
 	const AUTO_UPGRADE_BASE = 200;
 	const UPGRADE_GROWTH = 1.15;
+	// Клиентское зеркало settings.farm_max_level (потолок 2026-07-24: 50 до
+	// гачи, 70 после) — только для UI (disable кнопки/подпись), сервер решает
+	// сам через ClickerError, это не единственная граница.
+	const FARM_MAX_LEVEL = 50;
 	const ANCHOR_CP_PER_HRYVNA = 100;
 	const TIER_FRACTIONS = [0.1, 0.25, 0.5, 0.75, 1];
 	const QUOTE_DEBOUNCE_MS = 250;
@@ -335,20 +339,32 @@
 			<button
 				type="button"
 				class="feature-card farm-upgrade-row"
-				disabled={upgradingTap || cp < tapUpgradeCost}
+				disabled={upgradingTap || tapLevel >= FARM_MAX_LEVEL || cp < tapUpgradeCost}
 				onclick={() => upgrade('tap')}
 			>
 				<span class="fc-title">Апгрейд тапа (ур. {tapLevel})</span>
-				<span class="fc-desc">{upgradingTap ? 'качаем…' : `стоимость ${tapUpgradeCost} CP`}</span>
+				<span class="fc-desc">
+					{tapLevel >= FARM_MAX_LEVEL
+						? 'максимальный уровень'
+						: upgradingTap
+							? 'качаем…'
+							: `стоимость ${tapUpgradeCost} CP`}
+				</span>
 			</button>
 			<button
 				type="button"
 				class="feature-card farm-upgrade-row"
-				disabled={upgradingAuto || cp < autoUpgradeCost}
+				disabled={upgradingAuto || autoLevel >= FARM_MAX_LEVEL || cp < autoUpgradeCost}
 				onclick={() => upgrade('auto')}
 			>
 				<span class="fc-title">Автокликер (ур. {autoLevel})</span>
-				<span class="fc-desc">{upgradingAuto ? 'качаем…' : `стоимость ${autoUpgradeCost} CP`}</span>
+				<span class="fc-desc">
+					{autoLevel >= FARM_MAX_LEVEL
+						? 'максимальный уровень'
+						: upgradingAuto
+							? 'качаем…'
+							: `стоимость ${autoUpgradeCost} CP`}
+				</span>
 			</button>
 		</div>
 

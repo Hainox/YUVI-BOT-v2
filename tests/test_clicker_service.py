@@ -251,6 +251,23 @@ async def test_upgrade_tap_cost_formula(session):
 
 
 @pytest.mark.asyncio
+async def test_upgrade_rejected_at_max_level(session, monkeypatch):
+    monkeypatch.setattr(clicker_service.settings, "farm_max_level", 50)
+    chat_id = -100910010
+    user_id = 910010
+    await _ensure_user(session, user_id)
+    await clicker_service.get_farm_state(session, chat_id, user_id)
+    await _set_farm(session, chat_id, user_id, cp=1_000_000_000, tap_level=50)
+
+    with pytest.raises(clicker_service.ClickerError):
+        await clicker_service.upgrade_tap(session, chat_id, user_id)
+
+    farm = await _get_farm(session, chat_id, user_id)
+    assert farm.tap_level == 50
+    assert farm.cp == 1_000_000_000
+
+
+@pytest.mark.asyncio
 async def test_upgrade_rejected_insufficient_cp(session):
     chat_id = -100910009
     user_id = 910009

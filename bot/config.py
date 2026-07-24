@@ -14,6 +14,10 @@ class Settings(BaseSettings):
 
     bot_token: str = Field(alias="BOT_TOKEN")
     chat_id: int = Field(alias="CHAT_ID")
+    # Владелец бота (запрошено 2026-07-24) — единственный, кому доступна
+    # /grant (bot/handlers/owner.py); НЕ то же самое, что "админ чата"
+    # (admin_service.is_chat_admin) — обычные админы этой команды не видят.
+    owner_id: int = Field(alias="OWNER_ID")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
 
     database_url: str = Field(alias="DATABASE_URL")
@@ -72,6 +76,10 @@ class Settings(BaseSettings):
     # фактически лимита сверх баланса нет — economy_service._guarded_debit уже
     # естественно запрещает ставить больше баланса).
     casino_max_bet_pct: float = Field(default=1.0, alias="CASINO_MAX_BET_PCT")
+
+    # Потолок tap_level/auto_level фермы (запрошено 2026-07-24): 50 до выхода
+    # гачи, 70 — после (поднимается сменой значения в .env, без правки кода).
+    farm_max_level: int = Field(default=50, alias="FARM_MAX_LEVEL")
 
     # --- Mini App (auth, D-01) ---
     # initData также передаётся query-параметром для SSE (EventSource не умеет
