@@ -24,6 +24,8 @@ from api import telegram_client
 from api.main import app
 from bot.config import settings
 from bot.services import economy_service
+from bot.services import social_service
+from bot.services.ai_client import AIEmptyResponseError
 from common.db.session import engine
 from common.db.session import SessionLocal
 from common.models.user import User
@@ -210,3 +212,48 @@ async def test_hug_telegram_delivery_failure_does_not_break_response(monkeypatch
         )
 
     assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_roast_ai_empty_response_returns_400_and_skips_delivery(monkeypatch):
+    """Прод-инцидент 2026-07-24: модель вернула только reasoning без ответа —
+    ai_client поднимает AIEmptyResponseError, роут должен вернуть аккуратный
+    400 (не голый 500) и не публиковать ничего в чат; несостоявшееся списание
+    откатывается вместе с сессией (та же дисциплина, что у InsufficientFunds/
+    InvalidTarget — исключение поднимается ДО commit)."""
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    send_message_mock = AsyncMock(return_value={"ok": True})
+    monkeypatch.setattr(telegram_client, "send_message", send_message_mock)
+
+    async def empty_reasoning_stream(messages, model, max_tokens):
+        raise AIEmptyResponseError("Модель вернула только reasoning без ответа — попробуйте другую модель")
+        yield  # pragma: no cover - делает функцию async generator, не выполняется
+
+    monkeypatch.setattr(social_service.ai_client, "stream", empty_reasoning_stream)
+
+    actor_id, target_id = 700108, 700109
+    await _ensure_user(actor_id, "Актёр")
+    await _ensure_user(target_id, "Цель")
+    await _touch_balance(CHAT_ID, target_id)
+    await _top_up(CHAT_ID, actor_id, 5000, str(uuid.uuid4()))
+    init_data = _build_init_data(user_id=actor_id)
+
+    async with SessionLocal() as db_session:
+        balance_before = await economy_service.get_balance(db_session, CHAT_ID, actor_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/shop/roast",
+            params={"chat_id": CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={"target_user_id": target_id, "idem_key": str(uuid.uuid4())},
+        )
+
+    assert resp.status_code == 400
+    assert "reasoning" in resp.json()["detail"].lower()
+    send_message_mock.assert_not_awaited()
+
+    async with SessionLocal() as db_session:
+        balance_after = await economy_service.get_balance(db_session, CHAT_ID, actor_id)
+    assert balance_after == balance_before  # списание откатилось вместе с сессией

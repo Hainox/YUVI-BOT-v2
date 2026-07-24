@@ -71,6 +71,7 @@ from bot.config import settings
 from bot.services import balance_events
 from bot.services import economy_service
 from bot.services import social_service
+from bot.services.ai_client import AIEmptyResponseError
 from common.db.session import SessionLocal
 from common.models.user import User
 from common.models.user_balance import UserBalance
@@ -201,7 +202,11 @@ async def post_joke_order(
                 body.topic,
                 body.idem_key,
             )
-        except (social_service.InvalidTarget, economy_service.InsufficientFunds) as exc:
+        except (
+            social_service.InvalidTarget,
+            economy_service.InsufficientFunds,
+            AIEmptyResponseError,
+        ) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         balance = await _commit_and_publish_balance(request, session, auth)
@@ -220,7 +225,11 @@ async def post_roast(
             text = await social_service.do_roast(
                 session, auth.chat_id, auth.user_id, body.target_user_id, target_name, body.idem_key
             )
-        except (social_service.InvalidTarget, economy_service.InsufficientFunds) as exc:
+        except (
+            social_service.InvalidTarget,
+            economy_service.InsufficientFunds,
+            AIEmptyResponseError,
+        ) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         balance = await _commit_and_publish_balance(request, session, auth)

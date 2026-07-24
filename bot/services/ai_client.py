@@ -41,6 +41,13 @@ client = AsyncOpenAI(
 )
 
 
+class AIEmptyResponseError(RuntimeError):
+    """Модель прислала только reasoning-дельты, ни одного символа content
+    (запрошено 2026-07-24: `api/routes/shop.py` ловит это отдельно от общего
+    `RuntimeError`, чтобы не глотать заодно и другие программные ошибки того
+    же типа — тонкий, конкретный класс вместо голого `RuntimeError`)."""
+
+
 async def stream(
     messages: list[dict],
     model: str,
@@ -49,8 +56,9 @@ async def stream(
     """Стримит chat-completion от OpenCode Go, отдавая по частям только текст ответа.
 
     Если модель прислала только reasoning-дельты и ни одного символа
-    content (модель "думала", но не ответила) — поднимаем RuntimeError с
-    понятным русским текстом вместо тихого возврата пустой строки.
+    content (модель "думала", но не ответила) — поднимаем
+    `AIEmptyResponseError` с понятным русским текстом вместо тихого возврата
+    пустой строки.
     """
     saw_content = False
     saw_reasoning_only = False
@@ -73,4 +81,4 @@ async def stream(
             saw_reasoning_only = True
 
     if not saw_content and saw_reasoning_only:
-        raise RuntimeError("Модель вернула только reasoning без ответа — попробуйте другую модель")
+        raise AIEmptyResponseError("Модель вернула только reasoning без ответа — попробуйте другую модель")
