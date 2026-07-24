@@ -10,6 +10,7 @@ parse_mode="HTML" (T-02-19, конвенция stats.py) — как и любо�
 from __future__ import annotations
 
 import html
+import logging
 
 from aiogram import Router
 from aiogram.filters import Command
@@ -21,6 +22,7 @@ from bot.services import card_service
 from common.models.user import User
 
 router = Router()
+logger = logging.getLogger(__name__)
 
 
 def _parse_target_arg(message: Message) -> str | None:
@@ -117,7 +119,13 @@ async def card_command(message: Message, session: AsyncSession) -> None:
         return
 
     user_id, raw_name = target
-    card = await card_service.build_card(session, message.chat.id, user_id, raw_name)
+    try:
+        card = await card_service.build_card(session, message.chat.id, user_id, raw_name)
+    except Exception:  # noqa: BLE001 - хендлер обязан сообщить об ошибке в чат, а не упасть молча
+        logger.exception("build_card упал для chat_id=%s user_id=%s", message.chat.id, user_id)
+        await message.reply("Не удалось собрать карточку — попробуйте позже.")
+        return
+
     display_name = html.escape(raw_name)
     text = format_card(display_name, card)
 

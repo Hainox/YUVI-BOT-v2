@@ -98,6 +98,15 @@ async def _download_or_reply(message: Message, item_url: str) -> bytes | None:
         return None
     if file_bytes is None:
         await message.reply(_SIZE_ERROR)
+        return None
+    if not file_bytes:
+        # tunnel вернул 200 OK с пустым телом — Telegram отклонит send_video/
+        # send_media_group с "file must be non-empty" уже ПОСЛЕ списания
+        # (savepoint откатится, но списание — лишняя попытка). Ловим здесь,
+        # ДО debit_to_bank, и даём тот же честный отказ, что и при сетевой ошибке.
+        logger.warning("media_dl: download() вернул пустой файл для item_url=%s", item_url)
+        await message.reply(_DOWNLOAD_ERROR)
+        return None
     return file_bytes
 
 
