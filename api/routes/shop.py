@@ -38,9 +38,23 @@ identity самого actor'а): участник миниаппа сам выб
 Self-target (D-03) — `social_service.InvalidTarget` -> 400 (сервис уже
 отвергает это ДО списания, роут просто маппит исключение на HTTP, тот же
 паттерн, что и остальные `*Error -> 400` в этом проекте).
+
+Доставка в чат (запрошено 2026-07-24 — жалоба "обнять не доходит"):
+`social_service.do_*` только ГЕНЕРИРУЕТ текст, ничего не отправляет сам —
+чат-хендлер публикует его через живой aiogram `Bot` (`message.answer`), а у
+`api`-процесса такого объекта нет (см. докстринг `api/telegram_client.py`).
+До этой правки Mini-App-путь возвращал `text` ТОЛЬКО в HTTP-ответе — цель и
+остальные участники чата ничего не видели, хотя деньги списывались реально.
+`_deliver_to_chat` (ниже) закрывает разрыв: raw HTTP `sendMessage`
+(`telegram_client.send_message`) ПОСЛЕ `_commit_and_publish_balance` —
+недоставленное сообщение (сетевой сбой Telegram) не должно откатывать уже
+совершённое и закоммиченное списание (best-effort, та же дисциплина, что у
+`send_invoice`).
 """
 
 from __future__ import annotations
+
+import html
 
 from fastapi import APIRouter
 from fastapi import Depends
@@ -50,6 +64,7 @@ from pydantic import BaseModel
 from pydantic import Field
 from sqlalchemy import select
 
+from api import telegram_client
 from api.deps import AuthContext
 from api.deps import require_membership
 from bot.config import settings
@@ -97,6 +112,28 @@ async def _commit_and_publish_balance(request: Request, session, auth: AuthConte
     return balance
 
 
+async def _deliver_to_chat(request: Request, chat_id: int, actor_name: str, text: str | None) -> None:
+    """Публикует результат соцмагазина в реальный Telegram-чат (запрошено
+    2026-07-24 — из Mini App результат раньше видел только сам нажавший:
+    `do_*` лишь возвращает текст, `api`-процесс не имеет aiogram `Bot`, чтобы
+    его куда-то отправить — см. `api/telegram_client.py::send_message`).
+
+    `text is None` — повтор `idem_key` (см. докстринг модуля выше): ничего не
+    отправляем, чат-хендлер в этом случае тоже молчит. `html.escape` и на имя
+    актора, и на весь текст (уже содержит НЕэкранированное имя цели —
+    `_resolve_target_name` читает `User.first_name` как есть, недоверенное
+    поле профиля Telegram, T-02-15) — простой и единственный на чат-путь
+    способ не пустить теги внутрь `parse_mode="HTML"`, не трогая при этом
+    `text`, который отдельно уходит клиенту в JSON как есть (не регрессия
+    отображения в самом Mini App)."""
+    if text is None:
+        return
+    message = f"{html.escape(actor_name)} → {html.escape(text)}"
+    await telegram_client.send_message(
+        request.app.state.http_client, settings.bot_token, chat_id, message, parse_mode="HTML"
+    )
+
+
 @router.get("/api/v1/shop")
 async def get_shop(auth: AuthContext = Depends(require_membership)) -> dict:
     return {
@@ -115,6 +152,7 @@ async def post_poke(
 ) -> dict:
     async with SessionLocal() as session:
         target_name = await _resolve_target_name(session, auth.chat_id, body.target_user_id)
+        actor_name = await _resolve_target_name(session, auth.chat_id, auth.user_id)
         try:
             text = await social_service.do_poke(
                 session, auth.chat_id, auth.user_id, body.target_user_id, target_name, body.idem_key
@@ -123,6 +161,7 @@ async def post_poke(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         balance = await _commit_and_publish_balance(request, session, auth)
+        await _deliver_to_chat(request, auth.chat_id, actor_name, text)
         return {"text": text, "replayed": text is None, "user_balance_after": balance}
 
 
@@ -132,6 +171,7 @@ async def post_hug(
 ) -> dict:
     async with SessionLocal() as session:
         target_name = await _resolve_target_name(session, auth.chat_id, body.target_user_id)
+        actor_name = await _resolve_target_name(session, auth.chat_id, auth.user_id)
         try:
             text = await social_service.do_hug(
                 session, auth.chat_id, auth.user_id, body.target_user_id, target_name, body.idem_key
@@ -140,6 +180,7 @@ async def post_hug(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         balance = await _commit_and_publish_balance(request, session, auth)
+        await _deliver_to_chat(request, auth.chat_id, actor_name, text)
         return {"text": text, "replayed": text is None, "user_balance_after": balance}
 
 
@@ -149,6 +190,7 @@ async def post_joke_order(
 ) -> dict:
     async with SessionLocal() as session:
         target_name = await _resolve_target_name(session, auth.chat_id, body.target_user_id)
+        actor_name = await _resolve_target_name(session, auth.chat_id, auth.user_id)
         try:
             text = await social_service.do_joke_order(
                 session,
@@ -163,6 +205,7 @@ async def post_joke_order(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         balance = await _commit_and_publish_balance(request, session, auth)
+        await _deliver_to_chat(request, auth.chat_id, actor_name, text)
         return {"text": text, "replayed": text is None, "user_balance_after": balance}
 
 
@@ -172,6 +215,7 @@ async def post_roast(
 ) -> dict:
     async with SessionLocal() as session:
         target_name = await _resolve_target_name(session, auth.chat_id, body.target_user_id)
+        actor_name = await _resolve_target_name(session, auth.chat_id, auth.user_id)
         try:
             text = await social_service.do_roast(
                 session, auth.chat_id, auth.user_id, body.target_user_id, target_name, body.idem_key
@@ -180,4 +224,5 @@ async def post_roast(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         balance = await _commit_and_publish_balance(request, session, auth)
+        await _deliver_to_chat(request, auth.chat_id, actor_name, text)
         return {"text": text, "replayed": text is None, "user_balance_after": balance}

@@ -65,6 +65,37 @@ async def get_chat_member_status(
     return status
 
 
+async def send_message(
+    client: httpx.AsyncClient, bot_token: str, chat_id: int, text: str, parse_mode: str | None = None
+) -> dict:
+    """Raw HTTP `sendMessage` (запрошено 2026-07-24, SHOP-01 chat-delivery
+    gap) — `api`-процесс не держит aiogram `Bot`-инстанс (см. докстринг этого
+    модуля), поэтому результат соцмагазина из Mini App (poke/hug/joke_order/
+    roast, `api/routes/shop.py`) публикуется в чат тем же способом, что и
+    `send_invoice`: сырой HTTP-вызов вместо aiogram.
+
+    Fail-closed на сетевой ошибке/невалидном JSON-ответе — возвращает
+    `{"ok": False, "description": ...}` вместо поднятия исключения (та же
+    дисциплина, что `send_invoice`); недоставленное сообщение в чат НЕ должно
+    ронять уже совершённое и закоммиченное списание денег — вызывающий
+    трактует `ok=False` как best-effort деградацию, не как ошибку запроса."""
+    payload: dict = {"chat_id": chat_id, "text": text}
+    if parse_mode is not None:
+        payload["parse_mode"] = parse_mode
+
+    try:
+        resp = await client.post(
+            f"https://api.telegram.org/bot{bot_token}/sendMessage", json=payload
+        )
+    except Exception:
+        return {"ok": False, "description": "telegram_request_failed"}
+
+    try:
+        return resp.json()
+    except Exception:
+        return {"ok": False, "description": f"telegram_bad_response_{resp.status_code}"}
+
+
 def is_admin_status(status: str) -> bool:
     """True для 'administrator'/'creator' — та же семантика, что ADMINS в aiogram."""
     return status in ("administrator", "creator")
