@@ -15,6 +15,7 @@
 	// probability/payout). The replay pacing is informational only — it does
 	// not invent outcomes, it only staggers the reveal of numbers the server
 	// already sent in `outcome`.
+	import { onDestroy } from 'svelte';
 	import { apiFetch, ApiError } from '$lib/api';
 	import { haptic } from '$lib/tg';
 	import { SLOT_SYMBOLS, SLOT_PAYLINES, symbolSrc } from '$lib/slotData';
@@ -40,6 +41,16 @@
 	const RETRIGGER_TOAST_GAP_MS = 350;
 	const RETRIGGER_TOAST_VISIBLE_MS = 900;
 	const BONUS_SETTLE_MS = 350;
+
+	// Автоспин: серия одинаковых по ставке раундов без ручного тапа на каждый.
+	// Тиры — фиксированный набор (не "тап циклит следующий уровень" — ряд из
+	// 5 чипов сразу виден игроку целиком, см. .auto-picker ниже). 'inf' крутит
+	// до явного "Стоп"/ошибки/недостатка средств.
+	const AUTO_SPIN_TIERS: (number | 'inf')[] = [5, 15, 25, 50, 'inf'];
+	// Доп. пауза ПОВЕРХ времени реального реплея раунда (REVEAL_DELAY_MS +
+	// возможный бонус-реплей уже отрабатывают внутри spin() до её resolve) —
+	// петля никогда не крутит быстрее, чем реально идёт анимация барабана.
+	const AUTO_SPIN_PAUSE_MS = 400;
 
 	type SlotWin = { line_index: number; symbol: string; count: number; payout: number };
 	type SlotResult = {
@@ -79,6 +90,11 @@
 	let bonusActive = $state(false);
 	let bonusFreespinsShown = $state(0);
 	let bonusToast = $state<string | null>(null);
+
+	// Автоспин: null = не запущен. tier — выбранный тир (число или 'inf'),
+	// remaining — сколько раундов ещё осталось (не используется для 'inf').
+	let autoSpin = $state<{ tier: number | 'inf'; remaining: number } | null>(null);
+	let autoPickerOpen = $state(false);
 
 	function _placeholderGrid(): string[][] {
 		const ids = Object.keys(SLOT_SYMBOLS);
@@ -187,8 +203,16 @@
 		bonusActive = false;
 	}
 
-	async function spin() {
-		if (spinning || bonusActive) return;
+	// Возвращает true, если раунд успешно settle'ился (и полностью доиграл
+	// свой визуальный реплей — включая бонус-раунд, если он был), false —
+	// если API вернул ошибку (недостаточно средств/лимит ставки/троттлинг
+	// авто-спина/сеть). Manual-тап по-прежнему просто игнорирует результат
+	// (`onclick={spin}`); автоспин использует его как сигнал "раунд готов,
+	// можно планировать следующий" (см. runAutoSpin ниже) — раньше это
+	// определялось fire-and-forget `window.setTimeout`, теперь тот же тайминг
+	// просто awaited, ничего в самой анимации/пэйсинге не поменялось.
+	async function spin(): Promise<boolean> {
+		if (spinning || bonusActive) return false;
 		error = null;
 		wins = [];
 		lastPayout = null;
@@ -214,7 +238,7 @@
 			spinning = false;
 			error = err instanceof ApiError ? err.message : String(err ?? 'unknown_error');
 			haptic('error');
-			return;
+			return false;
 		}
 
 		// Real result is known — swap the strip tails to the true final
@@ -222,29 +246,98 @@
 		// (row count/position never changed), so this never causes a jump.
 		reelStrips = _stripsFromGrid(res.outcome.grid);
 
-		window.setTimeout(() => {
-			grid = res.outcome.grid;
-			wins = res.outcome.wins;
-			lastPayout = res.payout;
-			spinning = false;
-			outcomeTint = res.payout > 0 ? 'win' : 'lose';
-			haptic('reel-stop');
+		await _wait(REVEAL_DELAY_MS);
 
-			// Scatter haptic/reveal is handled inside _revealScatterAndBonus
-			// (fires at the glow moment, not here) so it isn't duplicated.
-			if (res.outcome.scatter < 3) {
-				if (res.payout >= bet * 20) {
-					haptic('big-win');
-				} else if (res.payout > 0) {
-					haptic('win');
-				} else {
-					haptic('lose');
-				}
+		grid = res.outcome.grid;
+		wins = res.outcome.wins;
+		lastPayout = res.payout;
+		spinning = false;
+		outcomeTint = res.payout > 0 ? 'win' : 'lose';
+		haptic('reel-stop');
+
+		// Scatter haptic/reveal is handled inside _revealScatterAndBonus
+		// (fires at the glow moment, not here) so it isn't duplicated.
+		if (res.outcome.scatter < 3) {
+			if (res.payout >= bet * 20) {
+				haptic('big-win');
+			} else if (res.payout > 0) {
+				haptic('win');
+			} else {
+				haptic('lose');
 			}
+		}
 
-			void _revealScatterAndBonus(res);
-		}, REVEAL_DELAY_MS);
+		await _revealScatterAndBonus(res);
+		return true;
 	}
+
+	function autoSpinLabel(tier: number | 'inf'): string {
+		return tier === 'inf' ? '∞' : String(tier);
+	}
+
+	function autoSpinStatusText(a: { tier: number | 'inf'; remaining: number }): string {
+		if (a.tier === 'inf') return 'авто ∞ · жми, чтобы остановить';
+		const done = a.tier - a.remaining + 1;
+		return `авто ${done}/${a.tier} · жми, чтобы остановить`;
+	}
+
+	// Цикл авто-спина: последовательные вызовы spin() (никогда параллельно),
+	// каждый следующий раунд стартует не раньше, чем предыдущий полностью
+	// доиграл свой визуальный реплей (await spin()) + небольшая доп. пауза.
+	// Останавливается сама на первой же ошибке (недостаточно средств/лимит
+	// ставки/троттлинг/сеть) — БЕЗ ретрая, как и обычный ручной спин (см.
+	// докстринг spin() выше); внешняя остановка (Стоп/скрытие
+	// вкладки/размонтирование) просто обнуляет `autoSpin`, и цикл выходит на
+	// следующей проверке условия while.
+	async function runAutoSpin(): Promise<void> {
+		while (autoSpin) {
+			const ok = await spin();
+			if (!autoSpin) break;
+			if (!ok) {
+				autoSpin = null;
+				break;
+			}
+			if (autoSpin.tier === 'inf') {
+				await _wait(AUTO_SPIN_PAUSE_MS);
+				continue;
+			}
+			const remaining = autoSpin.remaining - 1;
+			if (remaining <= 0) {
+				autoSpin = null;
+				break;
+			}
+			autoSpin = { ...autoSpin, remaining };
+			await _wait(AUTO_SPIN_PAUSE_MS);
+		}
+	}
+
+	async function startAutoSpin(tier: number | 'inf'): Promise<void> {
+		if (spinning || bonusActive || autoSpin) return;
+		autoPickerOpen = false;
+		haptic('tap');
+		autoSpin = { tier, remaining: tier === 'inf' ? Infinity : tier };
+		await runAutoSpin();
+	}
+
+	function stopAutoSpin(): void {
+		autoSpin = null;
+	}
+
+	// Авто-спин не должен продолжать дёргать API в фоне, если игрок ушёл со
+	// страницы или свернул Mini App — обнуление `autoSpin` останавливает
+	// цикл на следующей проверке `while (autoSpin)` (текущий в моменте раунд
+	// доигрывается до конца, следующий уже не стартует).
+	onDestroy(() => {
+		autoSpin = null;
+	});
+
+	$effect(() => {
+		function onVisibilityChange() {
+			if (document.hidden) autoSpin = null;
+		}
+		document.addEventListener('visibilitychange', onVisibilityChange);
+		return () => document.removeEventListener('visibilitychange', onVisibilityChange);
+	});
 </script>
 
 <div class="slot-screen">
@@ -362,7 +455,7 @@
 				<button
 					type="button"
 					class={`chip ${bet === v ? 'chip-on' : ''}`}
-					disabled={spinning || bonusActive}
+					disabled={spinning || bonusActive || !!autoSpin}
 					onclick={() => (bet = v)}
 				>
 					{v}
@@ -371,12 +464,39 @@
 		</div>
 	</div>
 
-	<button type="button" class="slot-cta" disabled={spinning || bonusActive} onclick={spin}>
-		<span class="slot-cta-label"
-			>{spinning ? 'крутим…' : bonusActive ? 'БОНУС…' : 'КРУТИТЬ'}</span
-		>
-		<span class="slot-cta-sub">{spinning || bonusActive ? '' : `ставка ${bet}¥`}</span>
-	</button>
+	{#if autoSpin}
+		<button type="button" class="slot-cta slot-cta-auto" onclick={stopAutoSpin}>
+			<span class="slot-cta-label">СТОП</span>
+			<span class="slot-cta-sub">{autoSpinStatusText(autoSpin)}</span>
+		</button>
+	{:else}
+		{#if autoPickerOpen}
+			<div class="auto-picker">
+				{#each AUTO_SPIN_TIERS as tier (tier)}
+					<button type="button" class="auto-chip" onclick={() => startAutoSpin(tier)}>
+						{autoSpinLabel(tier)}
+					</button>
+				{/each}
+			</div>
+		{/if}
+		<div class="cta-row">
+			<button type="button" class="slot-cta" disabled={spinning || bonusActive} onclick={spin}>
+				<span class="slot-cta-label"
+					>{spinning ? 'крутим…' : bonusActive ? 'БОНУС…' : 'КРУТИТЬ'}</span
+				>
+				<span class="slot-cta-sub">{spinning || bonusActive ? '' : `ставка ${bet}¥`}</span>
+			</button>
+			<button
+				type="button"
+				class={`auto-toggle ${autoPickerOpen ? 'auto-toggle-on' : ''}`}
+				disabled={spinning || bonusActive}
+				aria-expanded={autoPickerOpen}
+				onclick={() => (autoPickerOpen = !autoPickerOpen)}
+			>
+				АВТО
+			</button>
+		</div>
+	{/if}
 </div>
 
 <style>
@@ -714,6 +834,15 @@
 		flex: 1;
 	}
 
+	.cta-row {
+		display: flex;
+		gap: var(--space-xs);
+		align-items: stretch;
+	}
+	.cta-row .slot-cta {
+		flex: 1;
+	}
+
 	.slot-cta {
 		background: var(--accent-pink);
 		border: none;
@@ -745,6 +874,70 @@
 		font-size: 12px;
 		color: #3a1420;
 		font-family: var(--font-body);
+	}
+
+	/* Пока идёт авто-серия, весь CTA превращается в один widescreen "СТОП" —
+	   тот же sticker-приём (жёсткая тень/скругление), что у обычного
+	   .slot-cta, но на cyan-акценте: своя, ни с чем не смешиваемая роль
+	   ("автоматика", отдельно от розового ручного спина и жёлтого бонуса). */
+	.slot-cta-auto {
+		background: var(--accent-cyan);
+	}
+	.slot-cta-auto .slot-cta-label,
+	.slot-cta-auto .slot-cta-sub {
+		color: #0a2a30;
+	}
+
+	/* Компактная кнопка-переключатель ряда тиров рядом с основным "КРУТИТЬ" —
+	   тот же цвет-роль cyan, что и .slot-cta-auto (обе — "автоматика"). */
+	.auto-toggle {
+		flex: 0 0 auto;
+		width: 64px;
+		background: var(--bg-secondary-2);
+		border: 2px solid var(--border-secondary);
+		border-radius: 14px;
+		color: var(--text-muted);
+		font-family: var(--font-body);
+		font-weight: 700;
+		font-size: 11px;
+		letter-spacing: 0.04em;
+		cursor: pointer;
+		transition:
+			border-color 0.15s,
+			color 0.15s,
+			background 0.15s;
+	}
+	.auto-toggle:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+	.auto-toggle-on {
+		border-color: var(--accent-cyan);
+		color: var(--accent-cyan);
+		background: color-mix(in srgb, var(--accent-cyan) 14%, var(--bg-secondary-2));
+	}
+
+	/* Ряд из всех тиров сразу (вариант B — не "тап циклит следующий уровень",
+	   игрок сразу видит весь набор 5/15/25/50/∞ и жмёт нужный). */
+	.auto-picker {
+		display: grid;
+		grid-template-columns: repeat(5, 1fr);
+		gap: var(--space-xs);
+	}
+	.auto-chip {
+		background: var(--bg-secondary-2);
+		border: 2px solid var(--accent-cyan);
+		border-radius: 10px;
+		padding: 8px 4px;
+		color: var(--accent-cyan);
+		font-family: var(--font-numeric);
+		font-weight: 900;
+		font-size: 14px;
+		cursor: pointer;
+		transition: transform 0.08s;
+	}
+	.auto-chip:active {
+		transform: translate(1px, 1px);
 	}
 
 	/* Respect prefers-reduced-motion: kill translateY drum spin, the scatter

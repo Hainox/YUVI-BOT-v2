@@ -61,6 +61,11 @@ RNG/paytable/фриспин-логику, роут только прокидыв
 оставлено как осознанный, задокументированный пробел (не тихий баг), не
 входящий в must_haves этого плана.
 
+`casino_service.RateLimited -> 429` — ТОЛЬКО у slots (авто-спин в miniapp:
+клиентский цикл повторных ставок без ручного тапа на каждый раунд, см.
+`casino_service._check_slots_throttle`); coinflip/dice/roulette/blackjack не
+имеют авто-повтора, поэтому этой ветки исключений у них нет.
+
 POST /games/blackjack (start) + POST /games/blackjack/{game_id}/action
 (04.2-10) — стейтфул-раздача (04.1-03): `game_id` из start-ответа
 переиспользуется в /action; `user_id` — ТОЛЬКО из `AuthContext`, `game_id` —
@@ -268,6 +273,8 @@ async def post_slots(
                 raise HTTPException(status_code=409, detail="round in progress, retry") from exc
         except casino_service.GameNotActive as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except casino_service.RateLimited as exc:
+            raise HTTPException(status_code=429, detail=str(exc)) from exc
         except (casino_service.InvalidBet, economy_service.InsufficientFunds) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
