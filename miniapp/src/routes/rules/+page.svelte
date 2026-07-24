@@ -12,9 +12,11 @@
 	// clicker_service.py (AMM_ANCHOR_CP_PER_HRYVNA), gacha_catalog.
 	// TIER_WEIGHTS (SR 80% / SSR 18% / UR 2%, R structurally unreachable).
 	//
-	// 04.2-UI-SPEC.md Hub Tile Inventory #11: "Changelog... is NOT a separate
-	// hub tile — it is the LAST accordion entry inside the Правила screen."
-	// Enforced below by simple array order (changelog block appended last).
+	// Changelog вынесен из этого экрана в отдельную плитку хаба «Что новое»
+	// (WHATSNEW-01, запрошено 2026-07-24, отменяет решение 04.2-UI-SPEC.md
+	// Hub Tile Inventory #11 "NOT a separate hub tile") — там же теперь живая
+	// лента из БД (bot/services/changelog_service.py), а не статичный список
+	// версий, который дублировал бы источник новостей.
 
 	let openIndex = $state<number | null>(0);
 
@@ -94,15 +96,6 @@
 				'Ставь на исход события через вкладку «Рынки» — минимальная ставка 10¥.',
 				'При создании/импорте рынка и при разрешении удерживается небольшая комиссия в банк чата.',
 				'Портфолио (вкладка «Портфолио») показывает все твои открытые и закрытые позиции.'
-			]
-		},
-		{
-			title: 'Changelog',
-			body: [
-				'0.4 — Дуэли и рынки ставок пришли в Mini App: полноценные экраны вместо только текстовых команд.',
-				'0.3 — Ферма-кликер и гача с AMM-курсом конвертации.',
-				'0.2 — Второй набор игр казино: рулетка, блэкджек, кости.',
-				'0.1 — Первый запуск Mini App: монетка, лидерборд, история, перевод, правила.'
 			]
 		}
 	];

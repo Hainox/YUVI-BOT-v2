@@ -1,12 +1,15 @@
-"""/grant (запрошено 2026-07-24): ручное начисление ювиков разработчиком
-владельцем бота при спорных ситуациях (жалоба на баг казино/гачи/фермы,
-компенсация и т.п.) — НЕ доступно обычным админам чата, только
-`settings.owner_id` (форма `farm_admin.py`: тонкий хендлер, живая проверка
-права с явным отказом, вся денежная логика — в `economy_service`).
+"""Владельческие команды (`settings.owner_id`) — НЕ доступны обычным админам
+чата, только одному конкретному Telegram user_id (форма `farm_admin.py`:
+тонкий хендлер, живая проверка права с явным отказом).
 
-Осознанно только выдача (не списание) — на отбор ювиков у пользователя
-существующих команд/прав достаточно, а спор почти всегда решается в пользу
-компенсации, а не штрафа.
+/grant (запрошено 2026-07-24): ручное начисление ювиков при спорных
+ситуациях (жалоба на баг казино/гачи/фермы, компенсация и т.п.). Осознанно
+только выдача (не списание) — на отбор ювиков у пользователя существующих
+команд/прав достаточно, а спор почти всегда решается в пользу компенсации.
+
+/post_update (WHATSNEW-01, запрошено 2026-07-24): публикация записи в ленту
+«Что нового» Mini App (`bot/services/changelog_service.py`) — первая строка
+текста команды становится заголовком, остальное — телом записи.
 """
 
 from __future__ import annotations
@@ -16,10 +19,12 @@ import logging
 
 from aiogram import Router
 from aiogram.filters import Command
+from aiogram.filters import CommandObject
 from aiogram.types import Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
+from bot.services import changelog_service
 from bot.services import economy_service
 from bot.services.target_resolution_service import resolve_by_username_or_id
 
@@ -86,3 +91,38 @@ async def grant_command(message: Message, session: AsyncSession) -> None:
         amount,
         message.chat.id,
     )
+
+
+def _parse_update_args(raw: str | None) -> tuple[str, str | None] | None:
+    """Первая строка -> title, остальное (если есть) -> body."""
+    if raw is None or not raw.strip():
+        return None
+    lines = raw.strip().splitlines()
+    title = lines[0].strip()
+    if not title:
+        return None
+    body = "\n".join(lines[1:]).strip() or None
+    return title, body
+
+
+@router.message(Command("post_update"))
+async def post_update_command(
+    message: Message, command: CommandObject, session: AsyncSession
+) -> None:
+    if message.from_user is None:
+        return
+    if message.from_user.id != settings.owner_id:
+        await message.reply("Эта команда доступна только владельцу бота.")
+        return
+
+    parsed = _parse_update_args(command.args)
+    if parsed is None:
+        await message.answer(
+            "Использование: /post_update <заголовок>\n<текст обновления (опционально)>"
+        )
+        return
+    title, body = parsed
+
+    await changelog_service.create_entry(session, title, body)
+    await session.commit()
+    await message.answer(f"Опубликовано в «Что нового»: {html.escape(title)}", parse_mode="HTML")
