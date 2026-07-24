@@ -99,7 +99,14 @@ def _resolve_user_id(parsed: dict) -> int:
 
 async def require_membership(request: Request) -> AuthContext:
     """Проверяет, что пользователь из initData реально состоит в chat_id
-    (query-параметр). IDOR (T-04-08): user_id — только из initData."""
+    (query-параметр) И подписан на `settings.havd_channel_username` (HAVD-01,
+    запрошено 2026-07-24: доступ к Mini App только подписчикам канала).
+    IDOR (T-04-08): user_id — только из initData.
+
+    `detail="not_subscribed_to_channel"` — машиночитаемая строка (НЕ
+    человекочитаемый текст, в отличие от "not a chat member"): миниапп
+    (`+layout.svelte`) матчит её по значению, чтобы показать отдельный экран
+    "подпишись на канал" со ссылкой вместо обычного экрана ошибки."""
     init_data = extract_init_data(request)
     parsed = validate_init_data(init_data, settings.bot_token, settings.mini_app_init_data_ttl_sec)
     user_id = _resolve_user_id(parsed)
@@ -116,6 +123,12 @@ async def require_membership(request: Request) -> AuthContext:
     )
     if status in ("left", "kicked"):
         raise HTTPException(status_code=403, detail="not a chat member")
+
+    channel_status = await telegram_client.get_chat_member_status(
+        request.app.state.http_client, settings.bot_token, settings.havd_channel_username, user_id
+    )
+    if channel_status in ("left", "kicked"):
+        raise HTTPException(status_code=403, detail="not_subscribed_to_channel")
     return AuthContext(user_id=user_id, chat_id=chat_id, status=status)
 
 

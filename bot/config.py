@@ -94,6 +94,12 @@ class Settings(BaseSettings):
     mini_app_frontend_origin: str = Field(
         default="http://localhost:8003", alias="MINI_APP_FRONTEND_ORIGIN"
     )
+    # Гейт доступа к Mini App (запрошено 2026-07-24): только подписчики этого
+    # канала проходят require_membership (api/deps.py) — @username, а не
+    # numeric ID, т.к. telegram_client.get_chat_member_status/getChatMember
+    # принимает оба варианта для публичных каналов. Бот должен быть участником
+    # канала, иначе getChatMember вернёт ошибку для ЛЮБОГО user_id.
+    havd_channel_username: str = Field(default="@havdaily", alias="HAVD_CHANNEL_USERNAME")
 
     # --- Ежедневные ритуалы, теги и Twin (фаза 5) ---
     tag_rent_per_day: int = Field(default=500, alias="TAG_RENT_PER_DAY")

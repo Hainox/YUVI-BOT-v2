@@ -24,10 +24,17 @@ async def create_entry(session: AsyncSession, title: str, body: str | None) -> C
 
 async def list_entries(session: AsyncSession, limit: int = LIST_LIMIT) -> list[ChangelogEntry]:
     """Новые сверху, до `limit` записей (по умолчанию 50 — лента новостей,
-    не архив, не нужна пагинация)."""
+    не архив, не нужна пагинация). Сортировка по (created_at, id) DESC — не
+    только по created_at: Postgres `now()` возвращает время начала
+    ТРАНЗАКЦИИ, так что несколько записей, вставленных и закоммиченных в
+    одной транзакции (как в тестах — двойной `create_entry` перед одним
+    `commit`), получают ОДИНАКОВЫЙ created_at; без id-тайбрейка порядок
+    таких строк не определён."""
     rows = (
         await session.execute(
-            select(ChangelogEntry).order_by(ChangelogEntry.created_at.desc()).limit(limit)
+            select(ChangelogEntry)
+            .order_by(ChangelogEntry.created_at.desc(), ChangelogEntry.id.desc())
+            .limit(limit)
         )
     ).scalars().all()
     return list(rows)

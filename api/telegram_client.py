@@ -17,6 +17,13 @@
 На не-200 ответе Telegram ИЛИ сетевой ошибке — fail-closed ("left"), не
 поднимает исключение наверх (та же дисциплина "никогда не доверять
 непроверенному праву доступа", что неявно есть в admin_service).
+
+`chat_id: int | str` (запрошено 2026-07-24, HAVD-01): `require_membership`
+теперь вызывает эту же функцию дважды — числовым `chat_id` для группы Mini
+App и `@username`-строкой (`settings.havd_channel_username`) для проверки
+подписки на канал. Telegram Bot API принимает оба варианта для публичных
+чатов/каналов как есть — отдельная реализация не нужна, кэш-ключ `(chat_id,
+user_id)` работает одинаково для int и str.
 """
 
 from __future__ import annotations
@@ -28,13 +35,13 @@ import httpx
 
 from bot.config import settings
 
-_cache: dict[tuple[int, int], tuple[float, str]] = {}
+_cache: dict[tuple[int | str, int], tuple[float, str]] = {}
 _lock = asyncio.Lock()
 CACHE_TTL = settings.mini_app_membership_cache_ttl_sec
 
 
 async def get_chat_member_status(
-    client: httpx.AsyncClient, bot_token: str, chat_id: int, user_id: int
+    client: httpx.AsyncClient, bot_token: str, chat_id: int | str, user_id: int
 ) -> str:
     """Возвращает статус участника чата (live, с TTL-кэшем `CACHE_TTL` секунд).
 

@@ -12,6 +12,7 @@
 
 	let loading = $state(true);
 	let error = $state<string | null>(null);
+	let notSubscribed = $state(false);
 	let sseExpired = $state(false);
 	let sse: EventSource | null = null;
 	let userId = $state<number | null>(null);
@@ -22,6 +23,11 @@
 	const handle = tg.user
 		? `@${tg.user.username || tg.user.first_name || `id${tg.user.id}`}`
 		: 'гость';
+
+	// HAVD-01 (запрошено 2026-07-24) — держим в синхроне со
+	// settings.havd_channel_username (bot/config.py), сама ссылка не
+	// секретна и не требует отдельного эндпоинта ради одной константы.
+	const HAVD_CHANNEL_URL = 'https://t.me/havdaily';
 
 	// feedback #8: раньше единственным способом сообщить свой ID
 	// получателю перевода/дуэли было написать его числом в чате вручную —
@@ -71,8 +77,15 @@
 		} catch (err) {
 			// Spoofing mitigation (T-04.2-05): on 401/membership failure, show the
 			// locked error screen — never fall back to a degraded/fake-data mode.
-			error =
-				err instanceof ApiError ? `${err.status}: ${err.message}` : String(err ?? 'unknown_error');
+			// "not_subscribed_to_channel" (HAVD-01, api/deps.py::require_membership)
+			// is a machine-readable detail — matched by value to show a dedicated
+			// "subscribe to the channel" screen instead of the generic error one.
+			if (err instanceof ApiError && err.message === 'not_subscribed_to_channel') {
+				notSubscribed = true;
+			} else {
+				error =
+					err instanceof ApiError ? `${err.status}: ${err.message}` : String(err ?? 'unknown_error');
+			}
 			loading = false;
 			return;
 		}
@@ -130,6 +143,18 @@
 
 {#if loading}
 	<div class="screen-loading"><span>загрузка…</span></div>
+{:else if notSubscribed}
+	<div class="screen-error">
+		<h2>Нужна подписка на канал</h2>
+		<div class="err-hint">
+			Доступ к играм и остальным функциям бота открыт только подписчикам HAVD. Подпишись на канал
+			и попробуй снова.
+		</div>
+		<a class="havd-subscribe-link" href={HAVD_CHANNEL_URL} target="_blank" rel="noopener"
+			>Подписаться</a
+		>
+		<button type="button" onclick={() => location.reload()}>Я подписался, проверить снова</button>
+	</div>
 {:else if error}
 	<div class="screen-error">
 		<h2>Ошибка соединения</h2>
@@ -218,6 +243,18 @@
 
 	.sse-expired-banner button {
 		flex-shrink: 0;
+	}
+
+	.havd-subscribe-link {
+		display: inline-block;
+		background: #2a6fdb;
+		color: #fff;
+		border-radius: 8px;
+		padding: 10px 20px;
+		font-size: var(--font-body-size);
+		font-family: var(--font-body);
+		font-weight: 700;
+		text-decoration: none;
 	}
 
 	.twin-prompt-backdrop {

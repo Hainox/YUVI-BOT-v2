@@ -269,9 +269,12 @@ async def test_require_membership_ignores_spoofed_user_id_in_query_uses_initdata
     auth = await deps.require_membership(request)
 
     assert auth.user_id == 111
-    mock_get_status.assert_awaited_once()
-    called_user_id = mock_get_status.call_args.args[-1]
-    assert called_user_id == 111
+    # HAVD-01 (2026-07-24): require_membership теперь зовёт get_chat_member_status
+    # ДВАЖДЫ — группа Mini App, затем канал HAVD — обе проверки должны получить
+    # непровалидированный user_id, не спуфнутый query-параметр.
+    assert mock_get_status.await_count == 2
+    for call in mock_get_status.await_args_list:
+        assert call.args[-1] == 111
 
 
 @pytest.mark.asyncio
