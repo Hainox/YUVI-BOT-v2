@@ -12,6 +12,7 @@
 
 	let loading = $state(true);
 	let error = $state<string | null>(null);
+	let sseExpired = $state(false);
 	let sse: EventSource | null = null;
 	let userId = $state<number | null>(null);
 	let idCopied = $state(false);
@@ -77,10 +78,17 @@
 		}
 
 		if (parsed?.chatId != null) {
-			sse = connectBalanceStream(parsed.chatId, tg.initData, (data) => {
-				const payload = data as { balance?: number };
-				if (typeof payload.balance === 'number') balance.set(payload.balance);
-			});
+			sse = connectBalanceStream(
+				parsed.chatId,
+				tg.initData,
+				(data) => {
+					const payload = data as { balance?: number };
+					if (typeof payload.balance === 'number') balance.set(payload.balance);
+				},
+				() => {
+					sseExpired = true;
+				}
+			);
 		}
 
 		loading = false;
@@ -134,6 +142,12 @@
 	</div>
 {:else}
 	<div class="webapp-root">
+		{#if sseExpired}
+			<div class="sse-expired-banner">
+				<span>Сессия истекла — живые обновления остановлены.</span>
+				<button type="button" onclick={() => location.reload()}>Перезайти</button>
+			</div>
+		{/if}
 		<div class="screen">
 			<div class="balance-card app-balance-header">
 				<div class="bc-handle-row">
@@ -188,6 +202,22 @@
 <style>
 	.app-balance-header {
 		margin: var(--space-md) var(--space-md) 0;
+	}
+
+	.sse-expired-banner {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--space-sm);
+		padding: var(--space-sm) var(--space-md);
+		background: var(--bg-secondary-2);
+		border-bottom: 1px solid var(--border-secondary);
+		font-size: var(--font-body-size);
+		color: var(--text-muted);
+	}
+
+	.sse-expired-banner button {
+		flex-shrink: 0;
 	}
 
 	.twin-prompt-backdrop {
