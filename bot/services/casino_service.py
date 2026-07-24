@@ -355,9 +355,12 @@ _last_slots_spin_at: dict[int, float] = {}
 
 def _check_slots_throttle(user_id: int) -> None:
     """Отклоняет спин, если предыдущий спин ЭТОГО игрока был меньше
-    `settings.casino_spin_min_interval_ms` назад. Вызывается ПЕРВЫМ в
-    `play_slots`, до валидации ставки/идемпотентности — намеренно грубая
-    защита по частоте запросов, не завязанная на исход конкретного раунда."""
+    `settings.casino_spin_min_interval_ms` назад. Только для НОВЫХ раундов —
+    вызывающий (`play_slots`) обязан пропустить этот вызов, если это replay
+    уже settled-раунда по тому же `idem_key` (см. его докстринг): иначе
+    легитимный повторный вызов с тем же idem_key (обычная идемпотентность,
+    напр. `test_play_slots_settles_and_is_idempotent`) ошибочно ловил бы
+    RateLimited вместо честного replay-ответа."""
     now = time.monotonic()
     last = _last_slots_spin_at.get(user_id)
     _last_slots_spin_at[user_id] = now
@@ -382,10 +385,14 @@ async def play_slots(
     двигает исключительно `_settle` (стейк -> RNG -> капнутая банком выплата
     -> `CasinoGame`), здесь — только сборка `compute()`-замыкания.
 
-    Первым делом проверяет `_check_slots_throttle` (`RateLimited`, если
+    Перед этим проверяет `_check_slots_throttle` (`RateLimited`, если
     слишком рано) — единственная игра казино с клиентским авто-повтором
-    ставок (авто-спин в miniapp), поэтому единственная с троттлингом частоты."""
-    _check_slots_throttle(user_id)
+    ставок (авто-спин в miniapp), поэтому единственная с троттлингом частоты.
+    Троттлинг НЕ применяется, если `idem_key` уже settled (`_find_existing`
+    находит существующую строку) — это replay, а не новая ставка, `_settle`
+    ниже вернёт сохранённый исход без повторного движения денег."""
+    if await _find_existing(session, user_id, idem_key) is None:
+        _check_slots_throttle(user_id)
     if bet <= 0 or bet % slot_engine.TOTAL_LINES != 0:
         raise InvalidBet(
             f"Ставка должна быть положительным кратным {slot_engine.TOTAL_LINES} "
