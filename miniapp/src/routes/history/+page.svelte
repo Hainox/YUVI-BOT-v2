@@ -47,6 +47,35 @@
 		return KIND_LABELS[row.kind] ?? row.kind;
 	}
 
+	// Цветная иконка-бейдж по типу события (design-прототип §История: каждая
+	// строка несёт цветной квадрат-тег) — сгруппировано по тому же смыслу,
+	// что и KIND_LABELS: соц/казино = розовый, ферма/рынки = циан, гача =
+	// жёлтый, дуэль = розовый, переводы/рефанды/комиссии = нейтральный.
+	const KIND_STYLE: Record<string, { icon: string; color: string }> = {
+		start_bonus: { icon: '🎁', color: 'var(--accent-yellow)' },
+		transfer_out: { icon: '↗', color: 'var(--text-muted)' },
+		transfer_in: { icon: '↙', color: 'var(--accent-cyan)' },
+		casino_bet: { icon: '🎲', color: 'var(--accent-pink)' },
+		casino_payout: { icon: '🎰', color: 'var(--accent-pink)' },
+		farm_convert: { icon: '🌾', color: 'var(--accent-cyan)' },
+		farm_buy_cp: { icon: '🌾', color: 'var(--accent-cyan)' },
+		duel_stake: { icon: '⚔', color: 'var(--accent-pink)' },
+		duel_payout: { icon: '⚔', color: 'var(--accent-pink)' },
+		duel_refund: { icon: '⚔', color: 'var(--text-muted)' },
+		gacha_roll: { icon: '✦', color: 'var(--accent-yellow)' },
+		gacha_refund: { icon: '✦', color: 'var(--text-muted)' },
+		bet: { icon: '📈', color: 'var(--accent-cyan)' },
+		market_payout: { icon: '📈', color: 'var(--accent-cyan)' },
+		market_refund: { icon: '📈', color: 'var(--text-muted)' },
+		market_create_fee: { icon: '📈', color: 'var(--text-muted)' },
+		market_import_fee: { icon: '📈', color: 'var(--text-muted)' },
+		market_cancel_refund: { icon: '📈', color: 'var(--text-muted)' }
+	};
+	const DEFAULT_KIND_STYLE = { icon: '•', color: 'var(--text-muted)' };
+	function kindStyle(row: HistoryRow): { icon: string; color: string } {
+		return KIND_STYLE[row.kind] ?? DEFAULT_KIND_STYLE;
+	}
+
 	function formatTime(iso: string): string {
 		const d = new Date(iso);
 		const now = new Date();
@@ -95,9 +124,12 @@
 		<div class="hist-list">
 			{#each items as it (it.id)}
 				<div class="hist-row">
-					<div class="hist-meta">
-						<span class="hist-kind">{kindLabel(it)}</span>
-						<span class="hist-time">{formatTime(it.created_at)}</span>
+					<div class="hist-left">
+						<div class="hist-icon" style="background: {kindStyle(it).color}">{kindStyle(it).icon}</div>
+						<div class="hist-meta">
+							<span class="hist-kind">{kindLabel(it)}</span>
+							<span class="hist-time">{formatTime(it.created_at)}</span>
+						</div>
 					</div>
 					<div class={`hist-amount ${it.amount >= 0 ? 'pos' : 'neg'}`}>
 						{it.amount >= 0 ? `+${it.amount}` : it.amount}¥
@@ -186,10 +218,28 @@
 		gap: var(--space-sm);
 		min-height: 44px;
 	}
+	.hist-left {
+		display: flex;
+		align-items: center;
+		gap: var(--space-sm);
+		min-width: 0;
+	}
+	.hist-icon {
+		width: 32px;
+		height: 32px;
+		border-radius: 8px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		font-size: 15px;
+		flex-shrink: 0;
+		color: #0d0a18;
+	}
 	.hist-meta {
 		display: flex;
 		flex-direction: column;
 		gap: 2px;
+		min-width: 0;
 	}
 	.hist-kind {
 		font-size: var(--font-body-size);

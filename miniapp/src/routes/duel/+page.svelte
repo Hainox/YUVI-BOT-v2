@@ -231,6 +231,22 @@
 				комиссии, проигравший получает мут.
 			</div>
 
+			<div class="duel-vs">
+				<div class="duel-vs-side">
+					<div class="duel-vs-avatar" style="background: linear-gradient(135deg, #2a2438, var(--accent-cyan))">
+						Я
+					</div>
+					<span class="duel-vs-label">ты</span>
+				</div>
+				<div class="duel-vs-mid">VS</div>
+				<div class="duel-vs-side">
+					<div class="duel-vs-avatar" style="background: linear-gradient(135deg, #2a2438, var(--accent-pink))">
+						?
+					</div>
+					<span class="duel-vs-label">{opponentId ? `id${opponentId}` : 'соперник'}</span>
+				</div>
+			</div>
+
 			<UserPicker bind:value={opponentId} label="Соперник" placeholder="@ник, имя или ID" />
 
 			<div class="bet-row">
@@ -411,6 +427,47 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--space-md);
+	}
+
+	/* ─── VS face-off (design-прототип §Дуэль) ────────────────────────── */
+	.duel-vs {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: var(--space-md);
+	}
+	.duel-vs-side {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 4px;
+	}
+	.duel-vs-avatar {
+		width: 56px;
+		height: 56px;
+		border-radius: 12px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		font-family: var(--font-chrome);
+		font-size: 18px;
+		font-weight: 700;
+		color: var(--text-primary);
+	}
+	.duel-vs-label {
+		font-size: 11px;
+		color: var(--text-muted);
+		font-family: var(--font-body);
+		max-width: 90px;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.duel-vs-mid {
+		font-family: var(--font-numeric);
+		font-size: 20px;
+		font-weight: 900;
+		color: var(--accent-yellow);
 	}
 
 	.duel-hint {

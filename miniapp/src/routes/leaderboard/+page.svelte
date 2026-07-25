@@ -26,6 +26,15 @@
 		return row.username || row.first_name || `id${row.user_id}`;
 	}
 
+	// Детерминированный wash-градиент аватара по user_id (design-прототип
+	// §Лидерборд: у каждой строки круглый аватар) — реальных фото профиля
+	// Telegram нам не отдаёт, поэтому вместо заглушки берём стабильный
+	// цветной круг с первой буквой имени.
+	const AVATAR_ACCENTS = ['var(--accent-pink)', 'var(--accent-cyan)', 'var(--accent-yellow)'];
+	function avatarGradient(userId: number): string {
+		return `linear-gradient(135deg, #2a2438, ${AVATAR_ACCENTS[userId % AVATAR_ACCENTS.length]})`;
+	}
+
 	onMount(async () => {
 		try {
 			rows = await apiFetch<LeaderboardRow[]>('/api/v1/leaderboard');
@@ -59,6 +68,9 @@
 				{@const isMe = myId != null && row.user_id === myId}
 				<div class={`lb-row ${isMe ? 'is-me' : ''}`}>
 					<span class={`lb-rank rank-${Math.min(i + 1, 4)}`}>{i + 1}</span>
+					<span class="lb-avatar" style="background: {avatarGradient(row.user_id)}">
+						{displayName(row).charAt(0).toUpperCase()}
+					</span>
 					<span class="lb-name">
 						@{displayName(row)}
 						{#if isMe}<span class="lb-me-tag">ты</span>{/if}
@@ -160,6 +172,19 @@
 	}
 	.lb-rank.rank-1 {
 		color: var(--accent-yellow);
+	}
+	.lb-avatar {
+		width: 32px;
+		height: 32px;
+		border-radius: 50%;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		flex-shrink: 0;
+		font-family: var(--font-chrome);
+		font-size: 13px;
+		font-weight: 700;
+		color: var(--text-primary);
 	}
 	.lb-name {
 		flex: 1;

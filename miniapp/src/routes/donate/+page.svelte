@@ -69,15 +69,17 @@
 		<div class="menu-sub">задонать звёздами Telegram — получи ювики</div>
 	</div>
 
-	<div class="bet-chips">
+	<div class="donate-packs">
 		{#each STAR_CHIPS as v (v)}
 			<button
 				type="button"
-				class={`chip ${amount === v ? 'chip-on' : ''}`}
+				class={`donate-pack ${amount === v ? 'donate-pack-on' : ''}`}
 				disabled={sending}
 				onclick={() => pickChip(v)}
 			>
-				{v}
+				<div class="donate-pack-icon">⭐</div>
+				<div class="donate-pack-stars">{v}</div>
+				<div class="donate-pack-juvik">{v * STARS_TO_JUVIK_RATE}¥</div>
 			</button>
 		{/each}
 	</div>
@@ -147,10 +149,43 @@
 		font-family: var(--font-body);
 	}
 
-	.bet-chips {
+	.donate-packs {
 		display: grid;
-		grid-template-columns: repeat(5, 1fr);
-		gap: var(--space-xs);
+		grid-template-columns: repeat(3, 1fr);
+		gap: var(--space-sm);
+	}
+	.donate-pack {
+		background: var(--bg-secondary-2);
+		border: 2px solid var(--border-secondary);
+		border-radius: 12px;
+		padding: var(--space-sm);
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 2px;
+		cursor: pointer;
+	}
+	.donate-pack:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
+	}
+	.donate-pack-on {
+		border-color: var(--accent-yellow);
+		background: #2a2438;
+	}
+	.donate-pack-icon {
+		font-size: 20px;
+	}
+	.donate-pack-stars {
+		font-family: var(--font-numeric);
+		font-size: var(--font-heading-size);
+		font-weight: 900;
+		color: var(--text-primary);
+	}
+	.donate-pack-juvik {
+		font-size: 11px;
+		color: var(--text-muted);
+		font-family: var(--font-body);
 	}
 
 	.tr-field {
