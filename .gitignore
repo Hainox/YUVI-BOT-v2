@@ -29,3 +29,13 @@ Dockerfile.dev
 *.session
 *.session-journal
 
+# Character concept-art reference folders (Telegram photo exports) — local
+# design reference only, not project source.
+АМИРА - Концепты/
+АСТРЕЯ КОНЦЕПТЫ/
+Дизайн бота Yuvi с гачей системой (1)/
+МАРА - КОНЦЕПТЫ/
+СОФИЯ - КОНЦЕПТЫ/
+ЭЛИАНА _ КОНЦЕПТЫ/
+ЮНА КОНЦЕПТЫ/
+
