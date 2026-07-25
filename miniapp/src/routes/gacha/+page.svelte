@@ -1,27 +1,24 @@
 <script lang="ts">
 	// Gacha — roll ×1/×10 + tier-list collection view (GACHA-01, visual half
-	// of GACHA-03). 04-UI-SPEC.md §Component Inventory: rarity color-coding
-	// R=neutral/S=cyan/UR=pink/UUR=yellow-glow (Hero/Impact reveal tier on
-	// UUR pulls specifically); pity counters shown as small label-tier text
-	// under the roll button.
+	// of GACHA-03/GACHA-04). Visual language ported from the design
+	// prototype (Yuvi MiniApp Prototype.dc.html §Гача): hero banner card
+	// with full-bleed portrait art + gradient scrims + particle sparkles,
+	// and a collection grid that ALWAYS renders the full 15-character
+	// roster (locked characters get a tier-colored wash + "?" instead of
+	// disappearing into an empty-state text) — the prototype never shows a
+	// blank "пока пусто" screen, even for a brand-new player.
 	//
 	// Server is the sole source of truth for every roll outcome
 	// (gacha_service.roll, D-03) — this screen only renders whatever
 	// POST /gacha/roll returns. Roll results carry only char_id/tier/stars
 	// (roll()/​_grant()/​_apply_dupe() are untouched, per 04.2-05-PLAN.md) —
-	// character NAMES come from GET /gacha/collection's catalog-enriched
-	// rows, so the collection is always re-fetched right after a roll: the
-	// freshly-granted character is guaranteed to already be in the
-	// collection (grant always happens for every result), which resolves
-	// names for the reveal without duplicating gacha_catalog client-side.
+	// character names/art come from GET /gacha/collection's `roster` (full
+	// catalog, GACHA-04), so the collection is always re-fetched right
+	// after a roll: the freshly-granted character is guaranteed to already
+	// be owned=true in the roster.
 	import { onMount } from 'svelte';
 	import { apiFetch, ApiError } from '$lib/api';
 	import { haptic } from '$lib/tg';
-
-	// Раздел включён (хаб больше не прячет тайл). Флаг оставлен для
-	// будущих отключений — гасит и прямой заход по /gacha, переключается
-	// обратно одной строкой.
-	const GACHA_DISABLED = false;
 
 	const ROLL_COST = 300;
 	const ROLL10_COST = 2700;
@@ -30,17 +27,19 @@
 	const TIER_ORDER = ['UUR', 'UR', 'S', 'R'] as const;
 
 	type Tier = 'R' | 'S' | 'UR' | 'UUR';
-	type Character = {
+	type RosterChar = {
 		char_id: string;
 		name: string;
 		tier: Tier;
+		art_slug: string;
+		owned: boolean;
 		stars: number;
 		copies: number;
 		const_level: number;
-		art_slug: string;
 	};
 	type CollectionState = {
-		characters: Character[];
+		characters: unknown[];
+		roster: RosterChar[];
 		pity_ssr: number;
 		pity_ur: number;
 		banner: string;
@@ -58,15 +57,23 @@
 	let rolling = $state(false);
 	let reveal = $state<RollGrant[] | null>(null);
 
-	let collection = $state<Character[]>([]);
+	let roster = $state<RosterChar[]>([]);
 	let pitySsr = $state(0);
 	let pityUr = $state(0);
 	let bannerId = $state('');
 
-	let byId = $derived(new Map(collection.map((c) => [c.char_id, c])));
-	let bannerChar = $derived(byId.get(bannerId) ?? null);
+	let byId = $derived(new Map(roster.map((c) => [c.char_id, c])));
+	// Настоящий рейт-ап баннер (если админ его настроил через gacha_banner
+	// BotSetting) — иначе "витринный" топ-тир персонаж (первый UUR ростера),
+	// чтобы карточка баннера никогда не была пустой. Разница честно
+	// отражена в подписи (hasRealBanner) — без rate-up мы не утверждаем,
+	// что у витринного персонажа реально повышен шанс.
+	let hasRealBanner = $derived(bannerId !== '');
+	let bannerChar = $derived(
+		byId.get(bannerId) ?? roster.find((c) => c.tier === 'UUR') ?? roster[0] ?? null
+	);
 	let grouped = $derived(
-		TIER_ORDER.map((tier) => ({ tier, chars: collection.filter((c) => c.tier === tier) })).filter(
+		TIER_ORDER.map((tier) => ({ tier, chars: roster.filter((c) => c.tier === tier) })).filter(
 			(g) => g.chars.length > 0
 		)
 	);
@@ -78,7 +85,7 @@
 	async function loadCollection() {
 		try {
 			const res = await apiFetch<CollectionState>('/api/v1/gacha/collection');
-			collection = res.characters;
+			roster = res.roster;
 			pitySsr = res.pity_ssr;
 			pityUr = res.pity_ur;
 			bannerId = res.banner;
@@ -115,19 +122,16 @@
 		return byId.get(charId)?.name ?? charId;
 	}
 
-	function bannerLabel(): string {
-		if (!bannerId) return 'баннер не выбран';
-		return bannerChar ? bannerChar.name : `персонаж ${bannerId} (ещё не выпал)`;
+	function charArtSlug(charId: string): string | undefined {
+		return byId.get(charId)?.art_slug;
 	}
 
 	onMount(() => {
-		if (!GACHA_DISABLED) loadCollection();
+		loadCollection();
 	});
 </script>
 
-{#if GACHA_DISABLED}
-	<div class="screen-loading"><span>гача временно отключена</span></div>
-{:else if loading}
+{#if loading}
 	<div class="screen-loading"><span>загрузка баннера…</span></div>
 {:else}
 	<div class="gacha-screen">
@@ -136,24 +140,44 @@
 			<div class="menu-sub">крути баннер, собирай тир-лист</div>
 		</div>
 
-		<div class="gacha-banner">
-			<div class="gacha-banner-label">Rate-up баннер</div>
-			<div class="gacha-banner-name">{bannerLabel()}</div>
-		</div>
-
 		{#if error}
 			<div class="cf-error">{error}</div>
 		{/if}
+
+		<div class="gacha-hero">
+			<div class="gacha-hero-inner">
+				{#if bannerChar}
+					<img src="/art/heroines/{bannerChar.art_slug}.webp" alt="" class="gacha-hero-art" />
+				{/if}
+				<div class="gacha-hero-scrim"></div>
+				<div class="gacha-hero-glow"></div>
+				<span class="gacha-hero-particle gacha-hero-particle-1"></span>
+				<span class="gacha-hero-particle gacha-hero-particle-2"></span>
+				<span class="gacha-hero-particle gacha-hero-particle-3"></span>
+				{#if bannerChar}
+					<div class={`gacha-hero-badge-left gacha-tier-${bannerChar.tier.toLowerCase()}`}>
+						{bannerChar.tier} · {hasRealBanner ? 'РЕЙТ-АП' : 'ОСОБЫЙ ГЕРОЙ'}
+					</div>
+					<div class={`gacha-hero-badge-right gacha-tier-pill-${bannerChar.tier.toLowerCase()}`}>
+						{bannerChar.tier}
+					</div>
+				{/if}
+				<div class="gacha-hero-text">
+					<div class="gacha-hero-kicker">{hasRealBanner ? 'Лимитный баннер' : 'Топ-тир'}</div>
+					<div class="gacha-hero-name">{bannerChar ? bannerChar.name : 'баннер не выбран'}</div>
+				</div>
+			</div>
+		</div>
 
 		{#if reveal}
 			<div class="gacha-reveal">
 				{#each reveal as grant (grant.char_id + ':' + grant.stars + ':' + grant.refunded)}
 					<div class={`gacha-reveal-card gacha-tier-${grant.tier.toLowerCase()}`}>
-						{#if byId.get(grant.char_id)?.art_slug}
+						{#if charArtSlug(grant.char_id)}
 							<img
+								src="/art/heroines/{charArtSlug(grant.char_id)}.webp"
+								alt=""
 								class="gacha-reveal-portrait"
-								src={`/art/heroines/${byId.get(grant.char_id)?.art_slug}.webp`}
-								alt={charName(grant.char_id)}
 							/>
 						{/if}
 						<div class="gacha-reveal-tier">{grant.tier}</div>
@@ -188,36 +212,35 @@
 
 		<div class="gacha-collection">
 			<div class="fc-title">Коллекция</div>
-			{#if grouped.length === 0}
-				<div class="fc-desc">пока пусто — крути баннер</div>
-			{/if}
 			{#each grouped as group (group.tier)}
 				<div class="gacha-tier-group">
-					<div class={`gacha-tier-heading gacha-tier-${group.tier.toLowerCase()}`}>
-						{group.tier}
+					<div class="gacha-tier-group-head">
+						<span class={`gacha-tier-pill gacha-tier-pill-${group.tier.toLowerCase()}`}>
+							{group.tier}
+						</span>
+						<span class="gacha-tier-count">
+							{group.chars.filter((c) => c.owned).length}/{group.chars.length}
+						</span>
 					</div>
 					<div class="gacha-tier-grid">
 						{#each group.chars as char (char.char_id)}
-							<div class={`gacha-char-card gacha-tier-${char.tier.toLowerCase()}`}>
-								{#if char.art_slug}
-									<img
-										class="gacha-char-portrait"
-										src={`/art/heroines/${char.art_slug}.webp`}
-										alt={char.name}
-									/>
-								{/if}
-								<div class="gacha-char-name">{char.name}</div>
-								<div class="gacha-char-stars">{'★'.repeat(char.stars)}</div>
-								{#if char.copies > 1 || char.const_level > 0}
-									<div class="gacha-char-meta">
-										{#if char.copies > 1}
-											<span class="gacha-char-copies">×{char.copies}</span>
-										{/if}
-										{#if char.const_level > 0}
-											<span class="gacha-char-const">C{char.const_level}</span>
+							<div class="gacha-roster-card" class:gacha-roster-locked={!char.owned}>
+								<div class={`gacha-roster-art gacha-tier-wash-${char.tier.toLowerCase()}`}>
+									{#if char.owned}
+										<img src="/art/heroines/{char.art_slug}.webp" alt="" />
+									{:else}
+										<span class="gacha-roster-lock">?</span>
+									{/if}
+								</div>
+								<div class="gacha-roster-footer">
+									<div class="gacha-roster-name">{char.owned ? char.name : '???'}</div>
+									<div class="gacha-roster-stars">
+										{char.owned ? '★'.repeat(char.stars) : '—'}
+										{#if char.owned && char.copies > 1}
+											<span class="gacha-roster-copies">×{char.copies}</span>
 										{/if}
 									</div>
-								{/if}
+								</div>
 							</div>
 						{/each}
 					</div>
@@ -261,25 +284,131 @@
 		font-family: var(--font-body);
 	}
 
-	.gacha-banner {
-		background: var(--bg-secondary-2);
-		border: 1px solid var(--border-secondary);
-		border-radius: 14px;
-		padding: var(--space-md);
-		text-align: center;
+	/* ─── hero banner card (design-прототип §Гача: full-bleed art + scrims + particles) ── */
+	.gacha-hero {
+		border-radius: 18px;
+		overflow: hidden;
+		border: 2px solid var(--accent-yellow);
+		box-shadow: 0 0 34px rgba(255, 216, 74, 0.35);
 	}
-	.gacha-banner-label {
-		font-size: var(--font-label-size);
-		text-transform: uppercase;
-		letter-spacing: 0.08em;
-		color: var(--text-muted);
+	.gacha-hero-inner {
+		position: relative;
+		min-height: 300px;
+		display: flex;
+		flex-direction: column;
+		justify-content: flex-end;
+		padding: var(--space-lg) var(--space-md) var(--space-md);
+		background: linear-gradient(160deg, #170f2e, #0d0821 45%, #3d1e6b 78%, #a175ff 150%);
+		overflow: hidden;
 	}
-	.gacha-banner-name {
+	.gacha-hero-art {
+		position: absolute;
+		inset: 0;
+		width: 100%;
+		height: 100%;
+		object-fit: cover;
+		object-position: top center;
+	}
+	.gacha-hero-scrim {
+		position: absolute;
+		inset: 0;
+		pointer-events: none;
+		background: linear-gradient(
+			to top,
+			rgba(9, 6, 20, 0.95) 0%,
+			rgba(9, 6, 20, 0.6) 26%,
+			rgba(9, 6, 20, 0.05) 58%,
+			rgba(60, 30, 110, 0.3) 100%
+		);
+	}
+	.gacha-hero-glow {
+		position: absolute;
+		inset: 0;
+		pointer-events: none;
+		background: radial-gradient(circle at 50% 30%, rgba(161, 117, 255, 0.28), transparent 66%);
+	}
+	.gacha-hero-particle {
+		position: absolute;
+		border-radius: 50%;
+		background: var(--accent-yellow);
+		width: 5px;
+		height: 5px;
+		animation: gachaParticle 2.2s ease-in infinite;
+	}
+	.gacha-hero-particle-1 {
+		left: 38%;
+		top: 34%;
+	}
+	.gacha-hero-particle-2 {
+		left: 60%;
+		top: 38%;
+		width: 4px;
+		height: 4px;
+		background: #fff;
+		animation-duration: 2.6s;
+		animation-delay: 0.5s;
+	}
+	.gacha-hero-particle-3 {
+		left: 50%;
+		top: 30%;
+		width: 3px;
+		height: 3px;
+		background: var(--accent-cyan);
+		animation-duration: 1.9s;
+		animation-delay: 1s;
+	}
+	@keyframes gachaParticle {
+		0% {
+			transform: translateY(20px) scale(0.4);
+			opacity: 0;
+		}
+		40% {
+			opacity: 1;
+		}
+		100% {
+			transform: translateY(-120px) scale(1.1);
+			opacity: 0;
+		}
+	}
+	.gacha-hero-badge-left,
+	.gacha-hero-badge-right {
+		position: absolute;
+		top: 16px;
 		font-family: var(--font-chrome);
-		font-size: var(--font-heading-size);
-		font-weight: 700;
+	}
+	.gacha-hero-badge-left {
+		left: 16px;
+		font-size: 10px;
+		letter-spacing: 0.1em;
+		background: rgba(0, 0, 0, 0.35);
+		padding: 4px 10px;
+		border-radius: 999px;
+	}
+	.gacha-hero-badge-right {
+		right: 16px;
+		font-family: var(--font-numeric);
+		font-size: 12px;
+		font-weight: 900;
+		color: #0d0a18;
+		padding: 4px 10px;
+		border-radius: 6px;
+	}
+	.gacha-hero-text {
+		position: relative;
+	}
+	.gacha-hero-kicker {
+		font-family: var(--font-chrome);
+		font-size: 10.5px;
+		letter-spacing: 0.12em;
 		color: var(--accent-yellow);
-		margin-top: var(--space-xs);
+		text-transform: uppercase;
+	}
+	.gacha-hero-name {
+		font-family: var(--font-chrome);
+		font-size: 30px;
+		font-weight: 700;
+		color: #fff;
+		margin-top: 4px;
 	}
 
 	.gacha-reveal {
@@ -288,15 +417,23 @@
 		gap: var(--space-sm);
 	}
 	.gacha-reveal-card {
+		position: relative;
+		overflow: hidden;
 		background: var(--bg-secondary-2);
 		border: 2px solid var(--border-secondary);
 		border-radius: 14px;
 		padding: var(--space-md);
 		text-align: center;
 	}
-	/* Простой reveal для портрета: fade + scale-up ~350мс, без
-	   многофазной "кинематографичной" анимации (см. задачу — оставить
-	   просто). */
+	.gacha-reveal-portrait {
+		width: 100%;
+		height: 140px;
+		object-fit: cover;
+		object-position: top center;
+		border-radius: 10px;
+		margin-bottom: var(--space-sm);
+		animation: gachaPortraitReveal 0.35s ease-out;
+	}
 	@keyframes gachaPortraitReveal {
 		from {
 			opacity: 0;
@@ -307,26 +444,15 @@
 			transform: scale(1);
 		}
 	}
-	.gacha-reveal-portrait {
-		width: 100%;
-		height: 150px;
-		object-fit: cover;
-		border-radius: 10px;
-		margin-bottom: var(--space-sm);
-		animation: gachaPortraitReveal 0.35s ease-out;
-	}
-	/* UUR-портрет крупнее + тот же жёлтый glow, что и у .gacha-tier-uur. */
-	.gacha-reveal-card.gacha-tier-uur .gacha-reveal-portrait {
-		height: 170px;
-		box-shadow: 0 0 24px rgba(255, 216, 74, 0.45);
-	}
 	.gacha-reveal-tier {
+		position: relative;
 		font-family: var(--font-numeric);
 		font-size: var(--font-label-size);
 		font-weight: 900;
 		letter-spacing: 0.08em;
 	}
 	.gacha-reveal-name {
+		position: relative;
 		font-family: var(--font-chrome);
 		font-size: var(--font-heading-size);
 		font-weight: 700;
@@ -334,11 +460,13 @@
 		margin-top: var(--space-xs);
 	}
 	.gacha-reveal-stars {
+		position: relative;
 		font-size: var(--font-heading-size);
 		color: var(--accent-yellow);
 		margin-top: var(--space-xs);
 	}
 	.gacha-reveal-dupe {
+		position: relative;
 		font-size: 12px;
 		color: var(--text-muted);
 		font-family: var(--font-body);
@@ -347,13 +475,13 @@
 
 	/* Rarity color-coding (04-UI-SPEC.md §Component Inventory): R=neutral,
 	   S=cyan, UR=pink, UUR=yellow glow (Hero/Impact reveal tier
-	   specifically on UUR pulls). */
+	   specifically on UUR pulls). Reused for hero badges/tier pills below. */
 	.gacha-tier-r {
 		border-color: #9b97ad;
 	}
 	.gacha-tier-r .gacha-reveal-tier,
 	.gacha-tier-r .gacha-char-name,
-	.gacha-tier-r .gacha-char-const {
+	.gacha-hero-badge-left.gacha-tier-r {
 		color: #9b97ad;
 	}
 	.gacha-tier-s {
@@ -361,7 +489,7 @@
 	}
 	.gacha-tier-s .gacha-reveal-tier,
 	.gacha-tier-s .gacha-char-name,
-	.gacha-tier-s .gacha-char-const {
+	.gacha-hero-badge-left.gacha-tier-s {
 		color: var(--accent-cyan);
 	}
 	.gacha-tier-ur {
@@ -369,7 +497,7 @@
 	}
 	.gacha-tier-ur .gacha-reveal-tier,
 	.gacha-tier-ur .gacha-char-name,
-	.gacha-tier-ur .gacha-char-const {
+	.gacha-hero-badge-left.gacha-tier-ur {
 		color: var(--accent-pink);
 	}
 	.gacha-tier-uur {
@@ -378,8 +506,24 @@
 	}
 	.gacha-tier-uur .gacha-reveal-tier,
 	.gacha-tier-uur .gacha-char-name,
-	.gacha-tier-uur .gacha-char-const {
+	.gacha-hero-badge-left.gacha-tier-uur {
 		color: var(--accent-yellow);
+	}
+	.gacha-tier-pill-r,
+	.gacha-hero-badge-right.gacha-tier-pill-r {
+		background: #9b97ad;
+	}
+	.gacha-tier-pill-s,
+	.gacha-hero-badge-right.gacha-tier-pill-s {
+		background: var(--accent-cyan);
+	}
+	.gacha-tier-pill-ur,
+	.gacha-hero-badge-right.gacha-tier-pill-ur {
+		background: var(--accent-pink);
+	}
+	.gacha-tier-pill-uur,
+	.gacha-hero-badge-right.gacha-tier-pill-uur {
+		background: var(--accent-yellow);
 	}
 	/* Hero-tier reveal treatment on UUR pulls specifically (04-UI-SPEC.md
 	   line 68: gacha UUR pull reveal is a "jackpot theater" Hero moment). */
@@ -409,6 +553,7 @@
 		letter-spacing: 0.04em;
 	}
 
+	/* ─── collection: full roster grid, locked heroines get wash + "?" ──── */
 	.gacha-collection {
 		display: flex;
 		flex-direction: column;
@@ -419,60 +564,104 @@
 		flex-direction: column;
 		gap: var(--space-xs);
 	}
-	.gacha-tier-heading {
+	.gacha-tier-group-head {
+		display: flex;
+		align-items: center;
+		gap: var(--space-sm);
+	}
+	.gacha-tier-pill {
 		font-family: var(--font-numeric);
-		font-size: var(--font-label-size);
+		font-size: 11px;
 		font-weight: 900;
-		letter-spacing: 0.08em;
+		letter-spacing: 0.04em;
+		padding: 3px 9px;
+		border-radius: 6px;
+		color: #0d0a18;
+	}
+	.gacha-tier-count {
+		font-family: var(--font-body);
+		font-size: 11px;
+		color: var(--text-muted);
 	}
 	.gacha-tier-grid {
 		display: grid;
-		grid-template-columns: 1fr 1fr;
+		grid-template-columns: repeat(3, 1fr);
 		gap: var(--space-sm);
 	}
-	.gacha-char-card {
+	.gacha-roster-card {
 		background: var(--bg-secondary-2);
 		border: 1px solid var(--border-secondary);
 		border-radius: 10px;
-		padding: var(--space-sm);
+		overflow: hidden;
+		transition: opacity 0.15s;
 	}
-	.gacha-char-portrait {
-		width: 100%;
-		height: auto;
-		object-fit: cover;
-		border-radius: 8px;
-		margin-bottom: var(--space-xs);
+	.gacha-roster-locked {
+		opacity: 0.55;
 	}
-	.gacha-char-name {
-		font-family: var(--font-chrome);
-		font-size: 13px;
-		font-weight: 700;
-		color: var(--text-primary);
-	}
-	.gacha-char-stars {
-		font-size: 12px;
-		color: var(--accent-yellow);
-		margin-top: 2px;
-	}
-	.gacha-char-meta {
+	.gacha-roster-art {
+		height: 72px;
+		position: relative;
 		display: flex;
 		align-items: center;
-		gap: 6px;
-		margin-top: 2px;
+		justify-content: center;
+		overflow: hidden;
+		animation: gachaRosterBreathe 4.8s ease-in-out infinite;
 	}
-	.gacha-char-copies {
-		font-size: 11px;
-		color: var(--text-muted);
-		font-family: var(--font-body);
+	.gacha-roster-art img {
+		position: absolute;
+		inset: 0;
+		width: 100%;
+		height: 100%;
+		object-fit: cover;
+		object-position: top center;
 	}
-	.gacha-char-const {
-		font-size: 10px;
-		font-weight: 700;
+	.gacha-tier-wash-r {
+		background: linear-gradient(135deg, var(--bg-secondary-1), #9b97ad);
+	}
+	.gacha-tier-wash-s {
+		background: linear-gradient(135deg, var(--bg-secondary-1), var(--accent-cyan));
+	}
+	.gacha-tier-wash-ur {
+		background: linear-gradient(135deg, var(--bg-secondary-1), var(--accent-pink));
+	}
+	.gacha-tier-wash-uur {
+		background: linear-gradient(135deg, var(--bg-secondary-1), var(--accent-yellow));
+	}
+	@keyframes gachaRosterBreathe {
+		0%,
+		100% {
+			transform: scale(1) translateY(0);
+		}
+		50% {
+			transform: scale(1.035) translateY(-2px);
+		}
+	}
+	.gacha-roster-lock {
+		position: relative;
 		font-family: var(--font-numeric);
-		color: inherit;
-		border: 1px solid currentColor;
-		border-radius: 999px;
-		padding: 1px 6px;
-		line-height: 1.4;
+		font-size: 20px;
+		color: rgba(255, 255, 255, 0.55);
+	}
+	.gacha-roster-footer {
+		padding: 6px 7px;
+	}
+	.gacha-roster-name {
+		font-family: var(--font-chrome);
+		font-size: 10.5px;
+		font-weight: 700;
+		color: var(--text-primary);
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+	.gacha-roster-stars {
+		font-family: var(--font-numeric);
+		font-size: 9px;
+		color: var(--accent-yellow);
+		margin-top: 1px;
+	}
+	.gacha-roster-copies {
+		color: var(--text-muted);
+		margin-left: 4px;
 	}
 </style>

@@ -477,6 +477,42 @@ async def test_get_collection_reports_const_level_and_art_slug(session, monkeypa
     assert entry["art_slug"] == gacha_catalog.CATALOG[char.char_id].art_slug
 
 
+@pytest.mark.asyncio
+async def test_get_collection_roster_covers_full_catalog_with_owned_flag(session, monkeypatch):
+    """GACHA-04: `roster` (в отличие от `characters`) всегда содержит ВЕСЬ
+    каталог из 15 героинь, с `owned=False`/нулевыми stars/copies/const_level
+    для ещё не собранных — экран коллекции Mini App рисует их как
+    заблокированные карточки вместо пустого текста-заглушки."""
+    chat_id = -100910014
+    user_id = 910014
+    await _ensure_user(session, user_id)
+    await _fund(session, chat_id, user_id)
+
+    monkeypatch.setattr(gacha_service, "_rng", _ForcedRng(random_value=0.0, choice_index=0))
+    await gacha_service.roll(session, chat_id, user_id, 1, "test_roster_seed")
+
+    result = await gacha_service.get_collection(session, chat_id, user_id)
+    granted_char_id = result["characters"][0]["char_id"]
+
+    assert len(result["roster"]) == len(gacha_catalog.CATALOG)
+    roster_by_id = {c["char_id"] for c in result["roster"]}
+    assert roster_by_id == set(gacha_catalog.CATALOG.keys())
+
+    granted_entry = next(c for c in result["roster"] if c["char_id"] == granted_char_id)
+    assert granted_entry["owned"] is True
+    assert granted_entry["stars"] == 1
+    assert granted_entry["copies"] == 1
+
+    for entry in result["roster"]:
+        if entry["char_id"] == granted_char_id:
+            continue
+        assert entry["owned"] is False
+        assert entry["stars"] == 0
+        assert entry["copies"] == 0
+        assert entry["const_level"] == 0
+        assert entry["art_slug"] == gacha_catalog.CATALOG[entry["char_id"]].art_slug
+
+
 # --- get_banner_info (design-хендофф §5: pre-roll read) ----------------------
 
 

@@ -275,7 +275,15 @@ async def get_collection(session: AsyncSession, chat_id: int, user_id: int) -> d
     `min(6, copies-1)`) и `art_slug` (имя статичного ассета Mini App из
     `gacha_catalog.Character`). Чистый SELECT — не пишет ничего, кроме
     идемпотентного get-or-create строки фермы (тот же паттерн, что уже
-    установлен `clicker_service.get_farm_state` для чистых read-путей)."""
+    установлен `clicker_service.get_farm_state` для чистых read-путей).
+
+    Дополнительно к `characters` (только собранные — контракт не менялся,
+    старые потребители/тесты не задеты) возвращает `roster`: ВЕСЬ каталог из
+    15 героинь с флагом `owned`, включая ещё не собранных (`stars`/`copies`/
+    `const_level`=0). Нужен экрану коллекции Mini App, чтобы всегда
+    показывать полную тир-сетку (дизайн-прототип никогда не рендерит пустой
+    текст "пока пусто" — недостающие персонажи рисуются как заблокированные
+    карточки), а не пустой список до первого ролла."""
     rows = (
         await session.execute(
             select(GachaCollection).where(
@@ -284,6 +292,7 @@ async def get_collection(session: AsyncSession, chat_id: int, user_id: int) -> d
             )
         )
     ).scalars().all()
+    owned_by_id = {row.char_id: row for row in rows}
 
     characters = []
     for row in rows:
@@ -302,6 +311,23 @@ async def get_collection(session: AsyncSession, chat_id: int, user_id: int) -> d
             }
         )
 
+    roster = []
+    for char in gacha_catalog.CATALOG.values():
+        row = owned_by_id.get(char.char_id)
+        owned = row is not None
+        roster.append(
+            {
+                "char_id": char.char_id,
+                "name": char.name,
+                "tier": char.tier,
+                "art_slug": char.art_slug,
+                "owned": owned,
+                "stars": row.stars if row is not None else 0,
+                "copies": row.copies if row is not None else 0,
+                "const_level": constellation_catalog.const_level(row.copies) if row is not None else 0,
+            }
+        )
+
     farm = await clicker_service._get_or_create_farm(session, chat_id, user_id)
     await session.commit()
 
@@ -309,6 +335,7 @@ async def get_collection(session: AsyncSession, chat_id: int, user_id: int) -> d
 
     return {
         "characters": characters,
+        "roster": roster,
         "pity_ssr": farm.pity_ssr,
         "pity_ur": farm.pity_ur,
         "banner": banner,
