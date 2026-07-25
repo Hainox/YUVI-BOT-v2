@@ -1,12 +1,16 @@
 <script lang="ts">
-	// Gacha — roll ×1/×10 + tier-list collection view (GACHA-01, visual half
-	// of GACHA-03/GACHA-04). Visual language ported from the design
-	// prototype (Yuvi MiniApp Prototype.dc.html §Гача): hero banner card
-	// with full-bleed portrait art + gradient scrims + particle sparkles,
-	// and a collection grid that ALWAYS renders the full 15-character
-	// roster (locked characters get a tier-colored wash + "?" instead of
-	// disappearing into an empty-state text) — the prototype never shows a
-	// blank "пока пусто" screen, even for a brand-new player.
+	// Gacha — roll ×1/×10 + tier-list collection + world map (GACHA-01,
+	// visual half of GACHA-03/GACHA-04). Visual language ported from the
+	// design prototype (deploy/index.html §Гача): real tab switcher
+	// (Баннер/Коллекция/Карта — three stateful buttons swapping a panel in
+	// place, not a route jump or a dropdown), hero banner card with
+	// full-bleed portrait art + gradient scrims + particle sparkles, a
+	// collection grid that ALWAYS renders the full 15-character roster
+	// (locked characters get a tier-colored wash + "?" instead of an empty
+	// "пока пусто" text), and a region map (Yuviteria Codex §"Материк ·
+	// Регионы" — 5 real geographic regions + a "Легенды" group for the 4
+	// heroines with no fixed homeland: the wanderer Селин and the three
+	// cosmic-lineage UUR heroines).
 	//
 	// Server is the sole source of truth for every roll outcome
 	// (gacha_service.roll, D-03) — this screen only renders whatever
@@ -27,6 +31,7 @@
 	const TIER_ORDER = ['UUR', 'UR', 'S', 'R'] as const;
 
 	type Tier = 'R' | 'S' | 'UR' | 'UUR';
+	type GachaView = 'banner' | 'collection' | 'map';
 	type RosterChar = {
 		char_id: string;
 		name: string;
@@ -52,6 +57,39 @@
 		user_balance_after: number;
 	};
 
+	// Регионы Ювитерии (Yuviteria Codex §"Материк · Регионы") — чисто
+	// презентационная группировка для вкладки "Карта", цвета и названия
+	// взяты дословно из кодекса. "Легенды" — не официальный регион кодекса,
+	// а сборная группа для 4 героинь без фиксированной родины (странница
+	// Селин + три UUR с космической, а не географической, принадлежностью).
+	type RegionKey = 'falkonia' | 'ignaria' | 'frostheim' | 'ardaria' | 'ferals' | 'legends';
+	const REGIONS: { key: RegionKey; name: string; tag: string; color: string }[] = [
+		{ key: 'falkonia', name: 'Фалкония', tag: '«Сердце человечества»', color: '#4a5f8a' },
+		{ key: 'ignaria', name: 'Игнария', tag: '«Земля Вечного Пламени»', color: '#ff7a2e' },
+		{ key: 'frostheim', name: 'Фростхейм', tag: '«Королевство вечной зимы»', color: '#8fe0ff' },
+		{ key: 'ardaria', name: 'Ардария', tag: '«Пески Мёртвых»', color: '#caa43d' },
+		{ key: 'ferals', name: 'Фералы', tag: '«Дети дикой природы»', color: '#5c8a3f' },
+		{ key: 'legends', name: 'Легенды', tag: 'вне регионов — странники и полукровки', color: '#c9a8ff' }
+	];
+	const CHAR_REGION: Record<string, RegionKey> = {
+		r_elis: 'falkonia',
+		r_freya: 'falkonia',
+		r_selin: 'legends',
+		r_sofia: 'falkonia',
+		r_nora: 'falkonia',
+		s_ignis: 'ignaria',
+		s_astrid: 'frostheim',
+		s_amira: 'ardaria',
+		s_luna: 'falkonia',
+		ur_iris: 'falkonia',
+		ur_yuna: 'ferals',
+		ur_mia: 'ferals',
+		uur_astrea: 'legends',
+		uur_eliana: 'legends',
+		uur_mara: 'legends'
+	};
+
+	let view = $state<GachaView>('banner');
 	let loading = $state(true);
 	let error = $state<string | null>(null);
 	let rolling = $state(false);
@@ -63,11 +101,12 @@
 	let bannerId = $state('');
 
 	let byId = $derived(new Map(roster.map((c) => [c.char_id, c])));
+	let ownedCount = $derived(roster.filter((c) => c.owned).length);
 	// Настоящий рейт-ап баннер (если админ его настроил через gacha_banner
-	// BotSetting) — иначе "витринный" топ-тир персонаж (первый UUR ростера),
-	// чтобы карточка баннера никогда не была пустой. Разница честно
-	// отражена в подписи (hasRealBanner) — без rate-up мы не утверждаем,
-	// что у витринного персонажа реально повышен шанс.
+	// BotSetting) — иначе "витринный" топ-тир персонаж (первый UUR
+	// ростера), чтобы карточка баннера никогда не была пустой. Разница
+	// честно отражена в подписи (hasRealBanner) — без rate-up мы не
+	// утверждаем, что у витринного персонажа реально повышен шанс.
 	let hasRealBanner = $derived(bannerId !== '');
 	let bannerChar = $derived(
 		byId.get(bannerId) ?? roster.find((c) => c.tier === 'UUR') ?? roster[0] ?? null
@@ -76,6 +115,12 @@
 		TIER_ORDER.map((tier) => ({ tier, chars: roster.filter((c) => c.tier === tier) })).filter(
 			(g) => g.chars.length > 0
 		)
+	);
+	let mapGroups = $derived(
+		REGIONS.map((reg) => ({
+			...reg,
+			chars: roster.filter((c) => CHAR_REGION[c.char_id] === reg.key)
+		})).filter((g) => g.chars.length > 0)
 	);
 
 	function describeError(err: unknown): string {
@@ -144,109 +189,169 @@
 			<div class="cf-error">{error}</div>
 		{/if}
 
-		<div class="gacha-hero">
-			<div class="gacha-hero-inner">
-				{#if bannerChar}
-					<img src="/art/heroines/{bannerChar.art_slug}.webp" alt="" class="gacha-hero-art" />
-				{/if}
-				<div class="gacha-hero-scrim"></div>
-				<div class="gacha-hero-glow"></div>
-				<span class="gacha-hero-particle gacha-hero-particle-1"></span>
-				<span class="gacha-hero-particle gacha-hero-particle-2"></span>
-				<span class="gacha-hero-particle gacha-hero-particle-3"></span>
-				{#if bannerChar}
-					<div class={`gacha-hero-badge-left gacha-tier-${bannerChar.tier.toLowerCase()}`}>
-						{bannerChar.tier} · {hasRealBanner ? 'РЕЙТ-АП' : 'ОСОБЫЙ ГЕРОЙ'}
-					</div>
-					<div class={`gacha-hero-badge-right gacha-tier-pill-${bannerChar.tier.toLowerCase()}`}>
-						{bannerChar.tier}
-					</div>
-				{/if}
-				<div class="gacha-hero-text">
-					<div class="gacha-hero-kicker">{hasRealBanner ? 'Лимитный баннер' : 'Топ-тир'}</div>
-					<div class="gacha-hero-name">{bannerChar ? bannerChar.name : 'баннер не выбран'}</div>
-				</div>
-			</div>
+		<div class="gacha-tabs">
+			<button
+				type="button"
+				class="gacha-tab"
+				class:gacha-tab-active={view === 'banner'}
+				onclick={() => (view = 'banner')}
+			>
+				Баннер
+			</button>
+			<button
+				type="button"
+				class="gacha-tab"
+				class:gacha-tab-active={view === 'collection'}
+				onclick={() => (view = 'collection')}
+			>
+				Коллекция · {ownedCount}/{roster.length}
+			</button>
+			<button
+				type="button"
+				class="gacha-tab"
+				class:gacha-tab-active={view === 'map'}
+				onclick={() => (view = 'map')}
+			>
+				Карта
+			</button>
 		</div>
 
-		{#if reveal}
-			<div class="gacha-reveal">
-				{#each reveal as grant (grant.char_id + ':' + grant.stars + ':' + grant.refunded)}
-					<div class={`gacha-reveal-card gacha-tier-${grant.tier.toLowerCase()}`}>
-						{#if charArtSlug(grant.char_id)}
-							<img
-								src="/art/heroines/{charArtSlug(grant.char_id)}.webp"
-								alt=""
-								class="gacha-reveal-portrait"
-							/>
-						{/if}
-						<div class="gacha-reveal-tier">{grant.tier}</div>
-						<div class="gacha-reveal-name">{charName(grant.char_id)}</div>
-						<div class="gacha-reveal-stars">{'★'.repeat(grant.stars)}</div>
-						{#if grant.refunded > 0}
-							<div class="gacha-reveal-dupe">дубль сверх 5★ — рефанд +{grant.refunded}¥</div>
-						{/if}
+		{#if view === 'banner'}
+			<div class="gacha-hero">
+				<div class="gacha-hero-inner">
+					{#if bannerChar}
+						<img src="/art/heroines/{bannerChar.art_slug}.webp" alt="" class="gacha-hero-art" />
+					{/if}
+					<div class="gacha-hero-scrim"></div>
+					<div class="gacha-hero-glow"></div>
+					<span class="gacha-hero-particle gacha-hero-particle-1"></span>
+					<span class="gacha-hero-particle gacha-hero-particle-2"></span>
+					<span class="gacha-hero-particle gacha-hero-particle-3"></span>
+					{#if bannerChar}
+						<div class={`gacha-hero-badge-left gacha-tier-${bannerChar.tier.toLowerCase()}`}>
+							{bannerChar.tier} · {hasRealBanner ? 'РЕЙТ-АП' : 'ОСОБЫЙ ГЕРОЙ'}
+						</div>
+						<div class={`gacha-hero-badge-right gacha-tier-pill-${bannerChar.tier.toLowerCase()}`}>
+							{bannerChar.tier}
+						</div>
+					{/if}
+					<div class="gacha-hero-text">
+						<div class="gacha-hero-kicker">{hasRealBanner ? 'Лимитный баннер' : 'Топ-тир'}</div>
+						<div class="gacha-hero-name">{bannerChar ? bannerChar.name : 'баннер не выбран'}</div>
+					</div>
+				</div>
+			</div>
+
+			{#if reveal}
+				<div class="gacha-reveal">
+					{#each reveal as grant (grant.char_id + ':' + grant.stars + ':' + grant.refunded)}
+						<div class={`gacha-reveal-card gacha-tier-${grant.tier.toLowerCase()}`}>
+							{#if charArtSlug(grant.char_id)}
+								<img
+									src="/art/heroines/{charArtSlug(grant.char_id)}.webp"
+									alt=""
+									class="gacha-reveal-portrait"
+								/>
+							{/if}
+							<div class="gacha-reveal-tier">{grant.tier}</div>
+							<div class="gacha-reveal-name">{charName(grant.char_id)}</div>
+							<div class="gacha-reveal-stars">{'★'.repeat(grant.stars)}</div>
+							{#if grant.refunded > 0}
+								<div class="gacha-reveal-dupe">дубль сверх 5★ — рефанд +{grant.refunded}¥</div>
+							{/if}
+						</div>
+					{/each}
+				</div>
+			{/if}
+
+			<div class="gacha-roll-row">
+				<button
+					type="button"
+					class="chip gacha-roll-btn"
+					disabled={rolling}
+					onclick={() => roll(1)}
+				>
+					{rolling ? '…' : `×1 (${ROLL_COST}¥)`}
+				</button>
+				<button
+					type="button"
+					class="chip chip-all gacha-roll-btn"
+					disabled={rolling}
+					onclick={() => roll(10)}
+				>
+					{rolling ? '…' : `×10 (${ROLL10_COST}¥)`}
+				</button>
+			</div>
+
+			<div class="gacha-pity">
+				<span>пити UR: {pitySsr}/{PITY_UR}</span>
+				<span>пити UUR: {pityUr}/{PITY_UUR}</span>
+			</div>
+		{:else if view === 'collection'}
+			<div class="gacha-collection">
+				{#each grouped as group (group.tier)}
+					<div class="gacha-tier-group">
+						<div class="gacha-tier-group-head">
+							<span class={`gacha-tier-pill gacha-tier-pill-${group.tier.toLowerCase()}`}>
+								{group.tier}
+							</span>
+							<span class="gacha-tier-count">
+								{group.chars.filter((c) => c.owned).length}/{group.chars.length}
+							</span>
+						</div>
+						<div class="gacha-tier-grid">
+							{#each group.chars as char (char.char_id)}
+								<div class="gacha-roster-card" class:gacha-roster-locked={!char.owned}>
+									<div class={`gacha-roster-art gacha-tier-wash-${char.tier.toLowerCase()}`}>
+										{#if char.owned}
+											<img src="/art/heroines/{char.art_slug}.webp" alt="" />
+										{:else}
+											<span class="gacha-roster-lock">?</span>
+										{/if}
+									</div>
+									<div class="gacha-roster-footer">
+										<div class="gacha-roster-name">{char.owned ? char.name : '???'}</div>
+										<div class="gacha-roster-stars">
+											{char.owned ? '★'.repeat(char.stars) : '—'}
+											{#if char.owned && char.copies > 1}
+												<span class="gacha-roster-copies">×{char.copies}</span>
+											{/if}
+										</div>
+									</div>
+								</div>
+							{/each}
+						</div>
+					</div>
+				{/each}
+			</div>
+		{:else}
+			<div class="gacha-map">
+				<div class="gacha-map-intro">
+					Ювитерия — материк, где живут героини. Регионы материка и легенды за его пределами.
+				</div>
+				{#each mapGroups as group (group.key)}
+					<div class="gacha-region-card" style="border-left-color: {group.color}">
+						<div class="gacha-region-head">
+							<div class="gacha-region-name">{group.name}</div>
+							<div class="gacha-region-tag">{group.tag}</div>
+						</div>
+						<div class="gacha-region-members">
+							{#each group.chars as char (char.char_id)}
+								<div
+									class="gacha-region-pill"
+									class:gacha-region-pill-locked={!char.owned}
+									style="border-color: {group.color}"
+								>
+									<span class={`gacha-region-pill-dot gacha-tier-wash-${char.tier.toLowerCase()}`}
+									></span>
+									<span class="gacha-region-pill-name">{char.owned ? char.name : '???'}</span>
+								</div>
+							{/each}
+						</div>
 					</div>
 				{/each}
 			</div>
 		{/if}
-
-		<div class="gacha-roll-row">
-			<button type="button" class="chip gacha-roll-btn" disabled={rolling} onclick={() => roll(1)}>
-				{rolling ? '…' : `×1 (${ROLL_COST}¥)`}
-			</button>
-			<button
-				type="button"
-				class="chip chip-all gacha-roll-btn"
-				disabled={rolling}
-				onclick={() => roll(10)}
-			>
-				{rolling ? '…' : `×10 (${ROLL10_COST}¥)`}
-			</button>
-		</div>
-
-		<div class="gacha-pity">
-			<span>пити UR: {pitySsr}/{PITY_UR}</span>
-			<span>пити UUR: {pityUr}/{PITY_UUR}</span>
-		</div>
-
-		<div class="gacha-collection">
-			<div class="fc-title">Коллекция</div>
-			{#each grouped as group (group.tier)}
-				<div class="gacha-tier-group">
-					<div class="gacha-tier-group-head">
-						<span class={`gacha-tier-pill gacha-tier-pill-${group.tier.toLowerCase()}`}>
-							{group.tier}
-						</span>
-						<span class="gacha-tier-count">
-							{group.chars.filter((c) => c.owned).length}/{group.chars.length}
-						</span>
-					</div>
-					<div class="gacha-tier-grid">
-						{#each group.chars as char (char.char_id)}
-							<div class="gacha-roster-card" class:gacha-roster-locked={!char.owned}>
-								<div class={`gacha-roster-art gacha-tier-wash-${char.tier.toLowerCase()}`}>
-									{#if char.owned}
-										<img src="/art/heroines/{char.art_slug}.webp" alt="" />
-									{:else}
-										<span class="gacha-roster-lock">?</span>
-									{/if}
-								</div>
-								<div class="gacha-roster-footer">
-									<div class="gacha-roster-name">{char.owned ? char.name : '???'}</div>
-									<div class="gacha-roster-stars">
-										{char.owned ? '★'.repeat(char.stars) : '—'}
-										{#if char.owned && char.copies > 1}
-											<span class="gacha-roster-copies">×{char.copies}</span>
-										{/if}
-									</div>
-								</div>
-							</div>
-						{/each}
-					</div>
-				</div>
-			{/each}
-		</div>
 	</div>
 {/if}
 
@@ -282,6 +387,32 @@
 		padding: var(--space-sm) var(--space-md);
 		font-size: var(--font-body-size);
 		font-family: var(--font-body);
+	}
+
+	/* ─── tab switcher (design-прототип: real state, not a route jump) ──── */
+	.gacha-tabs {
+		display: flex;
+		background: var(--bg-secondary-2);
+		border: 1px solid var(--border-secondary);
+		border-radius: 10px;
+		padding: 3px;
+		gap: 2px;
+	}
+	.gacha-tab {
+		flex: 1;
+		background: transparent;
+		color: var(--text-muted);
+		border: none;
+		border-radius: 7px;
+		padding: 9px;
+		font-family: var(--font-chrome);
+		font-size: 12.5px;
+		font-weight: 700;
+		cursor: pointer;
+	}
+	.gacha-tab-active {
+		background: var(--border-secondary);
+		color: var(--text-primary);
 	}
 
 	/* ─── hero banner card (design-прототип §Гача: full-bleed art + scrims + particles) ── */
@@ -480,7 +611,6 @@
 		border-color: #9b97ad;
 	}
 	.gacha-tier-r .gacha-reveal-tier,
-	.gacha-tier-r .gacha-char-name,
 	.gacha-hero-badge-left.gacha-tier-r {
 		color: #9b97ad;
 	}
@@ -488,7 +618,6 @@
 		border-color: var(--accent-cyan);
 	}
 	.gacha-tier-s .gacha-reveal-tier,
-	.gacha-tier-s .gacha-char-name,
 	.gacha-hero-badge-left.gacha-tier-s {
 		color: var(--accent-cyan);
 	}
@@ -496,7 +625,6 @@
 		border-color: var(--accent-pink);
 	}
 	.gacha-tier-ur .gacha-reveal-tier,
-	.gacha-tier-ur .gacha-char-name,
 	.gacha-hero-badge-left.gacha-tier-ur {
 		color: var(--accent-pink);
 	}
@@ -505,7 +633,6 @@
 		box-shadow: 0 0 24px rgba(255, 216, 74, 0.45);
 	}
 	.gacha-tier-uur .gacha-reveal-tier,
-	.gacha-tier-uur .gacha-char-name,
 	.gacha-hero-badge-left.gacha-tier-uur {
 		color: var(--accent-yellow);
 	}
@@ -663,5 +790,67 @@
 	.gacha-roster-copies {
 		color: var(--text-muted);
 		margin-left: 4px;
+	}
+
+	/* ─── map: region cards with member pills (Yuviteria Codex §Регионы) ── */
+	.gacha-map {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-sm);
+	}
+	.gacha-map-intro {
+		font-family: var(--font-body);
+		font-size: 11.5px;
+		color: var(--text-muted);
+		line-height: 1.5;
+	}
+	.gacha-region-card {
+		background: var(--bg-secondary-2);
+		border: 1px solid var(--border-secondary);
+		border-left: 3px solid;
+		border-radius: 12px;
+		padding: 14px 16px;
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-sm);
+	}
+	.gacha-region-name {
+		font-family: var(--font-chrome);
+		font-size: 15px;
+		font-weight: 700;
+		color: var(--text-primary);
+	}
+	.gacha-region-tag {
+		font-family: var(--font-body);
+		font-size: 11px;
+		color: var(--text-muted);
+	}
+	.gacha-region-members {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 6px;
+	}
+	.gacha-region-pill {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		background: var(--bg-dominant);
+		border: 1px solid;
+		border-radius: 999px;
+		padding: 4px 10px 4px 4px;
+	}
+	.gacha-region-pill-locked {
+		opacity: 0.55;
+	}
+	.gacha-region-pill-dot {
+		width: 18px;
+		height: 18px;
+		border-radius: 50%;
+		display: block;
+	}
+	.gacha-region-pill-name {
+		font-family: var(--font-chrome);
+		font-size: 11.5px;
+		color: var(--text-primary);
 	}
 </style>

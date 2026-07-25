@@ -350,12 +350,32 @@ async def get_banner_info(session: AsyncSession, chat_id: int, user_id: int) -> 
     ставки/цены (константы каталога) + личные pity-счётчики вызывающего
     (та же строка clicker_farms, что использует roll/get_collection -
     clicker_service._get_or_create_farm, Pattern 7, без дублирования
-    upsert+FOR UPDATE)."""
+    upsert+FOR UPDATE).
+
+    Если `gacha_banner` (BotSetting) не настроен админом чата — не отдаём
+    пустой featured_id: подставляем первого UUR-персонажа каталога как
+    "витринного" (`is_rate_up=False`), чтобы промо-карточка на хабе Mini
+    App и герой-баннер экрана /gacha никогда не оставались пустыми даже в
+    новом чате без ручной настройки. `is_rate_up` явно отличает настоящий
+    рейт-ап (админ выбрал баннер — эта героиня реально чаще выпадает среди
+    UUR, см. gacha_service._pick_char) от витринного показа без бонуса —
+    фронтенд обязан подписывать карточку по-разному в этих двух случаях,
+    не выдавая витрину за активный рейт-ап."""
     banner_id = await settings_service.get_setting(session, chat_id, GACHA_BANNER_KEY, "")
     farm = await clicker_service._get_or_create_farm(session, chat_id, user_id)
     await session.commit()
+
+    is_rate_up = banner_id != ""
+    featured = gacha_catalog.CATALOG.get(banner_id) if is_rate_up else None
+    if featured is None:
+        featured = next((c for c in gacha_catalog.CATALOG.values() if c.tier == "UUR"), None)
+
     return {
-        "featured_id": banner_id,
+        "featured_id": featured.char_id if featured is not None else "",
+        "featured_name": featured.name if featured is not None else "",
+        "featured_tier": featured.tier if featured is not None else "",
+        "featured_art_slug": featured.art_slug if featured is not None else "",
+        "is_rate_up": is_rate_up,
         "rates": gacha_catalog.TIER_WEIGHTS,
         "pity_ssr": farm.pity_ssr,
         "pity_ur": farm.pity_ur,

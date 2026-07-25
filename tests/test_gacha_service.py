@@ -534,3 +534,46 @@ async def test_get_banner_info_fresh_user_reports_defaults(session):
     assert result["pity_ur"] == 0
     assert result["cost_single"] == gacha_service.ROLL_COST
     assert result["cost_ten"] == gacha_service.ROLL10_COST
+
+
+@pytest.mark.asyncio
+async def test_get_banner_info_falls_back_to_showcase_uur_when_unset(session):
+    """Без настроенного gacha_banner (BotSetting) featured_* не пустые —
+    подставляется первый UUR каталога как "витрина" с is_rate_up=False, так
+    что хаб/герой-баннер /gacha никогда не остаются без арта в новом чате
+    (см. докстринг get_banner_info)."""
+    chat_id = -100910020
+    user_id = 910020
+    await _ensure_user(session, user_id)
+
+    result = await gacha_service.get_banner_info(session, chat_id, user_id)
+
+    showcase = next(c for c in gacha_catalog.CATALOG.values() if c.tier == "UUR")
+    assert result["is_rate_up"] is False
+    assert result["featured_id"] == showcase.char_id
+    assert result["featured_name"] == showcase.name
+    assert result["featured_tier"] == "UUR"
+    assert result["featured_art_slug"] == showcase.art_slug
+
+
+@pytest.mark.asyncio
+async def test_get_banner_info_reports_real_rate_up_when_configured(session):
+    chat_id = -100910021
+    user_id = 910021
+    await _ensure_user(session, user_id)
+
+    banner_char = gacha_catalog.chars_of_tier("UUR")[-1]
+    settings_service.clear_cache()
+    await settings_service.set_setting(
+        session, chat_id, gacha_service.GACHA_BANNER_KEY, banner_char.char_id, updated_by_tg_id=1
+    )
+    await session.commit()
+
+    result = await gacha_service.get_banner_info(session, chat_id, user_id)
+
+    assert result["is_rate_up"] is True
+    assert result["featured_id"] == banner_char.char_id
+    assert result["featured_name"] == banner_char.name
+    assert result["featured_art_slug"] == banner_char.art_slug
+
+    settings_service.clear_cache()
