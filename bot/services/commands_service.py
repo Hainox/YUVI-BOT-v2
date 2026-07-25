@@ -72,6 +72,7 @@ _PUBLIC_COMMANDS: list[BotCommand] = [
     BotCommand(command="victim", description="Пидор дня"),
     BotCommand(command="awards", description="Итоги дня (номинации)"),
     BotCommand(command="yuvi", description="Yuvi_Yuvi дня (лотерея)"),
+    BotCommand(command="quests", description="Ежедневные квесты и достижения"),
 ]
 
 _ADMIN_ONLY_COMMANDS: list[BotCommand] = [

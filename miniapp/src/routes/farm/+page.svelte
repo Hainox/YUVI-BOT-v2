@@ -24,10 +24,6 @@
 	const TAP_UPGRADE_BASE = 50;
 	const AUTO_UPGRADE_BASE = 200;
 	const UPGRADE_GROWTH = 1.15;
-	// Клиентское зеркало settings.farm_max_level (потолок 2026-07-24: 50 до
-	// гачи, 70 после) — только для UI (disable кнопки/подпись), сервер решает
-	// сам через ClickerError, это не единственная граница.
-	const FARM_MAX_LEVEL = 50;
 	const ANCHOR_CP_PER_HRYVNA = 100;
 	const TIER_FRACTIONS = [0.1, 0.25, 0.5, 0.75, 1];
 	const QUOTE_DEBOUNCE_MS = 250;
@@ -38,6 +34,8 @@
 		auto_level: number;
 		cp_per_sec?: number;
 		accepted?: number;
+		effective_max_level?: number;
+		base_max_level?: number;
 	};
 	type MarketQuote = { cp_in: number; hryvnia_out: number };
 	type MarketState = {
@@ -64,6 +62,10 @@
 	let tapLevel = $state(1);
 	let autoLevel = $state(0);
 	let cpPerSec = $state(0);
+	// Значение ДО первого ответа GET /api/v1/farm — не хардкодный потолок:
+	// сервер теперь единственный источник истины о реальном лимите, который
+	// может отличаться по пользователю (квесты/ачивки).
+	let effectiveMaxLevel = $state(50);
 
 	let pendingCount = 0;
 	let batchStartedAt: number | null = null;
@@ -84,6 +86,7 @@
 		tapLevel = state.tap_level;
 		autoLevel = state.auto_level;
 		if (state.cp_per_sec !== undefined) cpPerSec = state.cp_per_sec;
+		if (state.effective_max_level !== undefined) effectiveMaxLevel = state.effective_max_level;
 	}
 
 	function describeError(err: unknown): string {
@@ -331,6 +334,7 @@
 		</div>
 
 		<button type="button" class="farm-tap-btn" disabled={sessionExpired} onclick={tapOnce}>
+			<img src="/farm/tap-character.jpg" alt="" class="farm-tap-char" />
 			<span class="farm-tap-label">ТАП</span>
 			<span class="farm-tap-sub">+{tapLevel} CP за тап</span>
 		</button>
@@ -339,12 +343,12 @@
 			<button
 				type="button"
 				class="feature-card farm-upgrade-row"
-				disabled={upgradingTap || tapLevel >= FARM_MAX_LEVEL || cp < tapUpgradeCost}
+				disabled={upgradingTap || tapLevel >= effectiveMaxLevel || cp < tapUpgradeCost}
 				onclick={() => upgrade('tap')}
 			>
 				<span class="fc-title">Апгрейд тапа (ур. {tapLevel})</span>
 				<span class="fc-desc">
-					{tapLevel >= FARM_MAX_LEVEL
+					{tapLevel >= effectiveMaxLevel
 						? 'максимальный уровень'
 						: upgradingTap
 							? 'качаем…'
@@ -354,12 +358,12 @@
 			<button
 				type="button"
 				class="feature-card farm-upgrade-row"
-				disabled={upgradingAuto || autoLevel >= FARM_MAX_LEVEL || cp < autoUpgradeCost}
+				disabled={upgradingAuto || autoLevel >= effectiveMaxLevel || cp < autoUpgradeCost}
 				onclick={() => upgrade('auto')}
 			>
 				<span class="fc-title">Автокликер (ур. {autoLevel})</span>
 				<span class="fc-desc">
-					{autoLevel >= FARM_MAX_LEVEL
+					{autoLevel >= effectiveMaxLevel
 						? 'максимальный уровень'
 						: upgradingAuto
 							? 'качаем…'
@@ -544,6 +548,8 @@
 	}
 
 	.farm-tap-btn {
+		position: relative;
+		overflow: hidden;
 		background: var(--accent-pink);
 		border: none;
 		border-radius: 50%;
@@ -553,11 +559,20 @@
 		display: flex;
 		flex-direction: column;
 		align-items: center;
-		justify-content: center;
+		justify-content: flex-end;
 		gap: var(--space-xs);
+		padding-bottom: 18px;
 		cursor: pointer;
 		box-shadow: 4px 4px 0 #111;
 		transition: transform 0.06s;
+		/* Быстрые повторные тапы иначе триггерят двойным тапом зум браузера
+		   (и 300мс задержку клика на мобильных) — "manipulation" разрешает
+		   обычный скролл/пинч страницы где он нужен, но убирает double-tap-zoom
+		   именно на этой кнопке. user-select — чтобы частые тапы не выделяли
+		   текст внутри круга. */
+		touch-action: manipulation;
+		-webkit-user-select: none;
+		user-select: none;
 	}
 	.farm-tap-btn:active {
 		transform: translate(2px, 2px) scale(0.97);
@@ -567,15 +582,48 @@
 		opacity: 0.6;
 		cursor: not-allowed;
 	}
+	.farm-tap-btn::after {
+		content: '';
+		position: absolute;
+		inset: 0;
+		background: linear-gradient(180deg, rgba(0, 0, 0, 0) 45%, rgba(0, 0, 0, 0.6) 100%);
+		pointer-events: none;
+	}
+	.farm-tap-char {
+		position: absolute;
+		inset: 0;
+		width: 100%;
+		height: 100%;
+		object-fit: cover;
+		object-position: top center;
+		pointer-events: none;
+		/* Простенькая idle-анимация: лёгкое "дыхание" по кругу тапа. */
+		animation: farmTapCharBreathe 3s ease-in-out infinite;
+	}
+	@keyframes farmTapCharBreathe {
+		0%,
+		100% {
+			transform: scale(1);
+		}
+		50% {
+			transform: scale(1.05);
+		}
+	}
 	.farm-tap-label {
+		position: relative;
+		z-index: 1;
 		font-family: var(--font-shout);
-		font-size: 28px;
-		color: #1a0f12;
+		font-size: 24px;
+		color: #fff;
+		text-shadow: 0 2px 6px rgba(0, 0, 0, 0.7);
 		letter-spacing: 0.04em;
 	}
 	.farm-tap-sub {
+		position: relative;
+		z-index: 1;
 		font-size: 12px;
-		color: #3a1420;
+		color: #f5e6ea;
+		text-shadow: 0 1px 4px rgba(0, 0, 0, 0.7);
 		font-family: var(--font-body);
 	}
 

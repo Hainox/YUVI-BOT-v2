@@ -16,6 +16,7 @@ test_casino_service.py).
 
 from __future__ import annotations
 
+from datetime import date
 from datetime import datetime
 from datetime import timedelta
 
@@ -25,8 +26,10 @@ from sqlalchemy import update
 
 from bot.services import clicker_service
 from bot.services import gacha_catalog
+from common.models.achievement_unlock import AchievementUnlock
 from common.models.clicker_farm import ClickerFarm
 from common.models.gacha_collection import GachaCollection
+from common.models.quest_completion import QuestCompletion
 from common.models.user import User
 
 
@@ -387,3 +390,177 @@ async def test_any_tier_contributes_farm_income(session):
     expected_gain = int(expected_rate * elapsed_seconds)
     assert state["cp"] == expected_gain
     assert state["cp_per_sec"] == pytest.approx(expected_rate)
+
+
+# --- QUEST-01/02: эффективный потолок фермы (get_effective_max_level) --------
+
+
+@pytest.mark.asyncio
+async def test_effective_max_level_equals_base_with_no_unlocks(session, monkeypatch):
+    """Ноль строк в quest_completions и ноль в achievement_unlocks -> эффективный
+    потолок в точности равен settings.farm_max_level (без бонусов)."""
+    monkeypatch.setattr(clicker_service.settings, "farm_max_level", 50)
+    chat_id = -100910014
+    user_id = 910015
+    await _ensure_user(session, user_id)
+
+    effective = await clicker_service.get_effective_max_level(session, chat_id, user_id)
+
+    assert effective == 50
+
+
+@pytest.mark.asyncio
+async def test_effective_max_level_quest_completions_raise_it(session, monkeypatch):
+    """N строк в quest_completions (любые quest_key/day_msk) поднимают потолок
+    ровно на N // QUEST_COMPLETIONS_PER_BONUS_LEVEL сверх базы — floor-деление,
+    не пропорция 1:1."""
+    monkeypatch.setattr(clicker_service.settings, "farm_max_level", 50)
+    chat_id = -100910015
+    user_id = 910016
+    await _ensure_user(session, user_id)
+
+    n = 7  # не кратно QUEST_COMPLETIONS_PER_BONUS_LEVEL(3) -> проверяем floor-деление
+    today = date.today()
+    session.add_all(
+        [
+            QuestCompletion(
+                chat_id=chat_id,
+                user_id=user_id,
+                quest_key=f"quest_{i}",
+                day_msk=today,
+                reward_amount=10,
+            )
+            for i in range(n)
+        ]
+    )
+    await session.flush()
+
+    effective = await clicker_service.get_effective_max_level(session, chat_id, user_id)
+
+    assert effective == 50 + n // clicker_service.QUEST_COMPLETIONS_PER_BONUS_LEVEL
+
+
+@pytest.mark.asyncio
+async def test_effective_max_level_achievement_bonus_adds_sum(session, monkeypatch):
+    """Строки achievement_unlocks добавляют к потолку СУММУ своих bonus_levels
+    напрямую (без деления, в отличие от квестов)."""
+    monkeypatch.setattr(clicker_service.settings, "farm_max_level", 50)
+    chat_id = -100910016
+    user_id = 910017
+    await _ensure_user(session, user_id)
+
+    session.add(
+        AchievementUnlock(
+            chat_id=chat_id,
+            user_id=user_id,
+            achievement_key="ach_a",
+            bonus_levels=3,
+            reward_amount=100,
+        )
+    )
+    session.add(
+        AchievementUnlock(
+            chat_id=chat_id,
+            user_id=user_id,
+            achievement_key="ach_b",
+            bonus_levels=5,
+            reward_amount=100,
+        )
+    )
+    await session.flush()
+
+    effective = await clicker_service.get_effective_max_level(session, chat_id, user_id)
+
+    assert effective == 50 + 3 + 5
+
+
+@pytest.mark.asyncio
+async def test_effective_max_level_clamped_at_ceiling(session, monkeypatch):
+    """Даже если база + бонус квестов + бонус ачивок математически намного
+    превышают FARM_EFFECTIVE_CAP_CEILING(99), get_effective_max_level никогда
+    не возвращает больше потолка — min()-клэмп реально работает, а не просто
+    присутствует в формуле."""
+    monkeypatch.setattr(clicker_service.settings, "farm_max_level", 50)
+    chat_id = -100910017
+    user_id = 910018
+    await _ensure_user(session, user_id)
+
+    today = date.today()
+    session.add_all(
+        [
+            QuestCompletion(
+                chat_id=chat_id,
+                user_id=user_id,
+                quest_key=f"quest_{i}",
+                day_msk=today,
+                reward_amount=10,
+            )
+            for i in range(1000)
+        ]
+    )
+    session.add_all(
+        [
+            AchievementUnlock(
+                chat_id=chat_id,
+                user_id=user_id,
+                achievement_key=f"ach_{i}",
+                bonus_levels=50,
+                reward_amount=100,
+            )
+            for i in range(5)
+        ]
+    )
+    await session.flush()
+
+    # sanity: без клэмпа сырая формула реально превысила бы потолок
+    quest_bonus = 1000 // clicker_service.QUEST_COMPLETIONS_PER_BONUS_LEVEL
+    achievement_bonus = 5 * 50
+    assert 50 + quest_bonus + achievement_bonus > clicker_service.FARM_EFFECTIVE_CAP_CEILING
+
+    effective = await clicker_service.get_effective_max_level(session, chat_id, user_id)
+
+    assert effective == clicker_service.FARM_EFFECTIVE_CAP_CEILING
+    assert effective == 99
+
+
+@pytest.mark.asyncio
+async def test_upgrade_succeeds_when_quest_completions_raise_effective_cap(session, monkeypatch):
+    """Сквозная интеграция: test_upgrade_rejected_at_max_level доказывает, что
+    tap_level=50 при farm_max_level=50 и нулевых разблокировках блокирует
+    апгрейд. Здесь та же стартовая позиция, но с quest_completions,
+    поднимающими эффективный потолок до 55 (15 // 3 = 5 бонусных уровня) —
+    upgrade_tap теперь должен ПРОЙТИ и поднять tap_level до 51, доказывая, что
+    разблокировка реально поднимает потолок, применяемый внутри _upgrade, а
+    не только результат изолированной формулы get_effective_max_level."""
+    monkeypatch.setattr(clicker_service.settings, "farm_max_level", 50)
+    chat_id = -100910018
+    user_id = 910019
+    await _ensure_user(session, user_id)
+    await clicker_service.get_farm_state(session, chat_id, user_id)
+    await _set_farm(session, chat_id, user_id, cp=1_000_000_000, tap_level=50)
+
+    n = 15  # 15 // QUEST_COMPLETIONS_PER_BONUS_LEVEL(3) = 5 -> эффективный потолок 50+5=55
+    today = date.today()
+    session.add_all(
+        [
+            QuestCompletion(
+                chat_id=chat_id,
+                user_id=user_id,
+                quest_key=f"quest_{i}",
+                day_msk=today,
+                reward_amount=10,
+            )
+            for i in range(n)
+        ]
+    )
+    await session.flush()
+
+    effective = await clicker_service.get_effective_max_level(session, chat_id, user_id)
+    assert effective == 55  # sanity: потолок реально поднят перед апгрейдом
+
+    result = await clicker_service.upgrade_tap(session, chat_id, user_id)
+
+    assert result["tap_level"] == 51
+
+    farm = await _get_farm(session, chat_id, user_id)
+    assert farm.tap_level == 51

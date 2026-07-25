@@ -42,8 +42,10 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
+from bot.services import achievements_service
 from bot.services import economy_service
 from bot.services import gacha_catalog
+from bot.services import quests_service
 from common.db.session import SessionLocal
 from common.models.clicker_farm import ClickerFarm
 from common.models.clicker_market_pool import ClickerMarketPool
@@ -187,7 +189,9 @@ async def _accrue_offline(session: AsyncSession, chat_id: int, user_id: int, far
     return worker_cp_per_sec
 
 
-def _farm_state(farm: ClickerFarm, accepted: int | None = None) -> dict:
+def _farm_state(
+    farm: ClickerFarm, accepted: int | None = None, effective_max_level: int | None = None
+) -> dict:
     state = {
         "cp": farm.cp,
         "tap_level": farm.tap_level,
@@ -195,6 +199,9 @@ def _farm_state(farm: ClickerFarm, accepted: int | None = None) -> dict:
     }
     if accepted is not None:
         state["accepted"] = accepted
+    if effective_max_level is not None:
+        state["effective_max_level"] = effective_max_level
+        state["base_max_level"] = settings.farm_max_level
     return state
 
 
@@ -204,8 +211,9 @@ async def get_farm_state(session: AsyncSession, chat_id: int, user_id: int) -> d
     последнее включает GACHA-02 доход коллекции, отображается фронтендом)."""
     farm = await _get_or_create_farm(session, chat_id, user_id)
     worker_cp_per_sec = await _accrue_offline(session, chat_id, user_id, farm)
+    effective_max_level = await get_effective_max_level(session, chat_id, user_id)
     await session.commit()
-    state = _farm_state(farm)
+    state = _farm_state(farm, effective_max_level=effective_max_level)
     state["cp_per_sec"] = farm.auto_level * AUTO_CP_PER_LEVEL_PER_SEC + worker_cp_per_sec
     return state
 
@@ -256,19 +264,49 @@ async def tap(
     return _farm_state(farm, accepted=accepted)
 
 
+# --- QUEST-01/02: эффективный потолок фермы (квесты/ачивки поднимают до 99) --
+
+FARM_EFFECTIVE_CAP_CEILING = 99  # жёсткий потолок вне зависимости от баланса каталогов квестов/ачивок
+QUEST_COMPLETIONS_PER_BONUS_LEVEL = 3  # каждые N выполненных квестов (всего, любой день/ключ) = +1 уровень
+
+
+async def get_effective_max_level(session: AsyncSession, chat_id: int, user_id: int) -> int:
+    """Эффективный потолок tap_level/auto_level ЭТОГО участника (QUEST-01/02):
+    settings.farm_max_level + бонус от квестов (total_completions //
+    QUEST_COMPLETIONS_PER_BONUS_LEVEL) + сумма bonus_levels разблокированных
+    ачивок, зажатые FARM_EFFECTIVE_CAP_CEILING.
+
+    Считается ЖИВЬЁМ из quest_completions/achievement_unlocks (не кэшируется
+    отдельной колонкой на ClickerFarm) — обе таблицы уникально индексированы
+    по (chat_id, user_id, ...), COUNT/SUM дешёвые индексные запросы, а живой
+    расчёт не требует инвалидации кэша при каждом новом квесте/ачивке (та же
+    философия, что awards_service: считать из источника, не кэшировать
+    производное). Вызывается только на путях апгрейда/дисплея фермы, не на
+    hot path tap()."""
+    total_completions = await quests_service.get_total_completions(session, chat_id, user_id)
+    achievement_bonus = await achievements_service.get_total_bonus_levels(session, chat_id, user_id)
+    quest_bonus = total_completions // QUEST_COMPLETIONS_PER_BONUS_LEVEL
+    return min(FARM_EFFECTIVE_CAP_CEILING, settings.farm_max_level + quest_bonus + achievement_bonus)
+
+
 async def _upgrade(session: AsyncSession, chat_id: int, user_id: int, base: int, level_attr: str) -> dict:
     """Общее ядро апгрейда тапа/автокликера (T-04.1-14): cost считается ДО
     списания, при нехватке CP апгрейд отклоняется без изменения состояния.
 
-    Потолок уровня (`settings.farm_max_level`, запрошено 2026-07-24: 50 до
-    выхода гачи, 70 — после) проверяется первым, до расчёта cost — апгрейд
-    выше потолка отклоняется без изменения состояния, как и нехватка CP."""
+    Потолок уровня проверяется первым, до расчёта cost — апгрейд выше
+    потолка отклоняется без изменения состояния, как и нехватка CP. Потолок
+    считается через `get_effective_max_level` (QUEST-01/02): база
+    `settings.farm_max_level` плюс бонусы от выполненных квестов и
+    разблокированных ачивок, зажатые `FARM_EFFECTIVE_CAP_CEILING`=99; при
+    нулевых разблокировках это эквивалентно старой плоской проверке
+    `settings.farm_max_level`."""
     farm = await _get_or_create_farm(session, chat_id, user_id)
     await _accrue_offline(session, chat_id, user_id, farm)
 
+    effective_cap = await get_effective_max_level(session, chat_id, user_id)
     level = getattr(farm, level_attr)
-    if level >= settings.farm_max_level:
-        raise ClickerError(f"Достигнут максимальный уровень ({settings.farm_max_level})")
+    if level >= effective_cap:
+        raise ClickerError(f"Достигнут максимальный уровень ({effective_cap})")
 
     cost = _upgrade_cost(base, level)
     if farm.cp < cost:

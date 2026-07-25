@@ -39,6 +39,7 @@
 	const baseTiles: Tile[] = [
 		{ title: 'Игры', desc: 'слоты · рулетка · блэкджек · кости · монетка', accent: 'pink', href: '/games' },
 		{ title: 'Ферма', desc: 'тапай, копи CP, качай апгрейды', accent: 'cyan', href: '/farm' },
+		{ title: 'Квесты', desc: 'ежедневные задания и достижения', accent: 'yellow', href: '/quests' },
 		{ title: 'Дуэль', desc: 'вызови кого-нибудь на бабки', accent: 'pink', href: '/duel' },
 		{ title: 'Рынки', desc: 'ставь на исход, следи за котировкой', accent: 'cyan', href: '/markets' },
 		{ title: 'Биржа', desc: 'продай ювики за что угодно — вне бота', accent: 'cyan', href: '/exchange' },
