@@ -633,3 +633,154 @@ async def test_constellation_farm_cp_bonus_increases_income_at_higher_copies(ses
     assert state_bonus["cp"] > state_control["cp"]
     assert state_bonus["cp_per_sec"] == pytest.approx(expected_rate_bonus)
     assert state_control["cp_per_sec"] == pytest.approx(base_rate)
+
+
+# --- GACHA-05: индивидуальная прокачка героини в ферме -----------------------
+
+
+@pytest.mark.asyncio
+async def test_upgrade_character_rejected_if_not_owned(session):
+    chat_id = -100910020
+    user_id = 910022
+    await _ensure_user(session, user_id)
+    await clicker_service.get_farm_state(session, chat_id, user_id)
+
+    char = next(c for c in gacha_catalog.CATALOG.values() if c.tier == "S")
+
+    with pytest.raises(clicker_service.ClickerError, match="ещё не собрана"):
+        await clicker_service.upgrade_character(session, chat_id, user_id, char.char_id)
+
+
+@pytest.mark.asyncio
+async def test_upgrade_character_rejected_unknown_char_id(session):
+    chat_id = -100910021
+    user_id = 910023
+    await _ensure_user(session, user_id)
+    await clicker_service.get_farm_state(session, chat_id, user_id)
+
+    with pytest.raises(clicker_service.ClickerError, match="Неизвестный персонаж"):
+        await clicker_service.upgrade_character(session, chat_id, user_id, "not_a_real_char")
+
+
+@pytest.mark.asyncio
+async def test_upgrade_character_rejected_insufficient_cp(session):
+    chat_id = -100910022
+    user_id = 910024
+    await _ensure_user(session, user_id)
+    await clicker_service.get_farm_state(session, chat_id, user_id)
+
+    char = next(c for c in gacha_catalog.CATALOG.values() if c.tier == "R")
+    await _grant_char(session, chat_id, user_id, char.char_id, stars=1)
+    await _set_farm(session, chat_id, user_id, cp=0)
+
+    with pytest.raises(clicker_service.ClickerError, match="Недостаточно CP"):
+        await clicker_service.upgrade_character(session, chat_id, user_id, char.char_id)
+
+
+@pytest.mark.asyncio
+async def test_upgrade_character_succeeds_and_debits_cost(session):
+    """Стоимость первого апгрейда (farm_level=1 -> 2) — ровно
+    FARM_LEVEL_BASE_COST[tier]*1.15**1 (та же кривая, что тап/автокликер),
+    farm_level реально растёт в БД (не только в возвращённом dict)."""
+    chat_id = -100910023
+    user_id = 910025
+    await _ensure_user(session, user_id)
+    await clicker_service.get_farm_state(session, chat_id, user_id)
+
+    char = next(c for c in gacha_catalog.CATALOG.values() if c.tier == "S")
+    await _grant_char(session, chat_id, user_id, char.char_id, stars=1)
+
+    expected_cost = clicker_service._upgrade_cost(
+        clicker_service.FARM_LEVEL_BASE_COST[char.tier], 1
+    )
+    await _set_farm(session, chat_id, user_id, cp=expected_cost)
+
+    result = await clicker_service.upgrade_character(session, chat_id, user_id, char.char_id)
+
+    assert result["farm_level"] == 2
+    assert result["char_id"] == char.char_id
+    assert result["cp"] == 0
+
+    row = (
+        await session.execute(
+            select(GachaCollection).where(
+                GachaCollection.chat_id == chat_id,
+                GachaCollection.user_id == user_id,
+                GachaCollection.char_id == char.char_id,
+            )
+        )
+    ).scalar_one()
+    assert row.farm_level == 2
+
+
+@pytest.mark.asyncio
+async def test_upgrade_character_rejected_at_max_level(session):
+    chat_id = -100910024
+    user_id = 910026
+    await _ensure_user(session, user_id)
+    await clicker_service.get_farm_state(session, chat_id, user_id)
+
+    char = next(c for c in gacha_catalog.CATALOG.values() if c.tier == "R")
+    await _grant_char(session, chat_id, user_id, char.char_id, stars=1)
+    await session.execute(
+        update(GachaCollection)
+        .where(
+            GachaCollection.chat_id == chat_id,
+            GachaCollection.user_id == user_id,
+            GachaCollection.char_id == char.char_id,
+        )
+        .values(farm_level=clicker_service.FARM_LEVEL_MAX)
+    )
+    await _set_farm(session, chat_id, user_id, cp=1_000_000_000)
+    session.expire_all()
+
+    with pytest.raises(clicker_service.ClickerError, match="максимальный уровень"):
+        await clicker_service.upgrade_character(session, chat_id, user_id, char.char_id)
+
+
+@pytest.mark.asyncio
+async def test_character_farm_level_increases_income(session):
+    """GACHA-05: farm_level>1 реально прибавляет CP/сек ЭТОЙ героини —
+    пользователь с farm_level=3 копит БОЛЬШЕ CP за тот же оффлайн-период,
+    чем контрольный с той же героиней на farm_level=1 (доказывает, что
+    бонус подключён к _collection_income_per_sec, не только хранится)."""
+    chat_id = -100910025
+    leveled_user_id = 910027
+    control_user_id = 910028
+    await _ensure_user(session, leveled_user_id)
+    await _ensure_user(session, control_user_id)
+    await clicker_service.get_farm_state(session, chat_id, leveled_user_id)
+    await clicker_service.get_farm_state(session, chat_id, control_user_id)
+
+    char = next(c for c in gacha_catalog.CATALOG.values() if c.tier == "UR")
+    await _grant_char(session, chat_id, leveled_user_id, char.char_id, stars=1)
+    await _grant_char(session, chat_id, control_user_id, char.char_id, stars=1)
+    await session.execute(
+        update(GachaCollection)
+        .where(
+            GachaCollection.chat_id == chat_id,
+            GachaCollection.user_id == leveled_user_id,
+            GachaCollection.char_id == char.char_id,
+        )
+        .values(farm_level=3)
+    )
+    await session.commit()
+    session.expire_all()
+
+    elapsed_seconds = 200
+    past = datetime.utcnow() - timedelta(seconds=elapsed_seconds)
+    await _set_farm(session, chat_id, leveled_user_id, auto_level=0, last_accrued_at=past)
+    await _set_farm(session, chat_id, control_user_id, auto_level=0, last_accrued_at=past)
+
+    state_leveled = await clicker_service.get_farm_state(session, chat_id, leveled_user_id)
+    state_control = await clicker_service.get_farm_state(session, chat_id, control_user_id)
+
+    level_bonus = clicker_service.FARM_LEVEL_RATE_PER_TIER[char.tier] * (3 - 1)
+    expected_rate_leveled = (
+        clicker_service.WORKER_TIER_CP_PER_SEC[char.tier] + level_bonus
+    ) * gacha_catalog.star_mult(1)
+    expected_rate_control = clicker_service.WORKER_TIER_CP_PER_SEC[char.tier] * gacha_catalog.star_mult(1)
+
+    assert state_leveled["cp"] > state_control["cp"]
+    assert state_leveled["cp_per_sec"] == pytest.approx(expected_rate_leveled)
+    assert state_control["cp_per_sec"] == pytest.approx(expected_rate_control)

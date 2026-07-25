@@ -1,7 +1,10 @@
 """GET/POST /api/v1/farm* — тонкие роуты над `clicker_service` (FARM-01/02,
-GACHA-02). `user_id`/`chat_id` берутся ТОЛЬКО из `AuthContext`
+GACHA-02, GACHA-05). `user_id`/`chat_id` берутся ТОЛЬКО из `AuthContext`
 (`require_membership`) — тот же IDOR-контракт, что и `api/routes/games.py`
 (T-04.2-02): Pydantic-модели тел запроса намеренно не содержат `user_id`.
+
+`POST /farm/upgrade/character` (GACHA-05) — индивидуальная прокачка одной
+героини (`char_id` в теле), отдельно от тапа/автокликера, за то же CP.
 
 Анти-чит тапов (T-04.2-07): `POST /farm/tap` прокидывает клиентский
 `count`/`elapsed_ms` В `clicker_service.tap` AS-IS — реальный клэмп
@@ -53,6 +56,10 @@ class BuyBody(BaseModel):
     ref_id: str
 
 
+class UpgradeCharacterBody(BaseModel):
+    char_id: str
+
+
 @router.get("/api/v1/farm")
 async def get_farm(auth: AuthContext = Depends(require_membership)) -> dict:
     async with SessionLocal() as session:
@@ -83,6 +90,19 @@ async def post_upgrade_auto(auth: AuthContext = Depends(require_membership)) -> 
     async with SessionLocal() as session:
         try:
             return await clicker_service.upgrade_auto(session, auth.chat_id, auth.user_id)
+        except clicker_service.ClickerError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/api/v1/farm/upgrade/character")
+async def post_upgrade_character(
+    body: UpgradeCharacterBody, auth: AuthContext = Depends(require_membership)
+) -> dict:
+    async with SessionLocal() as session:
+        try:
+            return await clicker_service.upgrade_character(
+                session, auth.chat_id, auth.user_id, body.char_id
+            )
         except clicker_service.ClickerError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 

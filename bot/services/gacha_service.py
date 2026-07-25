@@ -307,6 +307,7 @@ async def get_collection(session: AsyncSession, chat_id: int, user_id: int) -> d
                 "stars": row.stars,
                 "copies": row.copies,
                 "const_level": constellation_catalog.const_level(row.copies),
+                "farm_level": row.farm_level,
                 "art_slug": char.art_slug,
             }
         )

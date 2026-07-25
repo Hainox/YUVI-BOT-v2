@@ -88,6 +88,31 @@ WORKER_TIER_CP_PER_SEC: dict[str, float] = {
     "UUR": 1.67,
 }
 
+# --- GACHA-05: прокачка отдельной героини в ферме (idle-game-стиль) ---------
+#
+# Отдельно от constellation-уровня (растёт от ДУБЛЕЙ, sum_effect выше) —
+# здесь игрок тратит CP фермы, чтобы поднять farm_level КОНКРЕТНОЙ героини
+# (стартует с 1 при получении, как tap_level стартует с 1). Каждый уровень
+# прибавляет FARM_LEVEL_RATE_PER_TIER[tier] CP/сек героини ДО star_mult/
+# constellation-бонуса (см. _collection_income_per_sec) — тот же порядок
+# множителей, что уже применяется к WORKER_TIER_CP_PER_SEC. Кост растёт по
+# уже проверенной кривой _upgrade_cost (base*1.15**level, как тап/автокликер).
+FARM_LEVEL_MAX = 50  # как MAX_WORKER_LEVEL в эталоне REFERENCE-XYLOZ.md §3.1
+
+FARM_LEVEL_RATE_PER_TIER: dict[str, float] = {
+    "R": 0.004,
+    "S": 0.025,
+    "UR": 0.05,
+    "UUR": 0.167,
+}
+
+FARM_LEVEL_BASE_COST: dict[str, int] = {
+    "R": 50,
+    "S": 400,
+    "UR": 2000,
+    "UUR": 8000,
+}
+
 # --- AMM CP<->ювик (D-03, REFERENCE-XYLOZ.md §3.1 market_service.py) --------
 
 # FARM "100 CP = 1 ювик" (FARM-01) — теперь якорь mean-reversion, а не
@@ -148,28 +173,34 @@ async def _get_or_create_farm(session: AsyncSession, chat_id: int, user_id: int)
 
 
 async def _collection_income_per_sec(session: AsyncSession, chat_id: int, user_id: int) -> float:
-    """GACHA-02/GACHA-04: сумма CP/сек от ВСЕХ собранных героинь -
-    WORKER_TIER_CP_PER_SEC[tier] * gacha_catalog.star_mult(stars) по каждой
-    строке gacha_collection (роль персонажа больше не фильтрует доход, см.
-    gacha_catalog.py), ДОПОЛНИТЕЛЬНО умноженная на (1 + constellation-бонус
-    FARM_CP_PCT этой героини на её текущем const_level) — единственный
-    constellation-эффект, реально подключённый к игровой логике в этом
-    заходе (constellation_catalog.py хранит остальные 8 категорий бонусов
-    как готовые данные, но НЕ применяет их нигде ещё, см. докстринг
-    constellation_catalog.py)."""
+    """GACHA-02/GACHA-04/GACHA-05: сумма CP/сек от ВСЕХ собранных героинь -
+    (WORKER_TIER_CP_PER_SEC[tier] + FARM_LEVEL_RATE_PER_TIER[tier]*(farm_level-1))
+    * gacha_catalog.star_mult(stars) по каждой строке gacha_collection (роль
+    персонажа больше не фильтрует доход, см. gacha_catalog.py), ДОПОЛНИТЕЛЬНО
+    умноженная на (1 + constellation-бонус FARM_CP_PCT этой героини на её
+    текущем const_level) — единственный constellation-эффект, реально
+    подключённый к игровой логике (constellation_catalog.py хранит остальные
+    8 категорий бонусов как готовые данные, но НЕ применяет их нигде ещё, см.
+    докстринг constellation_catalog.py). farm_level растёт ЗА CP через
+    upgrade_character (GACHA-05) — отдельно от const_level, который растёт от
+    дублей, не от траты валюты."""
     rows = (
         await session.execute(
-            select(GachaCollection.char_id, GachaCollection.stars, GachaCollection.copies).where(
-                GachaCollection.chat_id == chat_id, GachaCollection.user_id == user_id
-            )
+            select(
+                GachaCollection.char_id,
+                GachaCollection.stars,
+                GachaCollection.copies,
+                GachaCollection.farm_level,
+            ).where(GachaCollection.chat_id == chat_id, GachaCollection.user_id == user_id)
         )
     ).all()
     total = 0.0
-    for char_id, stars, copies in rows:
+    for char_id, stars, copies, farm_level in rows:
         char = gacha_catalog.CATALOG.get(char_id)
         if char is None:
             continue
-        base = WORKER_TIER_CP_PER_SEC[char.tier] * gacha_catalog.star_mult(stars)
+        level_bonus = FARM_LEVEL_RATE_PER_TIER[char.tier] * (farm_level - 1)
+        base = (WORKER_TIER_CP_PER_SEC[char.tier] + level_bonus) * gacha_catalog.star_mult(stars)
         level = constellation_catalog.const_level(copies)
         bonus_pct = constellation_catalog.sum_effect(char_id, level, constellation_catalog.FARM_CP_PCT)
         total += base * (1 + bonus_pct)
@@ -336,6 +367,58 @@ async def upgrade_tap(session: AsyncSession, chat_id: int, user_id: int) -> dict
 async def upgrade_auto(session: AsyncSession, chat_id: int, user_id: int) -> dict:
     """D-03: апгрейд автокликера — cost = int(round(AUTO_UPGRADE_BASE*1.15**auto_level))."""
     return await _upgrade(session, chat_id, user_id, AUTO_UPGRADE_BASE, "auto_level")
+
+
+async def _get_collection_row_for_update(
+    session: AsyncSession, chat_id: int, user_id: int, char_id: str
+) -> GachaCollection | None:
+    return (
+        await session.execute(
+            select(GachaCollection)
+            .where(
+                GachaCollection.chat_id == chat_id,
+                GachaCollection.user_id == user_id,
+                GachaCollection.char_id == char_id,
+            )
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+
+
+async def upgrade_character(session: AsyncSession, chat_id: int, user_id: int, char_id: str) -> dict:
+    """GACHA-05: индивидуальная прокачка ОДНОЙ героини фермы (idle-game-стиль,
+    отдельно от constellation-уровня, который растёт от дублей, а не от
+    траты валюты). Стоит CP фермы — тот же кошелёк и та же кривая стоимости
+    (`_upgrade_cost`, base*1.15**level), что тап/автокликер, кап
+    `FARM_LEVEL_MAX`=50 (как MAX_WORKER_LEVEL в эталоне). Порядок блокировок
+    — строка фермы ПЕРВОЙ, затем строка `gacha_collection` героини (тот же
+    контракт, что `gacha_service.roll`, см. его докстринг)."""
+    char = gacha_catalog.CATALOG.get(char_id)
+    if char is None:
+        raise ClickerError("Неизвестный персонаж")
+
+    farm = await _get_or_create_farm(session, chat_id, user_id)
+    await _accrue_offline(session, chat_id, user_id, farm)
+
+    row = await _get_collection_row_for_update(session, chat_id, user_id, char_id)
+    if row is None:
+        raise ClickerError("Героиня ещё не собрана")
+
+    if row.farm_level >= FARM_LEVEL_MAX:
+        raise ClickerError(f"Достигнут максимальный уровень ({FARM_LEVEL_MAX})")
+
+    cost = _upgrade_cost(FARM_LEVEL_BASE_COST[char.tier], row.farm_level)
+    if farm.cp < cost:
+        raise ClickerError(f"Недостаточно CP для апгрейда (нужно {cost}, есть {farm.cp})")
+
+    farm.cp -= cost
+    row.farm_level += 1
+
+    await session.commit()
+    state = _farm_state(farm)
+    state["char_id"] = char_id
+    state["farm_level"] = row.farm_level
+    return state
 
 
 # --- AMM CP<->ювик: pool get-or-create, quote, convert, buy -----------------

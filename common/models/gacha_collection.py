@@ -35,4 +35,8 @@ class GachaCollection(Base):
     char_id: Mapped[str] = mapped_column(String(64), nullable=False)
     stars: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     copies: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # GACHA-05: уровень прокачки этой героини в ферме — отдельно от stars/copies
+    # (которые растут только от дублей). Растёт за CP через
+    # clicker_service.upgrade_character, кап clicker_service.FARM_LEVEL_MAX.
+    farm_level: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

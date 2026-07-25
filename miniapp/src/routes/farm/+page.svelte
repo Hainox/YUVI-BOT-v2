@@ -28,6 +28,13 @@
 	const TIER_FRACTIONS = [0.1, 0.25, 0.5, 0.75, 1];
 	const QUOTE_DEBOUNCE_MS = 250;
 
+	// GACHA-05: клиентское зеркало bot/services/clicker_service.py
+	// FARM_LEVEL_BASE_COST/FARM_LEVEL_MAX — только для отображения стоимости
+	// ДО ответа сервера, тот же информационный паттерн, что TAP_UPGRADE_BASE
+	// выше (сервер — единственный источник истины о реальном списании).
+	const FARM_LEVEL_BASE_COST: Record<string, number> = { R: 50, S: 400, UR: 2000, UUR: 8000 };
+	const FARM_LEVEL_MAX = 50;
+
 	type FarmState = {
 		cp: number;
 		tap_level: number;
@@ -46,6 +53,14 @@
 		quotes: MarketQuote[];
 	};
 	type ConvertResult = { cp_in: number; hryvnia_out: number; price: number | string };
+	type OwnedCharacter = {
+		char_id: string;
+		name: string;
+		tier: string;
+		art_slug: string;
+		farm_level: number;
+	};
+	type CollectionResponse = { characters: OwnedCharacter[] };
 	type TierQuote = {
 		amount: number;
 		hryvniaOut: number;
@@ -74,6 +89,9 @@
 	let upgradingTap = $state(false);
 	let upgradingAuto = $state(false);
 
+	let characters = $state<OwnedCharacter[]>([]);
+	let upgradingCharId = $state<string | null>(null);
+
 	let convertAmount = $state(100);
 	let converting = $state(false);
 	let convertResult = $state<ConvertResult | null>(null);
@@ -100,6 +118,16 @@
 			error = describeError(err);
 		} finally {
 			loading = false;
+		}
+	}
+
+	async function loadCharacters() {
+		try {
+			const res = await apiFetch<CollectionResponse>('/api/v1/gacha/collection');
+			characters = res.characters;
+		} catch {
+			// Список героинь для прокачки — вторичный блок экрана, не блокирует
+			// тап/апгрейды/конвертацию, если /gacha/collection недоступен.
 		}
 	}
 
@@ -236,6 +264,32 @@
 		}
 	}
 
+	async function upgradeCharacter(charId: string) {
+		if (upgradingCharId !== null) return;
+		upgradingCharId = charId;
+		error = null;
+		try {
+			const res = await apiFetch<{ char_id: string; farm_level: number; cp: number }>(
+				'/api/v1/farm/upgrade/character',
+				{ method: 'POST', body: JSON.stringify({ char_id: charId }) }
+			);
+			cp = res.cp;
+			optimisticCp = res.cp;
+			const char = characters.find((c) => c.char_id === charId);
+			if (char) char.farm_level = res.farm_level;
+			haptic('win');
+		} catch (err) {
+			error = describeError(err);
+			haptic('error');
+		} finally {
+			upgradingCharId = null;
+		}
+	}
+
+	function characterUpgradeCost(char: OwnedCharacter): number {
+		return Math.round(FARM_LEVEL_BASE_COST[char.tier] * Math.pow(UPGRADE_GROWTH, char.farm_level));
+	}
+
 	async function convert() {
 		if (converting || convertAmount <= 0 || convertAmount > cp) return;
 		converting = true;
@@ -304,6 +358,7 @@
 
 	onMount(() => {
 		loadFarm();
+		loadCharacters();
 		flushIntervalId = setInterval(flushTaps, FLUSH_INTERVAL_MS);
 	});
 
@@ -334,7 +389,19 @@
 		</div>
 
 		<button type="button" class="farm-tap-btn" disabled={sessionExpired} onclick={tapOnce}>
-			<img src="/farm/tap-character.jpg" alt="" class="farm-tap-char" />
+			<video
+				class="farm-tap-char"
+				poster="/farm/tap-character.jpg"
+				autoplay
+				loop
+				muted
+				playsinline
+				disablepictureinpicture
+				aria-hidden="true"
+			>
+				<source src="/farm/tap-character.webm" type="video/webm" />
+				<source src="/farm/tap-character.mp4" type="video/mp4" />
+			</video>
 			<span class="farm-tap-label">ТАП</span>
 			<span class="farm-tap-sub">+{tapLevel} CP за тап</span>
 		</button>
@@ -371,6 +438,42 @@
 				</span>
 			</button>
 		</div>
+
+		{#if characters.length > 0}
+			<div class="farm-heroines feature-card">
+				<span class="fc-title">Прокачка героинь</span>
+				<span class="fc-desc">каждая героиня качается отдельно — уровень поднимает её личный CP/сек</span>
+				<div class="farm-heroine-list">
+					{#each characters as char (char.char_id)}
+						{@const cost = characterUpgradeCost(char)}
+						{@const maxed = char.farm_level >= FARM_LEVEL_MAX}
+						<div class="farm-heroine-row">
+							<img
+								src="/art/heroines/{char.art_slug}.webp"
+								alt=""
+								class="farm-heroine-art tier-{char.tier.toLowerCase()}"
+							/>
+							<div class="farm-heroine-info">
+								<span class="fh-name">{char.name}</span>
+								<span class="fh-level">ур. {char.farm_level}{maxed ? ' (макс.)' : `/${FARM_LEVEL_MAX}`}</span>
+							</div>
+							<button
+								type="button"
+								class="chip farm-heroine-btn"
+								disabled={maxed || upgradingCharId === char.char_id || cp < cost}
+								onclick={() => upgradeCharacter(char.char_id)}
+							>
+								{maxed
+									? 'макс.'
+									: upgradingCharId === char.char_id
+										? '…'
+										: `${cost} CP`}
+							</button>
+						</div>
+					{/each}
+				</div>
+			</div>
+		{/if}
 
 		<div class="farm-convert feature-card">
 			<span class="fc-title">Обмен CP → ¥</span>
@@ -597,17 +700,6 @@
 		object-fit: cover;
 		object-position: top center;
 		pointer-events: none;
-		/* Простенькая idle-анимация: лёгкое "дыхание" по кругу тапа. */
-		animation: farmTapCharBreathe 3s ease-in-out infinite;
-	}
-	@keyframes farmTapCharBreathe {
-		0%,
-		100% {
-			transform: scale(1);
-		}
-		50% {
-			transform: scale(1.05);
-		}
 	}
 	.farm-tap-label {
 		position: relative;
@@ -679,6 +771,63 @@
 		font-size: var(--font-heading-size);
 		color: var(--accent-pink);
 		font-weight: 900;
+	}
+
+	.farm-heroine-list {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-sm);
+		margin-top: var(--space-xs);
+	}
+	.farm-heroine-row {
+		display: flex;
+		align-items: center;
+		gap: var(--space-sm);
+	}
+	.farm-heroine-art {
+		width: 40px;
+		height: 40px;
+		border-radius: 8px;
+		object-fit: cover;
+		object-position: top center;
+		border: 2px solid var(--border-secondary);
+		flex-shrink: 0;
+	}
+	.farm-heroine-art.tier-r {
+		border-color: #9b97ad;
+	}
+	.farm-heroine-art.tier-s {
+		border-color: var(--accent-cyan);
+	}
+	.farm-heroine-art.tier-ur {
+		border-color: var(--accent-pink);
+	}
+	.farm-heroine-art.tier-uur {
+		border-color: var(--accent-yellow);
+		box-shadow: 0 0 12px rgba(255, 216, 74, 0.4);
+	}
+	.farm-heroine-info {
+		display: flex;
+		flex-direction: column;
+		flex: 1;
+		min-width: 0;
+	}
+	.fh-name {
+		font-size: var(--font-body-size);
+		color: var(--text-primary);
+		font-family: var(--font-body);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.fh-level {
+		font-size: 11px;
+		color: var(--text-muted);
+		font-family: var(--font-numeric);
+	}
+	.farm-heroine-btn {
+		flex-shrink: 0;
+		min-width: 72px;
 	}
 
 	.farm-market-chart,
