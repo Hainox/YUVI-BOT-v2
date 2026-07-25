@@ -359,3 +359,31 @@ def test_gacha_route_composes_service_no_raw_sql():
     source = inspect.getsource(gacha_route)
     assert "select(" not in source
     assert "GachaCollection" not in source
+
+
+# --- GET /api/v1/gacha/banner -------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_banner_returns_200_with_expected_keys(monkeypatch):
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    user_id = 500401
+    await _ensure_user(user_id)
+    init_data = _build_init_data(user_id=user_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(
+            "/api/v1/gacha/banner",
+            params={"chat_id": CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "featured_id" in body
+    assert "rates" in body
+    assert "pity_ssr" in body
+    assert "pity_ur" in body
+    assert body["cost_single"] == gacha_service.ROLL_COST
+    assert body["cost_ten"] == gacha_service.ROLL10_COST

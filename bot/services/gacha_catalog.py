@@ -24,28 +24,29 @@ class Character:
     char_id: str
     tier: str  # "R" | "S" | "UR" | "UUR"
     name: str
+    art_slug: str  # имя ассета /art/heroines/{art_slug}.webp (static Mini App), нумерация из исходного дизайн-пакета, не связана с char_id
 
 
 _CHARACTERS: tuple[Character, ...] = (
     # --- R (D-07: каталог-only, недостижим через /roll) — стартовый набор ---
-    Character("r_elis", "R", "Элис"),
-    Character("r_freya", "R", "Фрея"),
-    Character("r_selin", "R", "Селин"),
-    Character("r_sofia", "R", "София"),
-    Character("r_nora", "R", "Нора"),
+    Character("r_elis", "R", "Элис", art_slug="01-elis"),
+    Character("r_freya", "R", "Фрея", art_slug="02-freya"),
+    Character("r_selin", "R", "Селин", art_slug="03-selin"),
+    Character("r_sofia", "R", "София", art_slug="04-sofia"),
+    Character("r_nora", "R", "Нора", art_slug="05-nora"),
     # --- S --------------------------------------------------------------------
-    Character("s_ignis", "S", "Игнис"),
-    Character("s_astrid", "S", "Астрид"),
-    Character("s_amira", "S", "Амира"),
-    Character("s_luna", "S", "Луна"),
+    Character("s_ignis", "S", "Игнис", art_slug="06-ignis"),
+    Character("s_astrid", "S", "Астрид", art_slug="07-astrid"),
+    Character("s_amira", "S", "Амира", art_slug="08-amira"),
+    Character("s_luna", "S", "Луна", art_slug="09-luna"),
     # --- UR -------------------------------------------------------------------
-    Character("ur_iris", "UR", "Айрис"),
-    Character("ur_yuna", "UR", "Юна"),
-    Character("ur_mia", "UR", "Мия"),
+    Character("ur_iris", "UR", "Айрис", art_slug="10-iris"),
+    Character("ur_yuna", "UR", "Юна", art_slug="11-yuna"),
+    Character("ur_mia", "UR", "Мия", art_slug="12-mia"),
     # --- UUR (топ-тир, rate-up баннер) -----------------------------------------
-    Character("uur_astrea", "UUR", "Астрея"),
-    Character("uur_eliana", "UUR", "Элиана"),
-    Character("uur_mara", "UUR", "Мара"),
+    Character("uur_astrea", "UUR", "Астрея", art_slug="13-astrea"),
+    Character("uur_eliana", "UUR", "Элиана", art_slug="14-eliana"),
+    Character("uur_mara", "UUR", "Мара", art_slug="15-mara"),
 )
 
 CATALOG: dict[str, Character] = {c.char_id: c for c in _CHARACTERS}

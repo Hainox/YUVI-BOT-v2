@@ -19,6 +19,10 @@ py`, роут её не дублирует. Идемпотентность по 
 pity, rate-up баннер). Роут не содержит ни одного SQL-запроса и не
 ссылается на ORM-модель коллекции напрямую (доказано
 `tests/test_api_gacha.py::test_gacha_route_composes_service_no_raw_sql`).
+
+`GET /gacha/banner` — лёгкий read ДО ролла: баннер/ставки/pity/цена,
+композиция `gacha_service.get_banner_info`. Та же дисциплина тонкого
+роута без прямого SQL/ORM, что и у двух других эндпоинтов в этом файле.
 """
 
 from __future__ import annotations
@@ -70,3 +74,9 @@ async def post_roll(
 async def get_collection(auth: AuthContext = Depends(require_membership)) -> dict:
     async with SessionLocal() as session:
         return await gacha_service.get_collection(session, auth.chat_id, auth.user_id)
+
+
+@router.get("/api/v1/gacha/banner")
+async def get_banner(auth: AuthContext = Depends(require_membership)) -> dict:
+    async with SessionLocal() as session:
+        return await gacha_service.get_banner_info(session, auth.chat_id, auth.user_id)

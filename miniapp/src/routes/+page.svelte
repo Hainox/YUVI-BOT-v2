@@ -39,6 +39,7 @@
 	const baseTiles: Tile[] = [
 		{ title: 'Игры', desc: 'слоты · рулетка · блэкджек · кости · монетка', accent: 'pink', href: '/games' },
 		{ title: 'Ферма', desc: 'тапай, копи CP, качай апгрейды', accent: 'cyan', href: '/farm' },
+		{ title: 'Гача', desc: 'крути баннер, собирай коллекцию героинь', accent: 'pink', href: '/gacha' },
 		{ title: 'Квесты', desc: 'ежедневные задания и достижения', accent: 'yellow', href: '/quests' },
 		{ title: 'Дуэль', desc: 'вызови кого-нибудь на бабки', accent: 'pink', href: '/duel' },
 		{ title: 'Рынки', desc: 'ставь на исход, следи за котировкой', accent: 'cyan', href: '/markets' },
@@ -67,9 +68,7 @@
 		href: '/admin'
 	};
 
-	const lockedTiles: Tile[] = [
-		{ title: 'Гача', desc: 'временно отключено', locked: 'временно отключено' }
-	];
+	const lockedTiles: Tile[] = [];
 
 	let tiles = $derived([...baseTiles, ...(isAdmin ? [adminTile] : []), ...lockedTiles]);
 

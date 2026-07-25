@@ -20,6 +20,7 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import select
 
+from bot.services import constellation_catalog
 from bot.services import economy_service
 from bot.services import gacha_catalog
 from bot.services import gacha_service
@@ -443,3 +444,57 @@ async def test_get_collection_reports_pity_and_banner(session, monkeypatch):
     assert result["banner"] == banner_char.char_id
 
     settings_service.clear_cache()
+
+
+@pytest.mark.asyncio
+async def test_get_collection_reports_const_level_and_art_slug(session, monkeypatch):
+    """GACHA-04: каждый персонаж в get_collection несёт const_level
+    (`constellation_catalog.const_level(copies)`, min(6, copies-1)) и
+    art_slug (статичный ассет Mini App из `gacha_catalog.CATALOG`) —
+    доказываем на персонаже с несколькими дублями (copies=3), где
+    const_level уже не тривиальный 0."""
+    chat_id = -100910013
+    user_id = 910013
+    await _ensure_user(session, user_id)
+    await _fund(session, chat_id, user_id)
+    await _top_up(session, chat_id, user_id, 10_000, "test_const_level_top_up")
+
+    monkeypatch.setattr(gacha_service, "_rng", _ForcedRng(random_value=0.0, choice_index=0))
+    char = gacha_catalog.chars_of_tier("S")[0]
+
+    for i in range(1, 4):
+        await gacha_service.roll(session, chat_id, user_id, 1, f"test_const_level_{i}")
+
+    result = await gacha_service.get_collection(session, chat_id, user_id)
+
+    assert len(result["characters"]) == 1
+    entry = result["characters"][0]
+    assert entry["char_id"] == char.char_id
+    assert entry["copies"] == 3
+    assert entry["const_level"] == constellation_catalog.const_level(3)
+    assert entry["const_level"] == 2  # min(6, 3-1)
+    assert entry["art_slug"]
+    assert entry["art_slug"] == gacha_catalog.CATALOG[char.char_id].art_slug
+
+
+# --- get_banner_info (design-хендофф §5: pre-roll read) ----------------------
+
+
+@pytest.mark.asyncio
+async def test_get_banner_info_fresh_user_reports_defaults(session):
+    chat_id = -100910014
+    user_id = 910014
+    await _ensure_user(session, user_id)
+
+    result = await gacha_service.get_banner_info(session, chat_id, user_id)
+
+    assert "featured_id" in result
+    assert "rates" in result
+    assert "pity_ssr" in result
+    assert "pity_ur" in result
+    assert "cost_single" in result
+    assert "cost_ten" in result
+    assert result["pity_ssr"] == 0  # свежая ферма — pity ещё не копился
+    assert result["pity_ur"] == 0
+    assert result["cost_single"] == gacha_service.ROLL_COST
+    assert result["cost_ten"] == gacha_service.ROLL10_COST

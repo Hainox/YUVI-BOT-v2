@@ -18,10 +18,10 @@
 	import { apiFetch, ApiError } from '$lib/api';
 	import { haptic } from '$lib/tg';
 
-	// Временное отключение раздела (хаб уже прячет тайл — см. lockedTiles в
-	// +page.svelte хаба). Флаг здесь же гасит и прямой заход по /gacha,
-	// код ниже не трогается — переключается обратно одной строкой.
-	const GACHA_DISABLED = true;
+	// Раздел включён (хаб больше не прячет тайл). Флаг оставлен для
+	// будущих отключений — гасит и прямой заход по /gacha, переключается
+	// обратно одной строкой.
+	const GACHA_DISABLED = false;
 
 	const ROLL_COST = 300;
 	const ROLL10_COST = 2700;
@@ -36,6 +36,8 @@
 		tier: Tier;
 		stars: number;
 		copies: number;
+		const_level: number;
+		art_slug: string;
 	};
 	type CollectionState = {
 		characters: Character[];
@@ -147,6 +149,13 @@
 			<div class="gacha-reveal">
 				{#each reveal as grant (grant.char_id + ':' + grant.stars + ':' + grant.refunded)}
 					<div class={`gacha-reveal-card gacha-tier-${grant.tier.toLowerCase()}`}>
+						{#if byId.get(grant.char_id)?.art_slug}
+							<img
+								class="gacha-reveal-portrait"
+								src={`/art/heroines/${byId.get(grant.char_id)?.art_slug}.webp`}
+								alt={charName(grant.char_id)}
+							/>
+						{/if}
 						<div class="gacha-reveal-tier">{grant.tier}</div>
 						<div class="gacha-reveal-name">{charName(grant.char_id)}</div>
 						<div class="gacha-reveal-stars">{'★'.repeat(grant.stars)}</div>
@@ -190,10 +199,24 @@
 					<div class="gacha-tier-grid">
 						{#each group.chars as char (char.char_id)}
 							<div class={`gacha-char-card gacha-tier-${char.tier.toLowerCase()}`}>
+								{#if char.art_slug}
+									<img
+										class="gacha-char-portrait"
+										src={`/art/heroines/${char.art_slug}.webp`}
+										alt={char.name}
+									/>
+								{/if}
 								<div class="gacha-char-name">{char.name}</div>
 								<div class="gacha-char-stars">{'★'.repeat(char.stars)}</div>
-								{#if char.copies > 1}
-									<div class="gacha-char-copies">×{char.copies}</div>
+								{#if char.copies > 1 || char.const_level > 0}
+									<div class="gacha-char-meta">
+										{#if char.copies > 1}
+											<span class="gacha-char-copies">×{char.copies}</span>
+										{/if}
+										{#if char.const_level > 0}
+											<span class="gacha-char-const">C{char.const_level}</span>
+										{/if}
+									</div>
 								{/if}
 							</div>
 						{/each}
@@ -271,6 +294,32 @@
 		padding: var(--space-md);
 		text-align: center;
 	}
+	/* Простой reveal для портрета: fade + scale-up ~350мс, без
+	   многофазной "кинематографичной" анимации (см. задачу — оставить
+	   просто). */
+	@keyframes gachaPortraitReveal {
+		from {
+			opacity: 0;
+			transform: scale(0.85);
+		}
+		to {
+			opacity: 1;
+			transform: scale(1);
+		}
+	}
+	.gacha-reveal-portrait {
+		width: 100%;
+		height: 150px;
+		object-fit: cover;
+		border-radius: 10px;
+		margin-bottom: var(--space-sm);
+		animation: gachaPortraitReveal 0.35s ease-out;
+	}
+	/* UUR-портрет крупнее + тот же жёлтый glow, что и у .gacha-tier-uur. */
+	.gacha-reveal-card.gacha-tier-uur .gacha-reveal-portrait {
+		height: 170px;
+		box-shadow: 0 0 24px rgba(255, 216, 74, 0.45);
+	}
 	.gacha-reveal-tier {
 		font-family: var(--font-numeric);
 		font-size: var(--font-label-size);
@@ -303,21 +352,24 @@
 		border-color: #9b97ad;
 	}
 	.gacha-tier-r .gacha-reveal-tier,
-	.gacha-tier-r .gacha-char-name {
+	.gacha-tier-r .gacha-char-name,
+	.gacha-tier-r .gacha-char-const {
 		color: #9b97ad;
 	}
 	.gacha-tier-s {
 		border-color: var(--accent-cyan);
 	}
 	.gacha-tier-s .gacha-reveal-tier,
-	.gacha-tier-s .gacha-char-name {
+	.gacha-tier-s .gacha-char-name,
+	.gacha-tier-s .gacha-char-const {
 		color: var(--accent-cyan);
 	}
 	.gacha-tier-ur {
 		border-color: var(--accent-pink);
 	}
 	.gacha-tier-ur .gacha-reveal-tier,
-	.gacha-tier-ur .gacha-char-name {
+	.gacha-tier-ur .gacha-char-name,
+	.gacha-tier-ur .gacha-char-const {
 		color: var(--accent-pink);
 	}
 	.gacha-tier-uur {
@@ -325,7 +377,8 @@
 		box-shadow: 0 0 24px rgba(255, 216, 74, 0.45);
 	}
 	.gacha-tier-uur .gacha-reveal-tier,
-	.gacha-tier-uur .gacha-char-name {
+	.gacha-tier-uur .gacha-char-name,
+	.gacha-tier-uur .gacha-char-const {
 		color: var(--accent-yellow);
 	}
 	/* Hero-tier reveal treatment on UUR pulls specifically (04-UI-SPEC.md
@@ -383,6 +436,13 @@
 		border-radius: 10px;
 		padding: var(--space-sm);
 	}
+	.gacha-char-portrait {
+		width: 100%;
+		height: auto;
+		object-fit: cover;
+		border-radius: 8px;
+		margin-bottom: var(--space-xs);
+	}
 	.gacha-char-name {
 		font-family: var(--font-chrome);
 		font-size: 13px;
@@ -394,10 +454,25 @@
 		color: var(--accent-yellow);
 		margin-top: 2px;
 	}
+	.gacha-char-meta {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		margin-top: 2px;
+	}
 	.gacha-char-copies {
 		font-size: 11px;
 		color: var(--text-muted);
-		margin-top: 2px;
 		font-family: var(--font-body);
+	}
+	.gacha-char-const {
+		font-size: 10px;
+		font-weight: 700;
+		font-family: var(--font-numeric);
+		color: inherit;
+		border: 1px solid currentColor;
+		border-radius: 999px;
+		padding: 1px 6px;
+		line-height: 1.4;
 	}
 </style>

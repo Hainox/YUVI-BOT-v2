@@ -25,6 +25,7 @@ from sqlalchemy import select
 from sqlalchemy import update
 
 from bot.services import clicker_service
+from bot.services import constellation_catalog
 from bot.services import gacha_catalog
 from common.models.achievement_unlock import AchievementUnlock
 from common.models.clicker_farm import ClickerFarm
@@ -564,3 +565,71 @@ async def test_upgrade_succeeds_when_quest_completions_raise_effective_cap(sessi
 
     farm = await _get_farm(session, chat_id, user_id)
     assert farm.tap_level == 51
+
+
+# --- GACHA-04: constellation-бонус FARM_CP_PCT в доходе фермы ----------------
+
+
+@pytest.mark.asyncio
+async def test_constellation_farm_cp_bonus_increases_income_at_higher_copies(session):
+    """GACHA-04: _collection_income_per_sec домножает базовую ставку тира на
+    (1 + constellation-бонус FARM_CP_PCT текущего const_level героини) —
+    пользователь с 3 копиями uur_astrea (const_level(3)=2, узел C2 = +6%
+    CP/сек, см. constellation_catalog.py) должен накопить БОЛЬШЕ CP за тот
+    же оффлайн-период, чем контрольный пользователь с той же героиней и
+    тем же тиром/звёздами, но только 1 копией (const_level=0, бонус ещё не
+    открыт) — доказывает, что бонус реально подключён, а не заглушка."""
+    chat_id = -100910019
+    bonus_user_id = 910020
+    control_user_id = 910021
+    await _ensure_user(session, bonus_user_id)
+    await _ensure_user(session, control_user_id)
+    await clicker_service.get_farm_state(session, chat_id, bonus_user_id)
+    await clicker_service.get_farm_state(session, chat_id, control_user_id)
+
+    char = gacha_catalog.CATALOG["uur_astrea"]  # UUR: FARM_CP_PCT +6% открывается на C2
+    await _grant_char(session, chat_id, bonus_user_id, char.char_id, stars=1)
+    await _grant_char(session, chat_id, control_user_id, char.char_id, stars=1)
+
+    # _grant_char не умеет копить дубли повторным вызовом (уникальный индекс
+    # (user_id, chat_id, char_id) в gacha_collection упадёт на втором
+    # INSERT) - копии для bonus_user_id сеются напрямую через UPDATE, тем же
+    # приёмом прямой правки строки в обход сервиса, каким _set_farm правит
+    # ClickerFarm выше в этом файле.
+    await session.execute(
+        update(GachaCollection)
+        .where(
+            GachaCollection.chat_id == chat_id,
+            GachaCollection.user_id == bonus_user_id,
+            GachaCollection.char_id == char.char_id,
+        )
+        .values(copies=3)
+    )
+    await session.commit()
+    session.expire_all()
+
+    elapsed_seconds = 200
+    past = datetime.utcnow() - timedelta(seconds=elapsed_seconds)
+    await _set_farm(session, chat_id, bonus_user_id, auto_level=0, last_accrued_at=past)
+    await _set_farm(session, chat_id, control_user_id, auto_level=0, last_accrued_at=past)
+
+    state_bonus = await clicker_service.get_farm_state(session, chat_id, bonus_user_id)
+    state_control = await clicker_service.get_farm_state(session, chat_id, control_user_id)
+
+    base_rate = clicker_service.WORKER_TIER_CP_PER_SEC[char.tier] * gacha_catalog.star_mult(1)
+    bonus_const_level = constellation_catalog.const_level(3)
+    assert bonus_const_level == 2  # 3 копии -> C2, узел FARM_CP_PCT реально открыт
+    expected_bonus_pct = constellation_catalog.sum_effect(
+        char.char_id, bonus_const_level, constellation_catalog.FARM_CP_PCT
+    )
+    assert expected_bonus_pct == pytest.approx(0.06)  # constellation_catalog.py: uur_astrea C2
+
+    expected_rate_bonus = base_rate * (1 + expected_bonus_pct)
+    expected_gain_bonus = int(expected_rate_bonus * elapsed_seconds)
+    expected_gain_control = int(base_rate * elapsed_seconds)
+
+    assert state_control["cp"] == expected_gain_control
+    assert state_bonus["cp"] == expected_gain_bonus
+    assert state_bonus["cp"] > state_control["cp"]
+    assert state_bonus["cp_per_sec"] == pytest.approx(expected_rate_bonus)
+    assert state_control["cp_per_sec"] == pytest.approx(base_rate)

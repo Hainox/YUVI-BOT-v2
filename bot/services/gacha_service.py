@@ -37,6 +37,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.services import clicker_service
+from bot.services import constellation_catalog
 from bot.services import economy_service
 from bot.services import gacha_catalog
 from bot.services import settings_service
@@ -269,10 +270,12 @@ async def get_collection(session: AsyncSession, chat_id: int, user_id: int) -> d
     SELECT), плюс текущий `pity_ssr`/`pity_ur` (та же строка `clicker_farms`,
     что использует `roll`, переиспользуем `clicker_service._get_or_create_farm`
     вместо дублирования upsert+`FOR UPDATE`, Pattern 7) и id активного
-    rate-up баннера (`settings_service.get_setting`). Чистый SELECT — не
-    пишет ничего, кроме идемпотентного get-or-create строки фермы (тот же
-    паттерн, что уже установлен `clicker_service.get_farm_state` для
-    чистых read-путей)."""
+    rate-up баннера (`settings_service.get_setting`). Каждый персонаж также
+    несёт `const_level` (GACHA-04, `constellation_catalog.const_level`,
+    `min(6, copies-1)`) и `art_slug` (имя статичного ассета Mini App из
+    `gacha_catalog.Character`). Чистый SELECT — не пишет ничего, кроме
+    идемпотентного get-or-create строки фермы (тот же паттерн, что уже
+    установлен `clicker_service.get_farm_state` для чистых read-путей)."""
     rows = (
         await session.execute(
             select(GachaCollection).where(
@@ -294,6 +297,8 @@ async def get_collection(session: AsyncSession, chat_id: int, user_id: int) -> d
                 "tier": char.tier,
                 "stars": row.stars,
                 "copies": row.copies,
+                "const_level": constellation_catalog.const_level(row.copies),
+                "art_slug": char.art_slug,
             }
         )
 
@@ -307,4 +312,26 @@ async def get_collection(session: AsyncSession, chat_id: int, user_id: int) -> d
         "pity_ssr": farm.pity_ssr,
         "pity_ur": farm.pity_ur,
         "banner": banner,
+    }
+
+
+# --- get_banner_info (design-хендофф §5: pre-roll read, GET /gacha/banner) ---
+
+
+async def get_banner_info(session: AsyncSession, chat_id: int, user_id: int) -> dict:
+    """Лёгкий read баннера ДО ролла (GACHA design-хендофф §5): featured_id +
+    ставки/цены (константы каталога) + личные pity-счётчики вызывающего
+    (та же строка clicker_farms, что использует roll/get_collection -
+    clicker_service._get_or_create_farm, Pattern 7, без дублирования
+    upsert+FOR UPDATE)."""
+    banner_id = await settings_service.get_setting(session, chat_id, GACHA_BANNER_KEY, "")
+    farm = await clicker_service._get_or_create_farm(session, chat_id, user_id)
+    await session.commit()
+    return {
+        "featured_id": banner_id,
+        "rates": gacha_catalog.TIER_WEIGHTS,
+        "pity_ssr": farm.pity_ssr,
+        "pity_ur": farm.pity_ur,
+        "cost_single": ROLL_COST,
+        "cost_ten": ROLL10_COST,
     }

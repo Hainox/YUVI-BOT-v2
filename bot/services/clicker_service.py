@@ -43,6 +43,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
 from bot.services import achievements_service
+from bot.services import constellation_catalog
 from bot.services import economy_service
 from bot.services import gacha_catalog
 from bot.services import quests_service
@@ -147,23 +148,31 @@ async def _get_or_create_farm(session: AsyncSession, chat_id: int, user_id: int)
 
 
 async def _collection_income_per_sec(session: AsyncSession, chat_id: int, user_id: int) -> float:
-    """GACHA-02: сумма CP/сек от ВСЕХ собранных героинь —
-    `WORKER_TIER_CP_PER_SEC[tier] * gacha_catalog.star_mult(stars)` по каждой
-    строке `gacha_collection` (роль персонажа больше не фильтрует доход, см.
-    `gacha_catalog.py`)."""
+    """GACHA-02/GACHA-04: сумма CP/сек от ВСЕХ собранных героинь -
+    WORKER_TIER_CP_PER_SEC[tier] * gacha_catalog.star_mult(stars) по каждой
+    строке gacha_collection (роль персонажа больше не фильтрует доход, см.
+    gacha_catalog.py), ДОПОЛНИТЕЛЬНО умноженная на (1 + constellation-бонус
+    FARM_CP_PCT этой героини на её текущем const_level) — единственный
+    constellation-эффект, реально подключённый к игровой логике в этом
+    заходе (constellation_catalog.py хранит остальные 8 категорий бонусов
+    как готовые данные, но НЕ применяет их нигде ещё, см. докстринг
+    constellation_catalog.py)."""
     rows = (
         await session.execute(
-            select(GachaCollection.char_id, GachaCollection.stars).where(
+            select(GachaCollection.char_id, GachaCollection.stars, GachaCollection.copies).where(
                 GachaCollection.chat_id == chat_id, GachaCollection.user_id == user_id
             )
         )
     ).all()
     total = 0.0
-    for char_id, stars in rows:
+    for char_id, stars, copies in rows:
         char = gacha_catalog.CATALOG.get(char_id)
         if char is None:
             continue
-        total += WORKER_TIER_CP_PER_SEC[char.tier] * gacha_catalog.star_mult(stars)
+        base = WORKER_TIER_CP_PER_SEC[char.tier] * gacha_catalog.star_mult(stars)
+        level = constellation_catalog.const_level(copies)
+        bonus_pct = constellation_catalog.sum_effect(char_id, level, constellation_catalog.FARM_CP_PCT)
+        total += base * (1 + bonus_pct)
     return total
 
 
