@@ -21,6 +21,7 @@
 	import BetControl from '$lib/components/BetControl.svelte';
 
 	const SLOT_BET_STEP = 10; // TOTAL_LINES (slot_engine.py) — bet must stay a multiple of this
+	const AUTO_SPIN_PRESETS = [5, 10, 25, 50];
 	// Скорость барабана (04.2-11: заметно быстрее прежних 700/140/1340мс —
 	// "быстрый и хлёсткий" базовый спин).
 	const SPIN_BASE_MS = 420;
@@ -80,6 +81,14 @@
 	let bonusActive = $state(false);
 	let bonusFreespinsShown = $state(0);
 	let bonusToast = $state<string | null>(null);
+
+	// Auto-spin (repeats spin() sequentially N times, or forever for ∞) — a
+	// separate concept from the server-driven freespin bonus round above
+	// (bonusActive/freespins replay one already-resolved round; auto-spin
+	// fires brand new bet rounds back to back). null = not auto-spinning;
+	// Infinity for ∞ works as-is since Infinity - 1 === Infinity.
+	let autoSpinsLeft = $state<number | null>(null);
+	const autoSpinning = $derived(autoSpinsLeft !== null);
 
 	function _placeholderGrid(): string[][] {
 		const ids = Object.keys(SLOT_SYMBOLS);
@@ -222,29 +231,52 @@
 		// symbols. The CSS translateY animation keeps running uninterrupted
 		// (row count/position never changed), so this never causes a jump.
 		reelStrips = _stripsFromGrid(res.outcome.grid);
+		await _wait(REVEAL_DELAY_MS);
 
-		window.setTimeout(() => {
-			grid = res.outcome.grid;
-			wins = res.outcome.wins;
-			lastPayout = res.payout;
-			spinning = false;
-			outcomeTint = res.payout > 0 ? 'win' : 'lose';
-			haptic('reel-stop');
+		grid = res.outcome.grid;
+		wins = res.outcome.wins;
+		lastPayout = res.payout;
+		spinning = false;
+		outcomeTint = res.payout > 0 ? 'win' : 'lose';
+		haptic('reel-stop');
 
-			// Scatter haptic/reveal is handled inside _revealScatterAndBonus
-			// (fires at the glow moment, not here) so it isn't duplicated.
-			if (res.outcome.scatter < 3) {
-				if (res.payout >= bet * 20) {
-					haptic('big-win');
-				} else if (res.payout > 0) {
-					haptic('win');
-				} else {
-					haptic('lose');
-				}
+		// Scatter haptic/reveal is handled inside _revealScatterAndBonus
+		// (fires at the glow moment, not here) so it isn't duplicated.
+		if (res.outcome.scatter < 3) {
+			if (res.payout >= bet * 20) {
+				haptic('big-win');
+			} else if (res.payout > 0) {
+				haptic('win');
+			} else {
+				haptic('lose');
 			}
+		}
 
-			void _revealScatterAndBonus(res);
-		}, REVEAL_DELAY_MS);
+		// Awaited (not fire-and-forget) so spin()'s own promise only resolves
+		// once the full visual cycle — including the bonus replay — is done;
+		// runAutoSpin() below relies on that to pace spins one at a time.
+		await _revealScatterAndBonus(res);
+	}
+
+	// Repeats spin() sequentially — count spins for the 5/10/25/50 presets,
+	// Infinity for ∞ (Infinity - 1 === Infinity, so the countdown just never
+	// reaches 0). Stops early on any spin error (e.g. insufficient balance)
+	// rather than silently burning through the rest, and can be cancelled
+	// between spins via stopAutoSpin() (a spin already in flight always
+	// finishes normally — only the NEXT one is skipped).
+	async function runAutoSpin(count: number) {
+		if (spinning || bonusActive || autoSpinning) return;
+		autoSpinsLeft = count;
+		while (autoSpinsLeft !== null && autoSpinsLeft > 0) {
+			await spin();
+			if (autoSpinsLeft === null || error) break;
+			autoSpinsLeft -= 1;
+		}
+		autoSpinsLeft = null;
+	}
+
+	function stopAutoSpin() {
+		autoSpinsLeft = null;
 	}
 </script>
 
@@ -353,13 +385,56 @@
 		<div class="slot-error">{error}</div>
 	{/if}
 
-	<BetControl bind:bet disabled={spinning || bonusActive} step={SLOT_BET_STEP} />
+	<BetControl bind:bet disabled={spinning || bonusActive || autoSpinning} step={SLOT_BET_STEP} />
 
-	<button type="button" class="slot-cta" disabled={spinning || bonusActive} onclick={spin}>
-		<span class="slot-cta-label"
-			>{spinning ? 'крутим…' : bonusActive ? 'БОНУС…' : 'КРУТИТЬ'}</span
-		>
-		<span class="slot-cta-sub">{spinning || bonusActive ? '' : `ставка ${bet}¥`}</span>
+	<div class="autospin-row">
+		<span class="autospin-label">авто-ставка</span>
+		<div class="autospin-chips">
+			{#each AUTO_SPIN_PRESETS as n (n)}
+				<button
+					type="button"
+					class="chip autospin-chip"
+					disabled={spinning || bonusActive || autoSpinning}
+					onclick={() => runAutoSpin(n)}
+				>
+					{n}
+				</button>
+			{/each}
+			<button
+				type="button"
+				class="chip autospin-chip"
+				disabled={spinning || bonusActive || autoSpinning}
+				onclick={() => runAutoSpin(Infinity)}
+			>
+				∞
+			</button>
+		</div>
+	</div>
+
+	<button
+		type="button"
+		class="slot-cta"
+		disabled={!autoSpinning && (spinning || bonusActive)}
+		onclick={() => (autoSpinning ? stopAutoSpin() : spin())}
+	>
+		<span class="slot-cta-label">
+			{#if autoSpinning}
+				СТОП ({autoSpinsLeft === Infinity ? '∞' : autoSpinsLeft} ост.)
+			{:else if spinning}
+				крутим…
+			{:else if bonusActive}
+				БОНУС…
+			{:else}
+				КРУТИТЬ
+			{/if}
+		</span>
+		<span class="slot-cta-sub">
+			{#if autoSpinning}
+				ставка {bet}¥ · жми стоп, чтобы прервать
+			{:else if !spinning && !bonusActive}
+				ставка {bet}¥
+			{/if}
+		</span>
 	</button>
 </div>
 
@@ -654,6 +729,25 @@
 	.slot-lose {
 		color: var(--destructive-text);
 		background: var(--destructive-bg);
+	}
+
+	.autospin-row {
+		display: flex;
+		align-items: center;
+		gap: var(--space-md);
+	}
+	.autospin-label {
+		font-size: var(--font-label-size);
+		text-transform: uppercase;
+		letter-spacing: 0.08em;
+		color: var(--text-muted);
+		white-space: nowrap;
+	}
+	.autospin-chips {
+		display: grid;
+		grid-template-columns: repeat(5, 1fr);
+		gap: var(--space-xs);
+		flex: 1;
 	}
 
 	.slot-error {
