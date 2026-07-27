@@ -16,6 +16,8 @@ import bot.handlers.owner as owner_handlers
 from bot.config import settings
 from bot.services import changelog_service
 from bot.services import economy_service
+from bot.services import jackpot_service
+from bot.services import lurker_service
 from common.models.user import User
 
 
@@ -31,6 +33,7 @@ def _fake_message(chat_id: int, user_id: int, first_name: str, text: str, *, mes
         message_id=message_id,
         text=text,
         answer=AsyncMock(),
+        answer_animation=AsyncMock(),
         reply=AsyncMock(),
     )
 
@@ -182,3 +185,98 @@ async def test_post_update_empty_args_gives_usage_hint(session, monkeypatch):
 
     message.answer.assert_awaited_once()
     assert "использование" in message.answer.await_args.args[0].lower()
+
+
+# --- /test_jackpot -------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_test_jackpot_refuses_non_owner(session):
+    chat_id = -100930010
+    non_owner_id = 930013
+    assert non_owner_id != settings.owner_id
+    await _ensure_user(session, non_owner_id, "Не владелец")
+
+    message = _fake_message(chat_id, non_owner_id, "Не владелец", "/test_jackpot")
+    await owner_handlers.test_jackpot_command(message, session)
+
+    message.reply.assert_awaited_once()
+    assert "владельцу" in message.reply.await_args.args[0].lower()
+    message.answer_animation.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_test_jackpot_sends_gif_with_current_pool_for_owner(session, monkeypatch):
+    monkeypatch.setattr(settings, "owner_id", 930014)
+    chat_id = -100930011
+    await _ensure_user(session, 930014, "Владелец")
+
+    message = _fake_message(chat_id, 930014, "Владелец", "/test_jackpot")
+    await owner_handlers.test_jackpot_command(message, session)
+
+    message.answer_animation.assert_awaited_once()
+    caption = message.answer_animation.await_args.kwargs["caption"]
+    assert str(settings.slot_jackpot_seed) in caption
+    assert "Владелец" in caption
+
+
+@pytest.mark.asyncio
+async def test_test_jackpot_reports_missing_gif_file(session, monkeypatch):
+    monkeypatch.setattr(settings, "owner_id", 930015)
+    monkeypatch.setattr(jackpot_service, "JACKPOT_GIF_PATH", jackpot_service.JACKPOT_GIF_PATH.parent / "nope.gif")
+    chat_id = -100930012
+    await _ensure_user(session, 930015, "Владелец")
+
+    message = _fake_message(chat_id, 930015, "Владелец", "/test_jackpot")
+    await owner_handlers.test_jackpot_command(message, session)
+
+    message.answer.assert_awaited_once()
+    assert "не найден" in message.answer.await_args.args[0].lower()
+    message.answer_animation.assert_not_awaited()
+
+
+# --- /test_lurker ----------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_test_lurker_refuses_non_owner(session):
+    chat_id = -100930013
+    non_owner_id = 930016
+    assert non_owner_id != settings.owner_id
+    await _ensure_user(session, non_owner_id, "Не владелец")
+
+    message = _fake_message(chat_id, non_owner_id, "Не владелец", "/test_lurker")
+    await owner_handlers.test_lurker_command(message, session)
+
+    message.reply.assert_awaited_once()
+    assert "владельцу" in message.reply.await_args.args[0].lower()
+    message.answer.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_test_lurker_sends_generated_message_for_owner(session, monkeypatch):
+    monkeypatch.setattr(settings, "owner_id", 930017)
+    chat_id = -100930014
+    await _ensure_user(session, 930017, "Владелец")
+    monkeypatch.setattr(
+        lurker_service, "build_daily_message", AsyncMock(return_value="Тестовый текст про Дениску\n\n#мем")
+    )
+
+    message = _fake_message(chat_id, 930017, "Владелец", "/test_lurker")
+    await owner_handlers.test_lurker_command(message, session)
+
+    message.answer.assert_awaited_once_with("Тестовый текст про Дениску\n\n#мем")
+
+
+@pytest.mark.asyncio
+async def test_test_lurker_reports_empty_llm_response(session, monkeypatch):
+    monkeypatch.setattr(settings, "owner_id", 930018)
+    chat_id = -100930015
+    await _ensure_user(session, 930018, "Владелец")
+    monkeypatch.setattr(lurker_service, "build_daily_message", AsyncMock(return_value=""))
+
+    message = _fake_message(chat_id, 930018, "Владелец", "/test_lurker")
+    await owner_handlers.test_lurker_command(message, session)
+
+    message.answer.assert_awaited_once()
+    assert "пуст" in message.answer.await_args.args[0].lower()

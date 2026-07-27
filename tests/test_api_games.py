@@ -75,6 +75,9 @@ ROULETTE_FRESH_BANK_CHAT_ID = -900306
 # банка/баланса, что у остальных игр этого файла, новый диапазон.
 SLOTS_CHAT_ID = -900307
 BLACKJACK_CHAT_ID = -900308
+# Отдельный chat_id для GET /games/slots/jackpot (CASINO-06) — свежий пул,
+# не смешивается с пулом, накопленным остальными slots-тестами в SLOTS_CHAT_ID.
+JACKPOT_CHAT_ID = -900309
 
 
 class _ForcedWinRng:
@@ -100,6 +103,29 @@ class _ForcedRollRng:
 
     def randint(self, a: int, b: int) -> int:
         return self._forced_value
+
+
+class _ForcedJackpotGridRng:
+    """Форсирует ОДНОВРЕМЕННО сетку слота (без выигрышных линий/скаттера —
+    payout=0, чтобы не путать обычный выигрыш с джекпотом в ассертах) И
+    джекпот-кубик (CASINO-06) — та же пара RNG-вызовов, между которыми
+    `casino_service.play_slots` делит общий `_rng`: `choice()` внутри
+    `slot_engine.spin_grid`, `randint()` внутри
+    `jackpot_service.contribute_and_maybe_award`. `jackpot_randint=1` форсирует
+    выигрыш джекпота, любое другое значение — проигрыш (никогда не 1)."""
+
+    def __init__(self, choices_sequence, jackpot_randint: int = 1):
+        self._seq = list(choices_sequence)
+        self._i = 0
+        self._jackpot_randint = jackpot_randint
+
+    def choice(self, seq):
+        value = self._seq[self._i % len(self._seq)]
+        self._i += 1
+        return value
+
+    def randint(self, a: int, b: int) -> int:
+        return self._jackpot_randint
 
 
 class _FixedDeckRng:
@@ -663,6 +689,10 @@ async def test_slots_valid_bet_returns_200_with_settled_result(monkeypatch):
     assert "wins" in body["outcome"]
     assert "freespins" in body["outcome"]
     assert "scatter" in body["outcome"]
+    # CASINO-06: свежий (не replay) спин всегда несёт джекпот-слой.
+    assert body["jackpot"] is not None
+    assert "won" in body["jackpot"]
+    assert "pool" in body["jackpot"]
 
 
 @pytest.mark.asyncio
@@ -760,6 +790,133 @@ async def test_slots_ignores_foreign_user_id_in_body_idor(monkeypatch):
 
     victim_after = await _get_balance(SLOTS_CHAT_ID, victim_id)
     assert victim_after == victim_before
+
+
+# --- GET /api/v1/games/slots/jackpot (CASINO-06) ------------------------------
+
+
+@pytest.mark.asyncio
+async def test_jackpot_pool_get_returns_seed_for_fresh_chat(monkeypatch):
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    user_id = 300406
+    await _ensure_user(user_id)
+    init_data = _build_init_data(user_id=user_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(
+            "/api/v1/games/slots/jackpot",
+            params={"chat_id": JACKPOT_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+        )
+
+    assert resp.status_code == 200
+    assert resp.json() == {"pool": settings.slot_jackpot_seed}
+
+
+@pytest.mark.asyncio
+async def test_jackpot_pool_get_reflects_growth_after_spin(monkeypatch):
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    user_id = 300407
+    await _ensure_user(user_id)
+    await _topup(JACKPOT_CHAT_ID, user_id)
+    init_data = _build_init_data(user_id=user_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        spin_resp = await client.post(
+            "/api/v1/games/slots",
+            params={"chat_id": JACKPOT_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={"bet": 100, "idem_key": str(uuid.uuid4())},
+        )
+        assert spin_resp.status_code == 200
+        pool_after_spin = spin_resp.json()["jackpot"]["pool"]
+
+        pool_resp = await client.get(
+            "/api/v1/games/slots/jackpot",
+            params={"chat_id": JACKPOT_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+        )
+
+    assert pool_resp.status_code == 200
+    assert pool_resp.json() == {"pool": pool_after_spin}
+
+
+@pytest.mark.asyncio
+async def test_jackpot_pool_get_missing_init_data_returns_401():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(
+            "/api/v1/games/slots/jackpot", params={"chat_id": JACKPOT_CHAT_ID}
+        )
+
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_slots_jackpot_win_announces_gif_to_chat(monkeypatch):
+    """CASINO-06: срыв джекпота -> `telegram_client.send_animation` уходит в
+    ИМЕННО тот чат, где играли, с подписью, несущей выплаченную сумму."""
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    send_animation_mock = AsyncMock(return_value={"ok": True})
+    monkeypatch.setattr(telegram_client, "send_animation", send_animation_mock)
+    forced_symbols = ["sakaki", "bath-chibi", "osaka-stand", "dog", "gasp"] * 3
+    monkeypatch.setattr(casino_service, "_rng", _ForcedJackpotGridRng(forced_symbols))
+
+    user_id = 300408
+    await _ensure_user(user_id)
+    await _topup(JACKPOT_CHAT_ID, user_id)
+    init_data = _build_init_data(user_id=user_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/games/slots",
+            params={"chat_id": JACKPOT_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={"bet": 100, "idem_key": str(uuid.uuid4())},
+        )
+
+    assert resp.status_code == 200
+    jackpot = resp.json()["jackpot"]
+    assert jackpot["won"] is True
+
+    send_animation_mock.assert_awaited_once()
+    call_args = send_animation_mock.await_args.args
+    assert call_args[2] == JACKPOT_CHAT_ID
+    caption = send_animation_mock.await_args.kwargs["caption"]
+    assert str(jackpot["amount"]) in caption
+
+
+@pytest.mark.asyncio
+async def test_slots_jackpot_loss_does_not_announce(monkeypatch):
+    """Обычный (не джекпотный) спин НЕ шлёт гифку в чат."""
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    send_animation_mock = AsyncMock(return_value={"ok": True})
+    monkeypatch.setattr(telegram_client, "send_animation", send_animation_mock)
+    forced_symbols = ["sakaki", "bath-chibi", "osaka-stand", "dog", "gasp"] * 3
+    monkeypatch.setattr(
+        casino_service, "_rng", _ForcedJackpotGridRng(forced_symbols, jackpot_randint=2)
+    )
+
+    user_id = 300409
+    await _ensure_user(user_id)
+    await _topup(JACKPOT_CHAT_ID, user_id)
+    init_data = _build_init_data(user_id=user_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/games/slots",
+            params={"chat_id": JACKPOT_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={"bet": 100, "idem_key": str(uuid.uuid4())},
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["jackpot"]["won"] is False
+    send_animation_mock.assert_not_awaited()
 
 
 # --- POST /api/v1/games/blackjack (start) + /blackjack/{id}/action -----------

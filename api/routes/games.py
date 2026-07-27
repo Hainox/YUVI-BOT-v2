@@ -76,21 +76,33 @@ POST /games/blackjack (start) + POST /games/blackjack/{game_id}/action
 
 from __future__ import annotations
 
+import html
+import logging
+
 from fastapi import APIRouter
 from fastapi import Depends
 from fastapi import HTTPException
 from fastapi import Request
 from pydantic import BaseModel
 from pydantic import Field
+from sqlalchemy import select
 
+from api import telegram_client
 from api.deps import AuthContext
 from api.deps import require_membership
+from bot.config import settings
 from bot.services import balance_events
 from bot.services import casino_service
 from bot.services import economy_service
+from bot.services import jackpot_service
 from common.db.session import SessionLocal
+from common.models.user import User
 
 router = APIRouter()
+
+logger = logging.getLogger(__name__)
+
+_jackpot_gif_bytes: bytes | None = None
 
 
 class CoinflipBet(BaseModel):
@@ -254,6 +266,63 @@ async def _play_roulette(session, auth: AuthContext, body: RouletteBet) -> dict:
     )
 
 
+@router.get("/api/v1/games/slots/jackpot")
+async def get_slots_jackpot(auth: AuthContext = Depends(require_membership)) -> dict:
+    """Текущий размер пула джекпота (CASINO-06) для тикера на экране слота —
+    читается БЕЗ блокировки строки (`jackpot_service.get_pool`), значение
+    только информационное до следующего спина; авторитетное обновление пула
+    приходит в ответе `POST /games/slots` (`result["jackpot"]["pool"]`)."""
+    async with SessionLocal() as session:
+        pool = await jackpot_service.get_pool(session, auth.chat_id)
+    return {"pool": pool}
+
+
+def _load_jackpot_gif() -> bytes:
+    """Читает `jackpot_service.JACKPOT_GIF_PATH` с диска один раз и кэширует
+    в памяти процесса — файл маленький (~5 МБ) и неизменный, перечитывать его
+    на каждый выигрыш смысла нет."""
+    global _jackpot_gif_bytes
+    if _jackpot_gif_bytes is None:
+        _jackpot_gif_bytes = jackpot_service.JACKPOT_GIF_PATH.read_bytes()
+    return _jackpot_gif_bytes
+
+
+async def _announce_jackpot_win(
+    request: Request, session, chat_id: int, user_id: int, amount: int, pool_after: int
+) -> None:
+    """Публикует срыв джекпота слота в чат — гифка + подпись с именем
+    победителя и суммой (CASINO-06). Best-effort, та же дисциплина, что
+    `shop.py::_deliver_to_chat`: недоставленное сообщение (сетевой сбой
+    Telegram, отсутствующий файл на диске) НЕ должно откатывать уже
+    совершённую и закоммиченную выплату — вызывается ПОСЛЕ `_play_slots`
+    успешно вернул(а) `won=True`, деньги уже у игрока независимо от исхода
+    этого вызова."""
+    name = (
+        await session.execute(select(User.first_name).where(User.id == user_id))
+    ).scalar_one_or_none() or str(user_id)
+
+    caption = jackpot_service.build_announcement_caption(html.escape(name), amount, pool_after)
+    try:
+        gif_bytes = _load_jackpot_gif()
+    except OSError:
+        logger.exception("_announce_jackpot_win: не удалось прочитать jackpot.gif")
+        return
+
+    result = await telegram_client.send_animation(
+        request.app.state.http_client,
+        settings.bot_token,
+        chat_id,
+        gif_bytes,
+        "jackpot.gif",
+        caption=caption,
+        parse_mode="HTML",
+    )
+    if not result.get("ok"):
+        logger.warning(
+            "_announce_jackpot_win: sendAnimation не доставлен chat_id=%s: %s", chat_id, result
+        )
+
+
 @router.post("/api/v1/games/slots")
 async def post_slots(
     body: SlotsBet, request: Request, auth: AuthContext = Depends(require_membership)
@@ -276,6 +345,12 @@ async def post_slots(
             request.app.state.redis, auth.chat_id, auth.user_id, balance
         )
         result["user_balance_after"] = balance
+
+        jackpot = result.get("jackpot")
+        if jackpot and jackpot.get("won"):
+            await _announce_jackpot_win(
+                request, session, auth.chat_id, auth.user_id, jackpot["amount"], jackpot["pool"]
+            )
 
         return result
 

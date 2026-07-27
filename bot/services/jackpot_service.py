@@ -17,6 +17,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,6 +26,27 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from bot.config import settings
 from bot.services import economy_service
 from common.models.slot_jackpot import SlotJackpot
+
+# Репозиторный ассет (не генерится/не грузится динамически) — и api/, и bot/
+# образы копируют ВЕСЬ репозиторий (`COPY . /app`), поэтому файл доступен
+# локально с диска в обоих процессах: api/routes/games.py (реальные выигрыши)
+# и bot/handlers/owner.py (/test_jackpot — ручная визуальная проверка).
+JACKPOT_GIF_PATH = Path(__file__).resolve().parent.parent.parent / "miniapp" / "static" / "casino" / "jackpot.gif"
+
+
+def build_announcement_caption(escaped_name: str, amount: int, pool_after: int) -> str:
+    """Текст оповещения о сорванном джекпоте слота — один источник истины на
+    формулировку для ДВУХ разных процессов (`api/routes/games.py::
+    _announce_jackpot_win` на реальный выигрыш, `bot/handlers/owner.py::
+    test_jackpot_command` на ручной тест-триггер владельца), чтобы текст не
+    дублировался и не расходился между ними. `escaped_name` — уже
+    html.escape()-нутое имя (эта функция не знает о Telegram/HTML, только
+    собирает текст)."""
+    return (
+        "🎰 ДЖЕКПОТ, ДЖЕКПОТ! 🎰\n"
+        f"Джекпот слота достался {escaped_name} — +{amount}¥ прямо из банка чата!\n"
+        f"Пул обнулён до {pool_after}¥ — фармим заново 💰"
+    )
 
 
 async def _get_or_seed_pool_locked(session: AsyncSession, chat_id: int) -> SlotJackpot:
