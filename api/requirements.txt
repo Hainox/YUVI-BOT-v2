@@ -52,4 +52,20 @@ emoji==2.15.0
 # docstring), but the full package still has to be importable for that
 # submodule import to resolve. Same pin as root requirements.txt.
 aiogram==3.27.0
+# Transitive runtime dep of bot/services/ask_service.py (module-level
+# `from common.models.message_embedding import MessageEmbedding` ->
+# `from pgvector.sqlalchemy import Vector`), now reachable from the api
+# process because api/routes/ai.py (hub-parity, added 2026-07-27) imports
+# ask_service for /ai/ask. Same class of gap as every entry above — caught
+# live in production (ModuleNotFoundError on container start), not by
+# pytest (yuvi-bot-dev:py311 already has the full root requirements.txt).
+# Same pin as root requirements.txt.
+pgvector==0.5.0
+# Transitive runtime dep of bot/services/topics_service.py (module-level
+# `from sklearn.cluster import KMeans`), reachable via the same
+# api/routes/ai.py import for /ai/topics. numpy is scikit-learn's own
+# runtime dependency, pinned explicitly for the same reason as everything
+# above. Same pins as root requirements.txt.
+scikit-learn==1.9.0
+numpy==2.4.6
 
