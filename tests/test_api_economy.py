@@ -232,8 +232,8 @@ async def test_post_transfer_moves_money_and_ignores_foreign_from_user_in_body(m
         )
 
     assert resp.status_code == 200
-    assert await _get_balance(chat_id, sender) == 1000 - 100
-    assert await _get_balance(chat_id, attacker) == 1000  # untouched
+    assert await _get_balance(chat_id, sender) == settings.economy_start_bonus - 100
+    assert await _get_balance(chat_id, attacker) == settings.economy_start_bonus  # untouched
 
 
 @pytest.mark.asyncio
