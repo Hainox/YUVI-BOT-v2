@@ -154,6 +154,14 @@ class Settings(BaseSettings):
     # roast), без единой подобной жалобы.
     twin_max_output_tokens: int = Field(default=1500, alias="TWIN_MAX_OUTPUT_TOKENS")
 
+    # --- Дневной двойник (TWIN-03, запрошено 2026-07-27) ---
+    # Целевое среднее число проактивных постов за день (в "рабочее" окно
+    # 9:00-23:00 МСК, см. bot/services/daily_twin_service.py) — вероятностный
+    # тик, не фиксированное расписание, поэтому это именно ЦЕЛЬ, а не точное
+    # число. daily_twin_max_posts — жёсткий потолок на статистический выброс.
+    daily_twin_posts_target: int = Field(default=5, alias="DAILY_TWIN_POSTS_TARGET")
+    daily_twin_max_posts: int = Field(default=8, alias="DAILY_TWIN_MAX_POSTS")
+
     # --- Платные фичи, донаты, медиа, фидбек (фаза 6) ---
     # Соцмагазин (D-01/A1): цены изначально сбалансированы относительно
     # casino_min_bet=10, жертва дня=228, старт экономики=1000 (сам старт
