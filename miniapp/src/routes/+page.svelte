@@ -69,6 +69,9 @@
 		{ title: 'История', desc: 'все твои ставки, тапы и переводы', href: '/history' },
 		{ title: 'Лидерборд', desc: 'топ богачей чата', accent: 'yellow', href: '/leaderboard' },
 		{ title: 'Статистика', desc: 'баланс, стрик, большие выигрыши', accent: 'cyan', href: '/stats' },
+		{ title: 'Настроение', desc: 'настроение и токсичность чата', accent: 'cyan', href: '/mood' },
+		{ title: 'Жертва дня', desc: 'приз, титул и дебафф на 24ч', accent: 'pink', href: '/victim' },
+		{ title: 'Итоги дня', desc: '7 номинаций и игра дня из Steam', accent: 'yellow', href: '/awards' },
 		{ title: 'Перевод', desc: 'закинь другу ювиков', href: '/transfer' },
 		{
 			title: 'Донат',
