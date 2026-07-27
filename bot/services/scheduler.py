@@ -23,12 +23,16 @@ tag_service.register_title_expiry (план 05-03), автопост /awards
 awards_service.register_daily_autopost (план 05-06), и проактивный
 сброс/анонс лотереи «Yuvi_Yuvi дня» (lottery_daily_reset, cron 00:00 МСК,
 LOTTERY-01, UX-safety-net поверх day_msk из Pitfall 4) через
-lottery_service.register_daily_reset (план 05-05), и автопост «Жертвы дня»
+lottery_service.register_daily_reset (план 05-05), автопост «Жертвы дня»
 (victim_daily_autopost, cron 10:00 МСК, VICTIM-01/02) через
 victim_service.register_daily_autopost (запрошено пользователем 2026-07-23 —
-раньше /victim срабатывал только вручную). Импорты
-ленивые (внутри функции), чтобы модули, ещё не существующие на момент
-плана 01 (пустой setup_jobs), не ломали import bot.main до их появления.
+раньше /victim срабатывал только вручную), и мемный автопост про
+«наблюдателей» чата (lurker_daily_roast, cron 12:00 МСК, LURKER-01,
+косметический — без денег/титулов/состояния) через
+lurker_service.register_daily_roast (запрошено пользователем 2026-07-27).
+Импорты ленивые (внутри функции), чтобы модули, ещё не существующие на
+момент плана 01 (пустой setup_jobs), не ломали import bot.main до их
+появления.
 """
 
 from __future__ import annotations
@@ -79,6 +83,7 @@ def setup_jobs(bot: Bot) -> None:
     from bot.services import digest_service
     from bot.services import embed_worker
     from bot.services import lottery_service
+    from bot.services import lurker_service
     from bot.services import markets_service
     from bot.services import nlp_classifier
     from bot.services import tag_service
@@ -95,6 +100,7 @@ def setup_jobs(bot: Bot) -> None:
     awards_service.register_daily_autopost(scheduler, bot)
     lottery_service.register_daily_reset(scheduler, bot)
     victim_service.register_daily_autopost(scheduler, bot)
+    lurker_service.register_daily_roast(scheduler, bot)
 
     async def _digest_job() -> None:
         await digest_service.run_daily_digest(bot)

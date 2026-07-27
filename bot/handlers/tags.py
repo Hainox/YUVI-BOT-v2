@@ -8,6 +8,8 @@ Telegram custom_title. Действуют ТОЛЬКО на вызывающег
 
 from __future__ import annotations
 
+import logging
+
 from aiogram import Bot
 from aiogram import Router
 from aiogram.filters import Command
@@ -18,6 +20,7 @@ from bot.services import economy_service
 from bot.services import tag_rental_service
 from bot.services import tag_service
 
+logger = logging.getLogger(__name__)
 router = Router()
 
 
@@ -60,6 +63,19 @@ async def tag_rent_command(message: Message, session: AsyncSession, bot: Bot) ->
         economy_service.InsufficientFunds,
     ) as exc:
         await message.answer(str(exc))
+        return
+    except Exception:  # noqa: BLE001 - grant_title's IntegrityError-retry
+        # (tag_service.py) deliberately re-raises after a second conflicting
+        # attempt, and any other unexpected failure from tag_rental_service/
+        # tag_service was propagating uncaught here — thin handler must not
+        # fail silently (same principle as bot/handlers/twin.py::twin_command,
+        # ai_card.py::build_card_command). debit_to_bank's changes are
+        # uncommitted at this point, rolled back when the per-update session
+        # closes (bot/middleware/db_session.py) - money is not actually lost.
+        logger.exception(
+            "tag_rent_command упал для chat_id=%s user_id=%s", message.chat.id, message.from_user.id
+        )
+        await message.answer("Не получилось арендовать тег — деньги не списаны, попробуйте ещё раз.")
         return
 
     await session.commit()
