@@ -43,6 +43,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from bot.config import settings
 from bot.services import blackjack_engine
 from bot.services import economy_service
+from bot.services import jackpot_service
 from bot.services import slot_engine
 from common.db.session import SessionLocal
 from common.models.casino_game import CasinoGame
@@ -355,13 +356,28 @@ async def play_slots(
     `_rng` этого модуля (НЕ через собственный `slot_engine._rng` — тот
     используется только для внутреннего авто-розыгрыша фриспинов). Деньги
     двигает исключительно `_settle` (стейк -> RNG -> капнутая банком выплата
-    -> `CasinoGame`), здесь — только сборка `compute()`-замыкания."""
+    -> `CasinoGame`), здесь — только сборка `compute()`-замыкания.
+
+    Джекпот (CASINO-06, jackpot_service) — ОТДЕЛЬНЫЙ слой поверх уже
+    расчитанного settle, намеренно не встроенный в `_settle`/`compute()`:
+    `_settle` — общее ядро всех игр казино, трогать его ради одной слот-
+    фичи не нужно (та же дисциплина, что докстринг `_settle` про
+    `bank_capped` в api/routes/games.py). Проверяем ДО `_settle`, был ли
+    этот idem_key уже обработан (replay) — джекпот пополняется/бросает
+    кубик ТОЛЬКО для подтверждённо нового спина, иначе повторный запрос
+    вырастил бы пул или бросил кубик дважды за один и тот же спин. Пул
+    пополняется/списывается ОТДЕЛЬНЫМ commit'ом после `_settle`'s
+    собственного — крайне узкое окно (падение процесса между двумя
+    commit'ами потеряло бы вклад этого спина в пул), приемлемо для
+    бонусного слоя поверх уже надёжно закоммиченной основной выплаты."""
     if bet <= 0 or bet % slot_engine.TOTAL_LINES != 0:
         raise InvalidBet(
             f"Ставка должна быть положительным кратным {slot_engine.TOTAL_LINES} "
             "(по числу линий слота)"
         )
     bet_per_line = bet // slot_engine.TOTAL_LINES
+
+    is_new_spin = await _find_existing(session, user_id, idem_key) is None
 
     def compute() -> tuple[int, dict]:
         grid = slot_engine.spin_grid(_rng)
@@ -374,7 +390,16 @@ async def play_slots(
             "retrigger_awards": result.retrigger_awards,
         }
 
-    return await _settle(session, chat_id, user_id, "slots", bet, idem_key, compute)
+    result = await _settle(session, chat_id, user_id, "slots", bet, idem_key, compute)
+
+    jackpot = None
+    if is_new_spin:
+        jackpot = await jackpot_service.contribute_and_maybe_award(
+            session, chat_id, user_id, bet, idem_key, _rng
+        )
+        await session.commit()
+
+    return {**result, "jackpot": jackpot}
 
 
 # --- blackjack (D-03/D-07/D-08: стейтфул-раздача, деck/руки в state JSONB) ---

@@ -15,6 +15,7 @@
 	// probability/payout). The replay pacing is informational only — it does
 	// not invent outcomes, it only staggers the reveal of numbers the server
 	// already sent in `outcome`.
+	import { onMount } from 'svelte';
 	import { apiFetch, ApiError } from '$lib/api';
 	import { haptic } from '$lib/tg';
 	import { SLOT_SYMBOLS, SLOT_PAYLINES, symbolSrc } from '$lib/slotData';
@@ -53,6 +54,12 @@
 	const BONUS_SETTLE_MS = 350;
 
 	type SlotWin = { line_index: number; symbol: string; count: number; payout: number };
+	// CASINO-06: `jackpot` — null ТОЛЬКО на replay того же idem_key
+	// (casino_service.play_slots пропускает джекпот-слой целиком в этом
+	// случае) — этот экран всегда шлёт свежий idem_key на каждый спин, так
+	// что на практике здесь всегда объект, но тип честно отражает контракт
+	// бэкенда. `amount` присутствует только когда `won === true`.
+	type SlotJackpot = { won: boolean; pool: number; amount?: number } | null;
 	type SlotResult = {
 		game: string;
 		bet: number;
@@ -64,6 +71,7 @@
 			scatter: number;
 			retrigger_awards: number[];
 		};
+		jackpot: SlotJackpot;
 	};
 
 	// Символ-scatter выводится из той же метаданной, что рисует ячейки
@@ -98,6 +106,26 @@
 	// Infinity for ∞ works as-is since Infinity - 1 === Infinity.
 	let autoSpinsLeft = $state<number | null>(null);
 	const autoSpinning = $derived(autoSpinsLeft !== null);
+
+	// CASINO-06: живой тикер пула — грузится один раз при заходе на экран,
+	// дальше обновляется авторитетным значением из ответа каждого спина
+	// (result.jackpot.pool). null, пока не пришёл первый ответ — тикер
+	// просто не рисуется (best-effort довесок над основной игрой, не
+	// блокирует экран ошибкой при сбое загрузки).
+	let jackpotPool = $state<number | null>(null);
+	// Не-null -> показан оверлей "ДЖЕКПОТ!" с суммой; закрывается только
+	// явным тапом игрока (см. кнопку "ЗАБРАТЬ" ниже) — момент слишком редкий
+	// (~раз в 20 дней на чат), чтобы автоматически прятать по таймеру.
+	let jackpotWinAmount = $state<number | null>(null);
+
+	onMount(async () => {
+		try {
+			const data = await apiFetch<{ pool: number }>('/api/v1/games/slots/jackpot');
+			jackpotPool = data.pool;
+		} catch {
+			// Тикер необязателен — молча остаётся скрытым при сбое загрузки.
+		}
+	});
 
 	function _placeholderGrid(): string[][] {
 		const ids = Object.keys(SLOT_SYMBOLS);
@@ -249,6 +277,14 @@
 		outcomeTint = res.payout > 0 ? 'win' : 'lose';
 		haptic('reel-stop');
 
+		// CASINO-06: пул обновляем сразу (даже если джекпот НЕ сорван —
+		// каждый спин его пополняет), сам оверлей "ДЖЕКПОТ!" — только в
+		// самом конце, ПОСЛЕ реплея скаттера/бонуса ниже, чтобы не
+		// перекрывать их анимации.
+		if (res.jackpot) {
+			jackpotPool = res.jackpot.pool;
+		}
+
 		// Scatter haptic/reveal is handled inside _revealScatterAndBonus
 		// (fires at the glow moment, not here) so it isn't duplicated.
 		if (res.outcome.scatter < 3) {
@@ -265,6 +301,15 @@
 		// once the full visual cycle — including the bonus replay — is done;
 		// runAutoSpin() below relies on that to pace spins one at a time.
 		await _revealScatterAndBonus(res);
+
+		if (res.jackpot?.won) {
+			// Джекпот — редчайший исход, всегда наивысший приоритет на экране:
+			// прерываем авто-ставку (не даём следующему спину тут же
+			// перекрыть оверлей) и ждём явного "ЗАБРАТЬ" от игрока.
+			stopAutoSpin();
+			jackpotWinAmount = res.jackpot.amount ?? 0;
+			haptic('jackpot');
+		}
 	}
 
 	// Repeats spin() sequentially — count spins for the 5/10/25/50 presets,
@@ -294,6 +339,10 @@
 		<h1 class="menu-title">Слот</h1>
 		<div class="menu-sub">3×5 · 10 линий · вайлд/скаттер/фриспины</div>
 	</div>
+
+	{#if jackpotPool !== null}
+		<div class="jackpot-ticker">💰 ДЖЕКПОТ: {jackpotPool}¥</div>
+	{/if}
 
 	{#if bonusActive}
 		<!-- (d) Живой бэдж бонуса: счётчик растёт по ходу реплея ретриггеров
@@ -445,6 +494,21 @@
 			{/if}
 		</span>
 	</button>
+
+	{#if jackpotWinAmount !== null}
+		<!-- CASINO-06: полноэкранный оверлей на срыв джекпота — редчайший
+		     исход слота, поэтому единственный элемент экрана, требующий
+		     явного действия игрока (кнопка "ЗАБРАТЬ"), не тайм-аута. -->
+		<div class="jackpot-overlay" role="alertdialog" aria-modal="true" aria-label="Джекпот сорван">
+			<div class="jackpot-card">
+				<img class="jackpot-gif" src="/casino/jackpot.gif" alt="Джекпот, джекпот!" />
+				<div class="jackpot-amount">+{jackpotWinAmount}¥</div>
+				<button type="button" class="jackpot-collect" onclick={() => (jackpotWinAmount = null)}>
+					ЗАБРАТЬ
+				</button>
+			</div>
+		</div>
+	{/if}
 </div>
 
 <style>
@@ -481,6 +545,23 @@
 		font-size: 12px;
 		font-weight: 700;
 		font-family: var(--font-body);
+	}
+
+	/* CASINO-06: живой тикер пула — та же жёлтая sticker-роль, что и
+	   .slot-freespins-pill выше, но self-center/чуть крупнее — читается как
+	   "постоянный статус экрана", а не разовое уведомление. */
+	.jackpot-ticker {
+		align-self: center;
+		background: var(--accent-yellow);
+		color: #1a0f12;
+		border: 2px solid #111;
+		border-radius: 999px;
+		padding: 4px 14px;
+		font-family: var(--font-numeric);
+		font-size: 13px;
+		font-weight: 900;
+		letter-spacing: 0.02em;
+		box-shadow: 2px 2px 0 #111;
 	}
 
 	/* 04.2-11: живой бэдж бонуса — тот же жёлтый акцент, что и у финального
@@ -821,6 +902,86 @@
 		font-family: var(--font-body);
 	}
 
+	/* CASINO-06: полноэкранный оверлей на срыв джекпота — та же sticker-
+	   эстетика (2px обводка, жёсткая тень), что и .slot-cta/.slot-bonus-badge
+	   выше, поверх затемнённого фона. Закрывается только тапом по кнопке
+	   "ЗАБРАТЬ" (см. script) — не по тапу на сам фон, чтобы редчайший момент
+	   игры нельзя было случайно смахнуть мимо кнопки. */
+	.jackpot-overlay {
+		position: fixed;
+		inset: 0;
+		z-index: 1000;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		padding: var(--space-lg, 24px);
+		background: rgba(10, 6, 8, 0.82);
+		animation: jackpotOverlayFadeIn 0.2s ease-out;
+	}
+	.jackpot-card {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: var(--space-md);
+		max-width: 320px;
+		width: 100%;
+		background: var(--bg-secondary-2);
+		border: 3px solid #111;
+		border-radius: 18px;
+		padding: var(--space-lg, 24px) var(--space-md);
+		box-shadow: 6px 6px 0 #111;
+		animation: jackpotCardPop 0.32s cubic-bezier(0.16, 0.86, 0.32, 1.28);
+	}
+	.jackpot-gif {
+		width: 100%;
+		max-width: 260px;
+		border-radius: 12px;
+		border: 2px solid #111;
+	}
+	.jackpot-amount {
+		font-family: var(--font-numeric);
+		font-size: var(--font-display-size);
+		font-weight: 900;
+		color: var(--accent-yellow);
+		text-shadow: 2px 2px 0 #111;
+	}
+	.jackpot-collect {
+		width: 100%;
+		background: var(--accent-yellow);
+		color: #1a0f12;
+		border: 2px solid #111;
+		border-radius: 12px;
+		padding: var(--space-sm) var(--space-md);
+		font-family: var(--font-shout);
+		font-size: var(--font-heading-size);
+		letter-spacing: 0.04em;
+		cursor: pointer;
+		box-shadow: 3px 3px 0 #111;
+		transition: transform 0.08s;
+	}
+	.jackpot-collect:active {
+		transform: translate(2px, 2px);
+		box-shadow: 1px 1px 0 #111;
+	}
+	@keyframes jackpotOverlayFadeIn {
+		0% {
+			opacity: 0;
+		}
+		100% {
+			opacity: 1;
+		}
+	}
+	@keyframes jackpotCardPop {
+		0% {
+			transform: scale(0.8);
+			opacity: 0;
+		}
+		100% {
+			transform: scale(1);
+			opacity: 1;
+		}
+	}
+
 	/* Respect prefers-reduced-motion: kill translateY drum spin, the scatter
 	   pulse and the toast pop-in — all pure "motion" pieces. Timing/pacing
 	   (setTimeout delays in the script) is left alone, that's informational
@@ -840,6 +1001,10 @@
 			animation: none;
 		}
 		.slot-bonus-toast {
+			animation: none;
+		}
+		.jackpot-overlay,
+		.jackpot-card {
 			animation: none;
 		}
 	}

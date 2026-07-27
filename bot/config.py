@@ -93,6 +93,17 @@ class Settings(BaseSettings):
     # гачи, 70 — после (поднимается сменой значения в .env, без правки кода).
     farm_max_level: int = Field(default=50, alias="FARM_MAX_LEVEL")
 
+    # --- Прогрессивный джекпот слота (CASINO-06, запрошено 2026-07-27) ---
+    # Калибровано по реальному трафику первых дней после запуска (~500
+    # спинов/день, средняя ставка ~194): 1% пополнения + 1/10000 шанс на спин
+    # -> ожидаемо ~20 дней между срывами, пул к этому моменту ~19-20 тыс.
+    # ювиков. Намеренно settings, не константы — трафик ещё не устоялся
+    # (первые 5 дней показали резкий спад: 1973->81 спинов/день), подкрутить
+    # по факту накопленной статистики без правки кода.
+    slot_jackpot_skim_pct: float = Field(default=0.01, alias="SLOT_JACKPOT_SKIM_PCT")
+    slot_jackpot_odds: int = Field(default=10_000, alias="SLOT_JACKPOT_ODDS")
+    slot_jackpot_seed: int = Field(default=1_000, alias="SLOT_JACKPOT_SEED")
+
     # --- Mini App (auth, D-01) ---
     # initData также передаётся query-параметром для SSE (EventSource не умеет
     # кастомные заголовки) — query-строки чаще утекают через логи прокси/
