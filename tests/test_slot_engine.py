@@ -139,8 +139,19 @@ def test_wild_substitutes():
     assert win["payout"] == slot_data.PAYTABLE["dog"][5] * 1
 
 
-def test_scatter_pays_freespins_not_lines():
-    # >=3 keffiyeh anywhere on the grid -> freespins, 0 line payout for keffiyeh
+def test_scatter_pays_freespins_not_lines(monkeypatch):
+    # >=3 keffiyeh anywhere on the grid -> freespins, 0 line payout for keffiyeh.
+    # Forces the auto-played bonus spins (evaluate_grid's module-level _rng,
+    # normally secrets.SystemRandom() - see slot_engine.py) to an all-"sakaki"
+    # sequence so none of them can themselves roll >=3 scatter and retrigger -
+    # this test is only about the INITIAL trigger's freespins count, not
+    # retrigger behavior (see test_mid_bonus_retrigger_extends_total below for
+    # that). Without this, the real system RNG occasionally rolled a retrigger
+    # on a bonus spin, making result.freespins > FREESPIN_TABLE[3] and failing
+    # this assertion intermittently (flaky in CI, unrelated to the hardcoded
+    # input grid above).
+    monkeypatch.setattr(slot_engine, "_rng", _ForcedGridRng(["sakaki"] * 15))
+
     grid = [
         ["keffiyeh", "sakaki", "keffiyeh", "sakaki", "sakaki"],
         ["sakaki", "sakaki", "sakaki", "sakaki", "keffiyeh"],
