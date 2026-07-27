@@ -28,9 +28,21 @@ class Settings(BaseSettings):
     # --- AI provider (OpenCode Go, OpenAI-совместимый) ---
     openai_base_url: str = Field(default="https://opencode.ai/zen/go/v1", alias="OPENAI_BASE_URL")
     openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
-    openai_model: str = Field(default="deepseek-v4-flash", alias="OPENAI_MODEL")
+    # Дефолт поменян на glm-5.1 (запрошено 2026-07-27, диагностика реальным
+    # /twin-промптом через bot.services.ai_client на живом ключе):
+    # deepseek-v4-flash — 5.1с, живой ответ; glm-5.1 — 2.3с (самая быстрая
+    # рабочая модель каталога) и такое же адекватное живое русское звучание.
+    openai_model: str = Field(default="glm-5.1", alias="OPENAI_MODEL")
+    # Тот же прогон вскрыл: kimi-k2/minimax-m2/qwen-3 — мёртвые ID каталога
+    # (401 "Model ... is not supported", не медленные — реально не существуют
+    # под этими именами), заменены на актуальные kimi-k2.6/qwen3.6-plus.
+    # glm-5.2 и minimax-m3 исключены совсем — glm-5.2 упал
+    # AIEmptyResponseError на этом же промпте (reasoning съедает весь
+    # max_tokens), minimax-m3 вернул сырой английский `<think>...` ПРЯМО в
+    # content (не через отдельное reasoning-поле, как остальные) — тихо
+    # "успешный" ответ, который на деле сломан и утёк бы в чат как есть.
     ai_available_models: str = Field(
-        default="deepseek-v4-flash,deepseek-v4-pro,glm-5.2,glm-5.1,kimi-k2,minimax-m2,minimax-m3,qwen-3",
+        default="deepseek-v4-flash,deepseek-v4-pro,glm-5.1,kimi-k2.6,qwen3.6-plus",
         alias="AI_AVAILABLE_MODELS",
     )
     ai_default_system_prompt: str = Field(
