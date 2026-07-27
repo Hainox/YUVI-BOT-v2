@@ -28,11 +28,11 @@ class Settings(BaseSettings):
     # --- AI provider (OpenCode Go, OpenAI-совместимый) ---
     openai_base_url: str = Field(default="https://opencode.ai/zen/go/v1", alias="OPENAI_BASE_URL")
     openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
-    # Дефолт поменян на glm-5.1 (запрошено 2026-07-27, диагностика реальным
-    # /twin-промптом через bot.services.ai_client на живом ключе):
-    # deepseek-v4-flash — 5.1с, живой ответ; glm-5.1 — 2.3с (самая быстрая
-    # рабочая модель каталога) и такое же адекватное живое русское звучание.
-    openai_model: str = Field(default="glm-5.1", alias="OPENAI_MODEL")
+    # Дефолт — kimi-k2.6 (выбор владельца бота 2026-07-27 по итогам диагностики
+    # реальным /twin-промптом через bot.services.ai_client на живом ключе:
+    # живой ответ за 6.0с, адекватное русское звучание — glm-5.1 был быстрее
+    # формально, 2.3с, но выбрали kimi-k2.6 по качеству/стилю ответа).
+    openai_model: str = Field(default="kimi-k2.6", alias="OPENAI_MODEL")
     # Тот же прогон вскрыл: kimi-k2/minimax-m2/qwen-3 — мёртвые ID каталога
     # (401 "Model ... is not supported", не медленные — реально не существуют
     # под этими именами), заменены на актуальные kimi-k2.6/qwen3.6-plus.
