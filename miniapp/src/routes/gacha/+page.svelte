@@ -220,63 +220,70 @@
 		// следующего ролла, п.10 задачи), а не возвращается в 'idle'.
 		if (rolling) return;
 		rolling = true;
-		error = null;
-		reveal = null;
-		pullCount = count;
-		pullResults = null;
-		skipRequested = false;
-		rollPhase = 'charge';
-		// Таймеры прошлого ролла уже отработали к этому моменту (rolling
-		// гарантирует, что новый roll() не стартует поверх незавершённого) —
-		// сбрасываем массив, а не аккумулируем в нём отработавшие id вечно.
-		rollTimers = [];
-
-		// Тайминги — абсолютное смещение от старта ролла (не дельты между
-		// фазами), verbatim из дизайн-прототипа: x1 короче и резче, x10 тратит
-		// лишнюю секунду на осколки, которые игрок успевает пересчитать.
-		const timing =
-			count === 10 ? { rift: 900, flash: 1950, reveal: 2200 } : { rift: 800, flash: 1550, reveal: 1800 };
-
-		const animationDone = new Promise<void>((resolve) => {
-			resolveAnimation = resolve;
-			rollTimers.push(
-				setTimeout(() => {
-					rollPhase = 'rift';
-				}, timing.rift)
-			);
-			rollTimers.push(
-				setTimeout(() => {
-					rollPhase = 'flash';
-				}, timing.flash)
-			);
-			rollTimers.push(setTimeout(resolve, timing.reveal));
-		});
-
-		// ОТКЛОНЕНИЕ ОТ ПРОТОТИПА (сознательное, см. задачу): в прототипе
-		// результат ролла был известен мгновенно — мок-данные генерировались
-		// локально ещё до старта таймеров, поэтому разрыв/вспышку можно было
-		// красить под лучший тир сразу. Здесь результат — ответ реального
-		// сервера (POST /api/v1/gacha/roll), который может прийти в любой
-		// момент анимации. Поэтому reveal-фаза наступает только когда готовы
-		// ОБА условия — Promise.all ждёт более медленное из двух: минимальную
-		// длительность анимации (таймеры выше) и реальный ответ API. Ни разу
-		// не показываем локально угаданный результат раньше настоящего.
-		const fetchPromise = apiFetch<RollResult>('/api/v1/gacha/roll', {
-			method: 'POST',
-			body: JSON.stringify({ count, ref_id: 'gacha_roll:' + crypto.randomUUID() })
-		}).then((res) => {
-			pullResults = res.results;
-			// Игрок тапнул "скип" ещё до ответа сервера — таймеры анимации уже
-			// отменены в skipBuild(), поэтому сами будим reveal-фазу сейчас.
-			if (skipRequested && resolveAnimation) {
-				clearRollTimers();
-				resolveAnimation();
-				resolveAnimation = null;
-			}
-			return res;
-		});
-
+		// ВЕСЬ корпус — внутри try/finally от старта до конца: сборка
+		// fetchPromise/animationDone ниже тоже может синхронно бросить
+		// (например apiFetch на плохом входе, crypto.randomUUID в редком
+		// WebView) — раньше такой бросок происходил ДО try и оставлял
+		// rolling=true навсегда без ошибки на экране (кнопки зависали в '…',
+		// помогал только перезаход на экран). Теперь любой сбой на любом
+		// шаге гарантированно освобождает rolling и показывает error.
 		try {
+			error = null;
+			reveal = null;
+			pullCount = count;
+			pullResults = null;
+			skipRequested = false;
+			rollPhase = 'charge';
+			// Таймеры прошлого ролла уже отработали к этому моменту (rolling
+			// гарантирует, что новый roll() не стартует поверх незавершённого) —
+			// сбрасываем массив, а не аккумулируем в нём отработавшие id вечно.
+			rollTimers = [];
+
+			// Тайминги — абсолютное смещение от старта ролла (не дельты между
+			// фазами), verbatim из дизайн-прототипа: x1 короче и резче, x10 тратит
+			// лишнюю секунду на осколки, которые игрок успевает пересчитать.
+			const timing =
+				count === 10 ? { rift: 900, flash: 1950, reveal: 2200 } : { rift: 800, flash: 1550, reveal: 1800 };
+
+			const animationDone = new Promise<void>((resolve) => {
+				resolveAnimation = resolve;
+				rollTimers.push(
+					setTimeout(() => {
+						rollPhase = 'rift';
+					}, timing.rift)
+				);
+				rollTimers.push(
+					setTimeout(() => {
+						rollPhase = 'flash';
+					}, timing.flash)
+				);
+				rollTimers.push(setTimeout(resolve, timing.reveal));
+			});
+
+			// ОТКЛОНЕНИЕ ОТ ПРОТОТИПА (сознательное, см. задачу): в прототипе
+			// результат ролла был известен мгновенно — мок-данные генерировались
+			// локально ещё до старта таймеров, поэтому разрыв/вспышку можно было
+			// красить под лучший тир сразу. Здесь результат — ответ реального
+			// сервера (POST /api/v1/gacha/roll), который может прийти в любой
+			// момент анимации. Поэтому reveal-фаза наступает только когда готовы
+			// ОБА условия — Promise.all ждёт более медленное из двух: минимальную
+			// длительность анимации (таймеры выше) и реальный ответ API. Ни разу
+			// не показываем локально угаданный результат раньше настоящего.
+			const fetchPromise = apiFetch<RollResult>('/api/v1/gacha/roll', {
+				method: 'POST',
+				body: JSON.stringify({ count, ref_id: 'gacha_roll:' + crypto.randomUUID() })
+			}).then((res) => {
+				pullResults = res.results;
+				// Игрок тапнул "скип" ещё до ответа сервера — таймеры анимации уже
+				// отменены в skipBuild(), поэтому сами будим reveal-фазу сейчас.
+				if (skipRequested && resolveAnimation) {
+					clearRollTimers();
+					resolveAnimation();
+					resolveAnimation = null;
+				}
+				return res;
+			});
+
 			const [res] = await Promise.all([fetchPromise, animationDone]);
 			rollPhase = 'reveal';
 			await loadCollection();
