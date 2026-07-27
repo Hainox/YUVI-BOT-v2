@@ -1,7 +1,7 @@
 """Интеграционные тесты clicker_service (фермы) против живого Postgres
 (фикстура `session` из tests/conftest.py — транзакция-на-тест). Доказывают
-farm-ядро плана 04.1-04: анти-чит тапов (accepted = min(count, max(1,
-MAX_CPS×elapsed_ms/1000))), оффлайн-накопление автокликера (min(elapsed, 4ч),
+farm-ядро плана 04.1-04: анти-чит тапов (accepted = min(count,
+MAX_CPS×elapsed_ms/1000)), оффлайн-накопление автокликера (min(elapsed, 4ч),
 без фоновых тиков на юзера), и формулу стоимости апгрейдов
 (int(round(base*1.15**level))) — все три из 04-CONTEXT.md D-03.
 
@@ -132,19 +132,82 @@ async def test_tap_anticheat_clamps_count(session):
 
 
 @pytest.mark.asyncio
-async def test_tap_anticheat_minimum_one(session):
+async def test_tap_anticheat_rejects_when_no_real_time_elapsed(session):
+    """Раньше здесь был "пол" анти-чита max(1, ...), гарантировавший минимум
+    1 принятый тап на любой запрос — эксплуатируемо шквалом запросов (см.
+    test_tap_flood_does_not_exceed_max_cps ниже). Теперь запрос без реально
+    прошедшего времени получает accepted=0, а last_tap_at не продвигается —
+    значит, накопленное время не теряется, а полноценно достаётся следующему
+    тапу того же игрока (см. test_tap_zero_accepted_preserves_elapsed_budget)."""
     chat_id = -100910004
     user_id = 910004
     await _ensure_user(session, user_id)
     await clicker_service.get_farm_state(session, chat_id, user_id)
-    await _set_farm(session, chat_id, user_id, last_tap_at=datetime.utcnow() - timedelta(seconds=5))
+    last_tap_at = datetime.utcnow()
+    await _set_farm(session, chat_id, user_id, last_tap_at=last_tap_at)
 
     count = 1000
-    elapsed_ms = 1  # int(30*1/1000) = 0 -> max(1, 0) = 1 (пол анти-чита)
+    elapsed_ms = 1  # int(30*~0/1000) = 0 -> accepted = 0 (не пол-1)
     result = await clicker_service.tap(session, chat_id, user_id, count, elapsed_ms)
 
-    assert result["accepted"] == 1
-    assert result["cp"] == clicker_service.tap_value(1)
+    assert result["accepted"] == 0
+    assert result["cp"] == 0
+
+    farm = await _get_farm(session, chat_id, user_id)
+    assert farm.cp == 0
+    assert farm.last_tap_at == last_tap_at  # часы не продвинулись впустую
+
+
+@pytest.mark.asyncio
+async def test_tap_zero_accepted_preserves_elapsed_budget(session):
+    """Запрос с accepted=0 не продвигает last_tap_at (см. тест выше) —
+    следующий вызов того же игрока видит НАКОПЛЕННОЕ реальное время с
+    последнего ПРИНЯТОГО тапа, а не с последнего вызова. Ставим last_tap_at
+    достаточно далеко в прошлое, чтобы округление MAX_CPS*elapsed/1000 дало
+    >=1 сразу — реального обнуления при accepted=0 быть не должно."""
+    chat_id = -100910014
+    user_id = 910014
+    await _ensure_user(session, user_id)
+    await clicker_service.get_farm_state(session, chat_id, user_id)
+    await _set_farm(session, chat_id, user_id, last_tap_at=datetime.utcnow() - timedelta(milliseconds=40))
+
+    # elapsed_ms клиента заведомо большой — trusted_elapsed_ms клэмпится
+    # РЕАЛЬНЫМ серверным интервалом (~40мс+), не этим заявленным значением.
+    result = await clicker_service.tap(session, chat_id, user_id, 1000, 60_000)
+    assert result["accepted"] >= 1
+
+    farm = await _get_farm(session, chat_id, user_id)
+    assert farm.cp == result["accepted"] * clicker_service.tap_value(1)
+
+
+@pytest.mark.asyncio
+async def test_tap_flood_does_not_exceed_max_cps(session):
+    """Регрессия на найденную уязвимость: раньше `max(1, ...)` в tap()
+    гарантировал >=1 accepted на КАЖДЫЙ вызов независимо от реального
+    интервала, а `last_tap_at` всё равно сбрасывался в `now` на каждом
+    вызове — шквал запросов чаще ~33мс друг за другом (в тесте — 50 вызовов
+    подряд без паузы) накручивал CP пропорционально числу запросов, а не
+    прошедшему времени, позволяя обменять CP на реальные ювики через AMM
+    фермы far в обход лимита MAX_CPS. Теперь суммарно принятые тапы за
+    короткий промежуток должны остаться в пределах, которые допускает
+    MAX_CPS за реально прошедшее время (с небольшим запасом на округление),
+    а не расти с числом запросов."""
+    chat_id = -100910015
+    user_id = 910015
+    await _ensure_user(session, user_id)
+    await clicker_service.get_farm_state(session, chat_id, user_id)
+    start = datetime.utcnow()
+    await _set_farm(session, chat_id, user_id, last_tap_at=start)
+
+    total_accepted = 0
+    for _ in range(50):
+        result = await clicker_service.tap(session, chat_id, user_id, 1000, 60_000)
+        total_accepted += result["accepted"]
+
+    real_elapsed_ms = (datetime.utcnow() - start).total_seconds() * 1000
+    # +1 — допуск на округление одного "пограничного" тапа, не x50 как было бы при эксплуатации.
+    max_allowed = int(clicker_service.MAX_CPS * real_elapsed_ms / 1000) + 1
+    assert total_accepted <= max_allowed
 
 
 @pytest.mark.asyncio
@@ -168,8 +231,8 @@ async def test_tap_anticheat_ignores_inflated_client_elapsed(session):
     second = await clicker_service.tap(session, chat_id, user_id, 5000, fabricated_elapsed_ms)
     # Второй тап случился практически сразу после первого (реальный elapsed ~0),
     # поэтому даже с тем же заявленным elapsed_ms=60000 клэмп должен схлопнуться
-    # к полу анти-чита (1), а не повторно принять до MAX_CPS*60 тапов.
-    assert second["accepted"] == 1
+    # к 0 (нет больше пола-1), а не повторно принять до MAX_CPS*60 тапов.
+    assert second["accepted"] == 0
 
 
 # --- оффлайн-накопление (D-03) -------------------------------------------------
