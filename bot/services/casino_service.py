@@ -518,7 +518,12 @@ async def blackjack_action(
     статус-переход "active"->"settled" САМ служит гардом идемпотентности
     (T-04.1-09, форма `markets_service.resolve_market`) — повторный вызов
     на уже settled-раздаче возвращает сохранённый исход, деньги не двигаются
-    повторно.
+    повторно. SELECT фильтрует и по `chat_id` (не только `user_id`/`game_id`):
+    `double` списывает вторую ставку через `_debit_stake(session, chat_id,
+    ...)`, а без этого фильтра игрок с активной раздачей в чате A мог
+    подставить `chat_id` чата B (где он тоже участник) и оплатить удвоение
+    из чужого банка, пока выплата всё равно уходила в `game_row.chat_id`
+    (чат A) — банк A рос за чужой счёт.
 
     `hit` — добор одной карты; перебор (>21) settle'ится сразу как bust,
     иначе `state.turn_deadline` продлевается ещё на `BLACKJACK_TURN_SECONDS`
@@ -536,6 +541,7 @@ async def blackjack_action(
             .where(
                 CasinoGame.id == game_id,
                 CasinoGame.user_id == user_id,
+                CasinoGame.chat_id == chat_id,
                 CasinoGame.game == "blackjack",
             )
             .with_for_update()

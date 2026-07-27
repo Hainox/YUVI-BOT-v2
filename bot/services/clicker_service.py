@@ -11,7 +11,9 @@ CP (`ClickerFarm.cp`) — ферма-внутренняя валюта. Тапы
 Формулы фермы — D-03 (`04-CONTEXT.md`) + REFERENCE-XYLOZ.md §3.1 (`CLICKER_*`
 константы эталона xyloz_tg_bot), переносятся точно:
 - Анти-чит тапов (T-04.1-12): клиентский `count` НИКОГДА не доверяем напрямую
-  — `accepted = min(count, max(1, int(MAX_CPS*elapsed_ms/1000)))`.
+  — `accepted = min(count, int(MAX_CPS*elapsed_ms/1000))`. Раньше был пол
+  `max(1, ...)`, эксплуатируемый шквалом запросов (см. докстринг `tap()`) —
+  убран; `last_tap_at` продвигается только при `accepted > 0`.
 - Оффлайн-накопление автокликера (T-04.1-13): считается НА КАЖДОМ обращении
   (`_accrue_offline`), а не фоновым тиком на юзера — `elapsed` берётся из
   разницы `now - last_accrued_at` (серверных значений), клиент не может
@@ -281,24 +283,38 @@ async def wipe_farm(session: AsyncSession, chat_id: int, user_id: int) -> dict:
 async def tap(
     session: AsyncSession, chat_id: int, user_id: int, count: int, elapsed_ms: int
 ) -> dict:
-    """Анти-чит тап (D-03/T-04.1-12): `accepted = min(count, max(1,
-    int(MAX_CPS*elapsed_ms/1000)))` — клиентский `count` никогда не
+    """Анти-чит тап (D-03/T-04.1-12): `accepted = min(count,
+    int(MAX_CPS*elapsed_ms/1000))` — клиентский `count` никогда не
     принимается напрямую. `elapsed_ms` тоже не принимается напрямую (CR-02):
     клэмпится сверху реальным серверным интервалом с прошлого принятого тапа
     (`last_tap_at`, пишется ТОЛЬКО этой функцией — в отличие от
     `last_accrued_at`, который сбрасывает каждый poll `get_farm_state`, что
     сделало бы его непригодным для анти-чита тапа). CP растёт на
-    `accepted * tap_value(tap_level)`."""
+    `accepted * tap_value(tap_level)`.
+
+    `last_tap_at` продвигается ТОЛЬКО когда `accepted > 0` (не на каждый
+    вызов): раньше здесь был пол `max(1, ...)`, гарантировавший минимум один
+    принятый тап на КАЖДЫЙ запрос независимо от реального интервала — при
+    этом `last_tap_at` всё равно сбрасывался в `now`, так что шквал запросов
+    чаще ~33мс (1000/MAX_CPS) друг за другом каждый раз проходил через этот
+    пол и накручивал CP пропорционально числу запросов, а не прошедшему
+    времени. Без пола и с условным продвижением часов накопленное-но-ещё-
+    недостаточное время не сбрасывается впустую: запрос, которому не хватает
+    времени на хотя бы 1 тап, получает `accepted=0` и оставляет `last_tap_at`
+    нетронутым, так что реальное время продолжает копиться до следующего
+    вызова — легитимный тап после паузы по-прежнему засчитывается, а серия
+    запросов чаще MAX_CPS/сек — нет, сколько бы их ни прислали."""
     farm = await _get_or_create_farm(session, chat_id, user_id)
     await _accrue_offline(session, chat_id, user_id, farm)
 
     now = datetime.utcnow()
     server_elapsed_ms = max(0.0, (now - farm.last_tap_at).total_seconds() * 1000)
     trusted_elapsed_ms = min(elapsed_ms, server_elapsed_ms)
-    farm.last_tap_at = now
 
-    accepted = min(count, max(1, int(MAX_CPS * trusted_elapsed_ms / 1000)))
-    farm.cp += accepted * tap_value(farm.tap_level)
+    accepted = min(count, int(MAX_CPS * trusted_elapsed_ms / 1000))
+    if accepted > 0:
+        farm.last_tap_at = now
+        farm.cp += accepted * tap_value(farm.tap_level)
 
     await session.commit()
     return _farm_state(farm, accepted=accepted)

@@ -1135,6 +1135,53 @@ async def test_blackjack_action_on_foreign_game_returns_404_idor(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_blackjack_action_double_with_foreign_chat_id_returns_404(monkeypatch):
+    """Раздача открыта в BLACKJACK_CHAT_ID (чат A); тот же игрок пытается
+    выполнить `double`, подставив chat_id ДРУГОГО чата (B), где он тоже
+    участник. Раньше SELECT в `blackjack_action` фильтровал только по
+    user_id/game_id (не chat_id) — это находило раздачу чата A, а `double`
+    списывал вторую ставку из банка чата B (`_debit_stake(session, chat_id,
+    ...)`), пока выплата всё равно уходила в банк чата A (`game_row.chat_id`)
+    — банк A рос за чужой счёт. Теперь такая раздача структурно неотличима
+    от несуществующей -> 404, ни раздача, ни балансы обоих чатов не меняются."""
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    other_chat_id = -900555
+    user_id = 300512
+    await _ensure_user(user_id)
+    await _topup(BLACKJACK_CHAT_ID, user_id)
+    await _topup(other_chat_id, user_id)
+    init_data = _build_init_data(user_id=user_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["8♠", "4♠", "7♠", "5♠"]))
+        game_id = await _start_fixed_hand(client, init_data, BLACKJACK_CHAT_ID, [])
+        balance_a_before = await _get_balance(BLACKJACK_CHAT_ID, user_id)
+        balance_b_before = await _get_balance(other_chat_id, user_id)
+
+        resp = await client.post(
+            f"/api/v1/games/blackjack/{game_id}/action",
+            params={"chat_id": other_chat_id},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={"action": "double"},
+        )
+
+    assert resp.status_code == 404
+
+    async with SessionLocal() as verify_session:
+        game_row = (
+            await verify_session.execute(select(CasinoGame).where(CasinoGame.id == game_id))
+        ).scalar_one()
+    assert game_row.status == "active"
+    assert game_row.chat_id == BLACKJACK_CHAT_ID
+
+    assert await _get_balance(BLACKJACK_CHAT_ID, user_id) == balance_a_before
+    assert await _get_balance(other_chat_id, user_id) == balance_b_before
+
+    await _force_settle_leftover_game(game_id)
+
+
+@pytest.mark.asyncio
 async def test_blackjack_action_on_settled_game_replays_stored_result(monkeypatch):
     """T-04.1-09 (уже протестировано/задокументировано в 04.1-03): действие
     на уже settled раздаче — идемпотентный no-op, роут возвращает 200 с
