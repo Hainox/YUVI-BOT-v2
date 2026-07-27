@@ -53,13 +53,13 @@ async def _check_consent(session: AsyncSession, chat_id: int, target_user_id: in
         raise TwinConsentError(f"user {target_user_id} has not opted in (status={status!r})")
 
 
-async def build_twin_reply(
+async def _gather_persona_context(
     session: AsyncSession, chat_id: int, target_user_id: int, target_display_name: str
-) -> str:
-    """Возвращает СЫРОЙ текст модели, БЕЗ дисклеймер-префикса (D-02 — префикс
-    добавляет хендлер, не сервис)."""
-    await _check_consent(session, chat_id, target_user_id)  # гейт ПЕРВОЙ строкой (Pitfall 5)
-
+) -> tuple[str, str]:
+    """Портрет + свежая raw-выборка сообщений — общий сбор контекста для
+    build_twin_reply/build_twin_reaction (TWIN-03): единственное, чем они
+    отличаются друг от друга — формулировка system/user-промпта, не то, ОТКУДА
+    берётся психологический профиль персоны."""
     # Блок 1: reuse существующего 14-дневного психо-портрета (D-03, без дублирующего SQL).
     portrait = await card_service.build_portrait(
         session, chat_id, target_user_id, target_display_name
@@ -70,19 +70,17 @@ async def build_twin_reply(
     )
     char_budget = settings.ai_max_input_tokens * CHARS_PER_TOKEN
     sample_context = build_context(sample_rows, char_budget)
+    return portrait, sample_context
 
-    system_prompt = (
-        f"Ты — «Двойник» участника {target_display_name}. Его психологический портрет: "
-        f"{portrait}\n\nЕго настоящие недавние сообщения (стиль, лексика, длина фраз):\n"
-        f"{sample_context}\n\nНапиши ОДНУ короткую реплику в его стиле, 1-3 предложения. "
-        "Не приписывай ему реальных фактов/обвинений на чувствительные темы."
-    )
-    model = await settings_service.get_active_model(session, chat_id)  # model-agnostic
+
+async def _stream_persona_reply(system_prompt: str, user_prompt: str, model: str) -> str:
+    """Общий стриминг + graceful-деградация — тело try/except одинаковое у
+    build_twin_reply/build_twin_reaction (reasoning-only модель -> фолбэк,
+    не 500, Pitfall 3)."""
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": "Обычная реплика в духе этого человека."},
+        {"role": "user", "content": user_prompt},
     ]
-
     try:
         parts = [
             delta
@@ -93,6 +91,56 @@ async def build_twin_reply(
     except RuntimeError:  # reasoning-only модель — деградация, не 500 (Pitfall 3)
         return TWIN_FALLBACK_TEXT
     return "".join(parts).strip() or TWIN_FALLBACK_TEXT
+
+
+async def build_twin_reply(
+    session: AsyncSession, chat_id: int, target_user_id: int, target_display_name: str
+) -> str:
+    """Возвращает СЫРОЙ текст модели, БЕЗ дисклеймер-префикса (D-02 — префикс
+    добавляет хендлер, не сервис)."""
+    await _check_consent(session, chat_id, target_user_id)  # гейт ПЕРВОЙ строкой (Pitfall 5)
+
+    portrait, sample_context = await _gather_persona_context(
+        session, chat_id, target_user_id, target_display_name
+    )
+    system_prompt = (
+        f"Ты — «Двойник» участника {target_display_name}. Его психологический портрет: "
+        f"{portrait}\n\nЕго настоящие недавние сообщения (стиль, лексика, длина фраз):\n"
+        f"{sample_context}\n\nНапиши ОДНУ короткую реплику в его стиле, 1-3 предложения. "
+        "Не приписывай ему реальных фактов/обвинений на чувствительные темы."
+    )
+    model = await settings_service.get_active_model(session, chat_id)  # model-agnostic
+    return await _stream_persona_reply(system_prompt, "Обычная реплика в духе этого человека.", model)
+
+
+async def build_twin_reaction(
+    session: AsyncSession,
+    chat_id: int,
+    target_user_id: int,
+    target_display_name: str,
+    incoming_text: str,
+) -> str:
+    """Дневной двойник (TWIN-03, bot/services/daily_twin_service.py): ответ
+    персоны на реплай к её же посту — та же консент-дисциплина/сборка
+    контекста, что build_twin_reply, но промпт нацелен на КОНКРЕТНЫЙ входящий
+    текст (`incoming_text`), а не на случайную реплику "в духе человека".
+    Возвращает СЫРОЙ текст модели, БЕЗ дисклеймер-префикса (D-02 — префикс
+    добавляет вызывающий хендлер, не сервис, та же дисциплина, что и у
+    build_twin_reply)."""
+    await _check_consent(session, chat_id, target_user_id)  # гейт ПЕРВОЙ строкой (Pitfall 5)
+
+    portrait, sample_context = await _gather_persona_context(
+        session, chat_id, target_user_id, target_display_name
+    )
+    system_prompt = (
+        f"Ты — «Двойник» участника {target_display_name}. Его психологический портрет: "
+        f"{portrait}\n\nЕго настоящие недавние сообщения (стиль, лексика, длина фраз):\n"
+        f"{sample_context}\n\nСейчас тебе (как будто это реально он) ответили в чате. Напиши "
+        "ОДНУ короткую реплику-ответ в его стиле, 1-3 предложения, по существу полученного "
+        "сообщения. Не приписывай ему реальных фактов/обвинений на чувствительные темы."
+    )
+    model = await settings_service.get_active_model(session, chat_id)
+    return await _stream_persona_reply(system_prompt, incoming_text, model)
 
 
 async def set_opt_in(session: AsyncSession, chat_id: int, user_id: int, status: str) -> None:

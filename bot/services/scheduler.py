@@ -29,7 +29,11 @@ victim_service.register_daily_autopost (запрошено пользовате�
 раньше /victim срабатывал только вручную), и мемный автопост про
 «наблюдателей» чата (lurker_daily_roast, cron 12:00 МСК, LURKER-01,
 косметический — без денег/титулов/состояния) через
-lurker_service.register_daily_roast (запрошено пользователем 2026-07-27).
+lurker_service.register_daily_roast (запрошено пользователем 2026-07-27), и
+вероятностный тик "дневного двойника" (daily_twin_tick, interval 15м, окно
+9:00-23:00 МСК, TWIN-03) через daily_twin_service.register_daily_twin_tick
+(запрошено пользователем 2026-07-27) — interval, а не cron, потому что нужно
+несколько попыток поста за день, а не одна точка времени.
 Импорты ленивые (внутри функции), чтобы модули, ещё не существующие на
 момент плана 01 (пустой setup_jobs), не ломали import bot.main до их
 появления.
@@ -80,6 +84,7 @@ def setup_jobs(bot: Bot) -> None:
     from bot.services import awards_service
     from bot.services import casino_service
     from bot.services import clicker_service
+    from bot.services import daily_twin_service
     from bot.services import digest_service
     from bot.services import embed_worker
     from bot.services import lottery_service
@@ -101,6 +106,7 @@ def setup_jobs(bot: Bot) -> None:
     lottery_service.register_daily_reset(scheduler, bot)
     victim_service.register_daily_autopost(scheduler, bot)
     lurker_service.register_daily_roast(scheduler, bot)
+    daily_twin_service.register_daily_twin_tick(scheduler, bot)
 
     async def _digest_job() -> None:
         await digest_service.run_daily_digest(bot)
