@@ -29,6 +29,14 @@ export class ApiError extends Error {
 // бессрочно, без ошибки на экране, помогал только перезаход на экран.
 // Жёсткий таймаут гарантирует, что любой fetch когда-нибудь ЗАВЕРШИТСЯ
 // (успехом или ошибкой) — вызывающий код всегда получит шанс на finally.
+//
+// AbortController один не гарантирует это: если движок WebView (Telegram
+// desktop/mobile — не всегда стоковый Chrome) не соблюдает AbortSignal при
+// обрыве, controller.abort() ничего не даст и исходный fetch()-промис
+// зависнет навсегда несмотря на таймер. Promise.race с отдельным
+// отклоняющимся таймером не зависит от того, слушается ли abort() —
+// apiFetch гарантированно осядет через REQUEST_TIMEOUT_MS в любом случае
+// (заброшенный fetch-промис просто утилизируется сборщиком мусора позже).
 const REQUEST_TIMEOUT_MS = 15000;
 
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
@@ -37,19 +45,26 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
 
 	const controller = new AbortController();
 	const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+	const timeoutPromise = new Promise<never>((_, reject) => {
+		setTimeout(() => reject(new ApiError(0, 'timeout')), REQUEST_TIMEOUT_MS);
+	});
 
 	let resp: Response;
 	try {
-		resp = await fetch(url.toString(), {
-			...init,
-			signal: controller.signal,
-			headers: {
-				...(init?.body ? { 'Content-Type': 'application/json' } : {}),
-				...init?.headers,
-				'X-Telegram-Init-Data': initData
-			}
-		});
+		resp = await Promise.race([
+			fetch(url.toString(), {
+				...init,
+				signal: controller.signal,
+				headers: {
+					...(init?.body ? { 'Content-Type': 'application/json' } : {}),
+					...init?.headers,
+					'X-Telegram-Init-Data': initData
+				}
+			}),
+			timeoutPromise
+		]);
 	} catch (err) {
+		if (err instanceof ApiError) throw err;
 		if (err instanceof DOMException && err.name === 'AbortError') {
 			throw new ApiError(0, 'timeout');
 		}
