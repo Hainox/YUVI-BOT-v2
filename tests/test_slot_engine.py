@@ -91,6 +91,13 @@ class _ForcedGridRng:
         self._i += 1
         return value
 
+    def randint(self, a: int, b: int) -> int:
+        # play_slots также бросает через этот же _rng джекпот-кубик
+        # (jackpot_service.contribute_and_maybe_award) — b гарантированно
+        # никогда не 1 (slot_jackpot_odds=10000), тесты сеток не должны
+        # случайно сорвать джекпот.
+        return b
+
 
 # --- D-06 паутейбл (source-of-truth assertion) -------------------------------
 
@@ -297,6 +304,11 @@ async def test_play_slots_settles_and_is_idempotent(session, monkeypatch):
 
     first = await casino_service.play_slots(session, chat_id, user_id, bet_total, idem_key)
     balance_after_first = await _get_user_balance(session, chat_id, user_id)
+    # Новый спин -> jackpot_service отработал (пул реально пополнился).
+    assert first["jackpot"] == {
+        "won": False,
+        "pool": settings.slot_jackpot_seed + int(bet_total * settings.slot_jackpot_skim_pct),
+    }
 
     game = await _get_casino_game(session, user_id, idem_key)
     assert game.game == "slots"
@@ -307,6 +319,9 @@ async def test_play_slots_settles_and_is_idempotent(session, monkeypatch):
     assert second["payout"] == first["payout"]
     assert second["outcome"] == first["outcome"]
     assert await _get_user_balance(session, chat_id, user_id) == balance_after_first
+    # Replay того же idem_key -> джекпот НЕ трогается второй раз (не растёт,
+    # кубик не бросается повторно).
+    assert second["jackpot"] is None
 
     games = (
         await session.execute(
