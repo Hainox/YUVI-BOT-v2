@@ -83,7 +83,12 @@
 		{ title: 'Что новое', desc: 'обновления и планы разработки', href: '/whatsnew' },
 		{ title: 'Фидбек', desc: 'баг, идея или жалоба — админы увидят', href: '/feedback' },
 		{ title: 'Магазин', desc: 'поукай, обними, закажи анекдот или роаст', accent: 'pink', href: '/shop' },
-		{ title: 'Теги', desc: 'арендуй тег над своим именем', accent: 'yellow', href: '/tags' }
+		{ title: 'Теги', desc: 'арендуй тег над своим именем', accent: 'yellow', href: '/tags' },
+		{ title: 'Спросить чат', desc: 'AI-поиск по истории переписки', accent: 'cyan', href: '/ai/ask' },
+		{ title: 'Карточка участника', desc: 'AI-портрет, статистика, настроение', accent: 'cyan', href: '/ai/card' },
+		{ title: 'Дайджест', desc: 'AI-пересказ жизни чата за период', accent: 'cyan', href: '/ai/digest' },
+		{ title: 'Пересказ', desc: 'AI-пересказ последних сообщений', accent: 'cyan', href: '/ai/summary' },
+		{ title: 'AI-развлечения', desc: 'темы обсуждений · фраза дня · анекдот', accent: 'yellow', href: '/ai/fun' }
 	];
 
 	const adminTile: Tile = {
