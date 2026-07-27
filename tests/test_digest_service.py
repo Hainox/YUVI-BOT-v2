@@ -282,7 +282,17 @@ async def test_build_digest_assembles_all_sections(session, monkeypatch):
     # 25 текстовых сообщений в 10-минутном окне -> и порог count_day_messages,
     # и порог detect_bursts.min_count пройдены одним и тем же плотным периодом.
     await _seed_daily_stat(session, chat_id, user_id, today, 25)
-    base_utc = datetime.now(timezone.utc).replace(hour=10, minute=0, second=0, microsecond=0)
+    # Якорим от MSK-даты `today` (не от datetime.now(timezone.utc)) — в окне
+    # 21:00-00:00 UTC (00:00-03:00 МСК) эти два "сегодня" расходятся на день,
+    # тест ловил Message.created_at ВНЕ границ [today 00:00 МСК, today+1)
+    # (digest_service._msk_day_bounds_utc), которые daily_stat уже засеян под
+    # другую дату — 13:00 МСК гарантированно внутри суток `today` всегда.
+    base_utc = (
+        datetime.combine(today, datetime.min.time(), tzinfo=MSK)
+        .replace(hour=13)
+        .astimezone(timezone.utc)
+        .replace(tzinfo=None)
+    )
     for i in range(25):
         await _seed_message(
             session, chat_id, user_id, base_utc + timedelta(seconds=20 * i), f"сообщение номер {i} про котиков"

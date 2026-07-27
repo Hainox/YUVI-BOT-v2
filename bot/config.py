@@ -132,7 +132,15 @@ class Settings(BaseSettings):
     # в .env перед деплоем; никогда не хардкодятся (D-11).
     steam_api_key: str = Field(default="", alias="STEAM_API_KEY")
     steam_id64: str = Field(default="", alias="STEAM_ID64")
-    twin_max_output_tokens: int = Field(default=300, alias="TWIN_MAX_OUTPUT_TOKENS")
+    # 300 (изначальный дефолт) регулярно бил в TWIN_FALLBACK_TEXT в проде:
+    # reasoning-модели каталога Go (DeepSeek/GLM и т.п.) считают "мысли" перед
+    # ответом ИЗ ТОГО ЖЕ бюджета max_tokens, что и сам ответ (ai_client.py
+    # AIEmptyResponseError) — на 300 токенах reasoning нередко съедал весь
+    # бюджет ДО первого символа content, /twin отвечал заглушкой почти
+    # каждый раз. Подняли до ai_max_output_tokens (1500) — той же величины,
+    # что уже используют все остальные короткие AI-фичи (joke/phrase/lurker/
+    # roast), без единой подобной жалобы.
+    twin_max_output_tokens: int = Field(default=1500, alias="TWIN_MAX_OUTPUT_TOKENS")
 
     # --- Платные фичи, донаты, медиа, фидбек (фаза 6) ---
     # Соцмагазин (D-01/A1): цены изначально сбалансированы относительно
