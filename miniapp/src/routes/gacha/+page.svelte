@@ -174,12 +174,19 @@
 	// Порядок раскрытия карточек результата: по возрастанию тира (худшие
 	// первыми), лучшая карточка — последней (deploy/index.html:1277). Для x1
 	// сортировка не нужна — там всего одна карточка.
+	//
+	// Каждый элемент несёт исходный индекс `i` в ответе сервера — это и есть
+	// ключ {#each} ниже. char_id/stars/refunded НЕ годятся в качестве ключа:
+	// если игрок роллит одного и того же уже прокачанного до MAX_STARS (5★)
+	// персонажа дважды в одной десятке, оба гранта получают ОДИНАКОВЫЕ
+	// char_id+stars(=5, дальше не растёт)+refunded(фикс. DUPE_REFUND[tier])
+	// — с ключом по контенту Svelte схлопывал такие дубликаты в одну
+	// карточку, хотя сервер честно начислил (и рефанднул) оба грант. Индекс
+	// в массиве всегда уникален независимо от содержимого.
 	let orderedReveal = $derived.by(() => {
-		if (!reveal || reveal.length <= 1) return reveal ?? [];
-		return reveal
-			.map((grant, i) => ({ grant, i }))
-			.sort((a, b) => TIER_RANK[a.grant.tier] - TIER_RANK[b.grant.tier] || a.i - b.i)
-			.map((entry) => entry.grant);
+		const items = (reveal ?? []).map((grant, i) => ({ grant, i }));
+		if (items.length <= 1) return items;
+		return items.sort((a, b) => TIER_RANK[a.grant.tier] - TIER_RANK[b.grant.tier] || a.i - b.i);
 	});
 
 	function bestTierOf(results: RollGrant[]): Tier {
@@ -448,7 +455,8 @@
 
 			{#if reveal}
 				<div class="gacha-reveal">
-					{#each orderedReveal as grant, order (grant.char_id + ':' + grant.stars + ':' + grant.refunded)}
+					{#each orderedReveal as entry, order (entry.i)}
+						{@const grant = entry.grant}
 						{@const isTop = TIER_RANK[grant.tier] >= 2}
 						{@const isUur = grant.tier === 'UUR'}
 						<div
