@@ -5,13 +5,27 @@ server {
   ssl_certificate /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
   ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
 
+  # Docker's embedded DNS (127.0.0.11) with a short TTL, plus a variable in
+  # each proxy_pass below, forces nginx to re-resolve api/miniapp on every
+  # request instead of caching whatever IP they had at nginx's own startup
+  # (nginx only re-resolves a bare hostname in proxy_pass if it's a
+  # variable — a literal hostname is resolved once, at config load, and
+  # kept forever). Without this, redeploying api/miniapp alone (a routine
+  # `docker compose up -d --build`, which doesn't touch nginx-https) leaves
+  # this container pointing at the old, now-dead IP of the recreated
+  # container — every request 502s with "connect() failed (111: Connection
+  # refused)" until someone notices and runs `docker compose restart
+  # nginx-https` by hand (T-DEPLOY-06, reproduced live on yuvibot2.xyz).
+  resolver 127.0.0.11 valid=10s;
+
   # Reverse-proxy to the api container (docker-compose service "api", same
   # yuvibotv2 network as miniapp/nginx.conf's own /api/ block, which this
   # copies verbatim). lib/api.ts/lib/sse.ts build requests against
   # window.location.origin (relative /api/v1/... paths) so the Mini App and
   # the api backend must appear same-origin to the browser.
   location /api/ {
-    proxy_pass http://api:8000;
+    set $upstream_api api;
+    proxy_pass http://$upstream_api:8000;
     proxy_http_version 1.1;
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
@@ -27,7 +41,8 @@ server {
 
   # Long-lived immutable cache for hashed SvelteKit build assets.
   location /_app/immutable/ {
-    proxy_pass http://miniapp:80;
+    set $upstream_miniapp miniapp;
+    proxy_pass http://$upstream_miniapp:80;
     proxy_set_header Host $host;
     add_header Cache-Control "public, max-age=31536000, immutable";
   }
@@ -35,7 +50,8 @@ server {
   # No-cache for the SPA shell / fallback document — must always be
   # revalidated so users pick up new deploys immediately.
   location ~ ^/(200\.html|index\.html)$ {
-    proxy_pass http://miniapp:80;
+    set $upstream_miniapp miniapp;
+    proxy_pass http://$upstream_miniapp:80;
     proxy_set_header Host $host;
     add_header Cache-Control "no-cache";
   }
@@ -44,7 +60,8 @@ server {
   # to the existing miniapp container, which already serves the static
   # SvelteKit build and does its own SPA fallback to 200.html.
   location / {
-    proxy_pass http://miniapp:80;
+    set $upstream_miniapp miniapp;
+    proxy_pass http://$upstream_miniapp:80;
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
