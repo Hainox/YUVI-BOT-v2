@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import logging
 import secrets
+import time
 from datetime import datetime
 from datetime import timedelta
 
@@ -92,6 +93,10 @@ class GameNotActive(CasinoError):
 
 class DuplicateRound(CasinoError):
     """Раунд с этим idem_key уже обрабатывается конкурентным запросом (race, не обычный replay)."""
+
+
+class RateLimited(CasinoError):
+    """Слишком частые спины одного игрока (анти-абьюз авто-спина, см. `_check_slots_throttle`)."""
 
 
 # --- Валидация ставки (D-04/D-05) --------------------------------------------
@@ -340,6 +345,29 @@ async def play_roulette(
 
 # --- slots (D-05/D-06: Azumanga, RTP ~92.78%) --------------------------------
 
+# Анти-абьюз авто-спина (миниапп крутит слоты в цикле без ручного тапа на
+# каждый раунд): последний момент времени спина по user_id, in-memory —
+# защитный троттлинг, не бизнес-данные, потеря при рестарте процесса не
+# страшна (просто разрешит один спин чуть раньше срока). Ключ — user_id, не
+# (chat_id, user_id): один и тот же игрок, спамящий из нескольких чатов
+# параллельно, — тот же паттерн злоупотребления, который стоит гасить.
+_last_slots_spin_at: dict[int, float] = {}
+
+
+def _check_slots_throttle(user_id: int) -> None:
+    """Отклоняет спин, если предыдущий спин ЭТОГО игрока был меньше
+    `settings.casino_spin_min_interval_ms` назад. Только для НОВЫХ раундов —
+    вызывающий (`play_slots`) обязан пропустить этот вызов, если это replay
+    уже settled-раунда по тому же `idem_key`: иначе легитимный повторный
+    вызов с тем же idem_key (обычная идемпотентность, напр.
+    `test_play_slots_settles_and_is_idempotent`) ошибочно ловил бы
+    RateLimited вместо честного replay-ответа."""
+    now = time.monotonic()
+    last = _last_slots_spin_at.get(user_id)
+    _last_slots_spin_at[user_id] = now
+    if last is not None and (now - last) * 1000 < settings.casino_spin_min_interval_ms:
+        raise RateLimited("Слишком часто — подождите немного между спинами")
+
 
 async def play_slots(
     session: AsyncSession, chat_id: int, user_id: int, bet: int, idem_key: str
@@ -369,15 +397,26 @@ async def play_slots(
     пополняется/списывается ОТДЕЛЬНЫМ commit'ом после `_settle`'s
     собственного — крайне узкое окно (падение процесса между двумя
     commit'ами потеряло бы вклад этого спина в пул), приемлемо для
-    бонусного слоя поверх уже надёжно закоммиченной основной выплаты."""
+    бонусного слоя поверх уже надёжно закоммиченной основной выплаты.
+
+    Перед этим проверяет `_check_slots_throttle` (`RateLimited`, если
+    слишком рано) — единственная игра казино с клиентским авто-повтором
+    ставок (авто-спин в miniapp), поэтому единственная с троттлингом частоты.
+    Троттлинг НЕ применяется, если `idem_key` уже settled (`_find_existing`
+    находит существующую строку) — это replay, а не новая ставка, `_settle`
+    ниже вернёт сохранённый исход без повторного движения денег. `is_new_spin`
+    вычисляется ЗДЕСЬ, до валидации ставки — тот же самый флаг переиспользует
+    и джекпот-слой ниже, вторым запросом в БД его не дублируем."""
+    is_new_spin = await _find_existing(session, user_id, idem_key) is None
+    if is_new_spin:
+        _check_slots_throttle(user_id)
+
     if bet <= 0 or bet % slot_engine.TOTAL_LINES != 0:
         raise InvalidBet(
             f"Ставка должна быть положительным кратным {slot_engine.TOTAL_LINES} "
             "(по числу линий слота)"
         )
     bet_per_line = bet // slot_engine.TOTAL_LINES
-
-    is_new_spin = await _find_existing(session, user_id, idem_key) is None
 
     def compute() -> tuple[int, dict]:
         grid = slot_engine.spin_grid(_rng)
