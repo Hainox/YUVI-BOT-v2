@@ -31,26 +31,55 @@ from bot.services import economy_service
 from bot.services import quests_service
 from bot.services import stats_service
 from common.models.achievement_unlock import AchievementUnlock
+from common.models.clicker_farm import ClickerFarm
 from common.models.duel import Duel
 from common.models.economy_tx import EconomyTx
 from common.models.gacha_collection import GachaCollection
+from common.models.twin_opt_in import TwinOptIn
 
 
 @dataclass(frozen=True)
 class AchievementDef:
     key: str
     label: str
+    description: str
     reward: int
     bonus_levels: int
 
 
 ACHIEVEMENTS: tuple[AchievementDef, ...] = (
-    AchievementDef("streak7", "Неделя огня", 100, 3),
-    AchievementDef("messages1000", "Болтун", 150, 3),
-    AchievementDef("duels10", "Ветеран дуэлей", 150, 3),
-    AchievementDef("gacha10", "Коллекционер", 150, 3),
-    AchievementDef("media20", "Медиахомяк", 150, 3),
-    AchievementDef("quests50", "Прилежный", 200, 5),
+    AchievementDef("streak7", "Неделя огня", "Пиши в чате 7 дней подряд без пропуска.", 100, 3),
+    AchievementDef("messages1000", "Болтун", "Напиши в чате 1000 сообщений за всё время.", 150, 3),
+    AchievementDef("duels10", "Ветеран дуэлей", "Выиграй 10 дуэлей.", 150, 3),
+    AchievementDef("gacha10", "Коллекционер", "Собери 10 разных персонажей в гаче.", 150, 3),
+    AchievementDef("media20", "Медиахомяк", "Скачай 20 видео через бота.", 150, 3),
+    AchievementDef("quests50", "Прилежный", "Выполни 50 ежедневных квестов за всё время.", 200, 5),
+    AchievementDef(
+        "casino100", "Завсегдатай казино", "Сыграй в казино 100 раз за всё время.", 200, 5
+    ),
+    AchievementDef(
+        "transfer50",
+        "Щедрая душа",
+        "Сделай 50 переводов ювиков другим участникам.",
+        150,
+        3,
+    ),
+    AchievementDef(
+        "farmlvl30",
+        "Мастер фермы",
+        "Прокачай тап или автокликер фермы до 30 уровня.",
+        150,
+        3,
+    ),
+    AchievementDef("exchange10", "Биржевик", "Выставь 10 лотов на бирже.", 150, 3),
+    AchievementDef("market5", "Оракул", "Создай 5 рынков предсказаний.", 150, 3),
+    AchievementDef(
+        "twin_active",
+        "Раздвоение личности",
+        "Подключи AI-двойника через /twin_optin (или онбординг в мини-аппе).",
+        100,
+        3,
+    ),
 )
 
 
@@ -88,6 +117,41 @@ async def _progress(session: AsyncSession, chat_id: int, user_id: int) -> dict[s
 
     total_quests = await quests_service.get_total_completions(session, chat_id, user_id)
 
+    async def _count_kind(kind: str) -> int:
+        return (
+            await session.execute(
+                select(func.count())
+                .select_from(EconomyTx)
+                .where(
+                    EconomyTx.chat_id == chat_id,
+                    EconomyTx.user_id == user_id,
+                    EconomyTx.kind == kind,
+                )
+            )
+        ).scalar_one()
+
+    casino_count = await _count_kind("casino_bet")
+    transfer_count = await _count_kind("transfer_out")
+    exchange_count = await _count_kind("exchange_escrow")
+    market_count = await _count_kind("market_create_fee")
+
+    farm_row = (
+        await session.execute(
+            select(ClickerFarm.tap_level, ClickerFarm.auto_level).where(
+                ClickerFarm.chat_id == chat_id, ClickerFarm.user_id == user_id
+            )
+        )
+    ).first()
+    farm_level_max = max(farm_row.tap_level, farm_row.auto_level) if farm_row is not None else 0
+
+    twin_status = (
+        await session.execute(
+            select(TwinOptIn.status).where(
+                TwinOptIn.chat_id == chat_id, TwinOptIn.user_id == user_id
+            )
+        )
+    ).scalar_one_or_none()
+
     return {
         "streak7": streak >= 7,
         "messages1000": user_stats["total_messages"] >= 1000,
@@ -95,6 +159,12 @@ async def _progress(session: AsyncSession, chat_id: int, user_id: int) -> dict[s
         "gacha10": gacha_count >= 10,
         "media20": media_count >= 20,
         "quests50": total_quests >= 50,
+        "casino100": casino_count >= 100,
+        "transfer50": transfer_count >= 50,
+        "farmlvl30": farm_level_max >= 30,
+        "exchange10": exchange_count >= 10,
+        "market5": market_count >= 5,
+        "twin_active": twin_status == "active",
     }
 
 
@@ -114,6 +184,7 @@ async def get_achievement_status(session: AsyncSession, chat_id: int, user_id: i
         {
             "key": a.key,
             "label": a.label,
+            "description": a.description,
             "reward": a.reward,
             "bonus_levels": a.bonus_levels,
             "unlocked": a.key in unlocked_keys,

@@ -41,12 +41,14 @@ def _format_quests_post(
     for q in quest_status:
         mark = "[x]" if q["claimed"] else ("[!]" if q["done"] else "[ ]")
         lines.append(f"{mark} {q['label']} — {q['reward']} ювиков")
+        lines.append(f"    {q['description']}")
 
     lines.append("")
     lines.append("Достижения")
     for a in achievement_status:
         mark = "[открыто]" if a["unlocked"] else "[закрыто]"
         lines.append(f"{mark} {a['label']} — +{a['bonus_levels']} ур. фермы, {a['reward']} ювиков")
+        lines.append(f"    {a['description']}")
 
     lines.append("")
     lines.append(f"Ферма: доступно до уровня {effective_cap} из 99 (база {base_cap} + квесты/ачивки)")
