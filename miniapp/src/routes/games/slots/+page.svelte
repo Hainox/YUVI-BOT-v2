@@ -22,16 +22,25 @@
 
 	const SLOT_BET_STEP = 10; // TOTAL_LINES (slot_engine.py) — bet must stay a multiple of this
 	const AUTO_SPIN_PRESETS = [5, 10, 25, 50];
-	// Скорость барабана (04.2-11: заметно быстрее прежних 700/140/1340мс —
-	// "быстрый и хлёсткий" базовый спин).
-	const SPIN_BASE_MS = 420;
-	const SPIN_PER_COL_MS = 90;
+	// Скорость барабана: 04.2-11 разогнал спин до 420/90мс, но однопиковая
+	// cubic-bezier(0.16, 0.86, 0.32, 1) на ОБА сегмента кейфрейма (0%->72%,
+	// 72%->100%) проходила 86% всего пути за первые 16% времени — барабан
+	// не "крутился", а почти телепортировался на место и потом чуть
+	// доезжал ("рвано", без ощущения полных оборотов). Новый профиль (см.
+	// @keyframes slotReelSpin) — честный разгон -> линейная крейсерская
+	// прокрутка -> торможение с нахлёстом, поэтому и общая длительность
+	// чуть выросла (не для "медленнее", а чтобы фазам было где происходить).
+	const SPIN_BASE_MS = 520;
+	const SPIN_PER_COL_MS = 100;
 	const REVEAL_DELAY_MS = SPIN_BASE_MS + SPIN_PER_COL_MS * 4 + 60;
 
 	// Visual drum: FILLER_ROWS of cosmetic random symbols scroll past before
 	// the strip settles on the real final 3 rows for that column. Row count
 	// is fixed so the CSS translateY(%) landing position never changes.
-	const FILLER_ROWS = 9;
+	// 14 (was 9) — больше "полос" пробегает мимо глазка за то же время,
+	// поэтому спин читается как полные обороты барабана, а не короткое
+	// подёргивание нескольких символов.
+	const FILLER_ROWS = 14;
 	const STRIP_ROWS = FILLER_ROWS + 3;
 
 	// Пэйсинг реплея бонуса (04.2-11) — сколько держится scatter-пульс до
@@ -665,32 +674,51 @@
 		flex-direction: column;
 		position: absolute;
 		inset: 0;
-		/* STRIP_ROWS visible rows stacked = STRIP_ROWS/3 × viewport height */
-		height: calc(100% * 12 / 3);
-		/* Длительность идёт из --spin-duration (JS SPIN_BASE_MS), не задублирована
-		   магическим числом — 04.2-11 ускорил базовый спин до 420мс. */
-		animation: slotReelSpin var(--spin-duration, 420ms) cubic-bezier(0.16, 0.86, 0.32, 1) both;
+		/* STRIP_ROWS (JS FILLER_ROWS+3 = 17) visible rows stacked = STRIP_ROWS/3 × viewport height */
+		height: calc(100% * 17 / 3);
+		/* Длительность идёт из --spin-duration (JS SPIN_BASE_MS). Timing-function
+		   здесь НЕ управляет формой кривой — каждый @keyframes-стоп ниже задаёт
+		   свою собственную animation-timing-function для своего отрезка (ease-in
+		   разгон -> линейный крейсерский участок -> торможение с нахлёстом), этот
+		   cubic-bezier — просто дефолт на случай, если браузер почему-то
+		   проигнорирует per-keyframe timing-function. */
+		animation: slotReelSpin var(--spin-duration, 520ms) cubic-bezier(0.16, 0.86, 0.32, 1) both;
 		animation-delay: var(--col-delay);
 	}
 	.slot-cell-strip {
-		flex: 0 0 calc(100% / 12);
+		flex: 0 0 calc(100% / 17);
 		aspect-ratio: 1;
 		border-radius: 0;
 		border: none;
 	}
-	/* Lands on translateY(-75%): with a 12-row strip that reveals exactly
-	   the last 3 rows (the real final symbols) inside the 3-row viewport.
-	   Slight overshoot past -75% then eases back — the "mechanical settle"
-	   feel of a real slot drum stopping. */
+	/* Барабан больше не одна агрессивная кривая на весь путь (та версия проходила
+	   86% дистанции за первые 16% времени — визуально "телепорт + доезд", а не
+	   вращение). Теперь честный 4-фазный профиль на 17-рядной ленте
+	   (FILLER_ROWS=14, приземление на -82.35% = 14/17):
+	   0-22% ease-in разгон (малая часть пути — плавный старт, не рывок),
+	   22-70% ЛИНЕЙНАЯ крейсерская прокрутка (основная дистанция с постоянной
+	   скоростью — именно это читается глазом как "полные обороты барабана"),
+	   70-88% торможение с нахлёстом за точку посадки (-87.35%),
+	   88-100% лёгкий отскок назад на -82.35% — "механический" стук остановки. */
 	@keyframes slotReelSpin {
 		0% {
-			transform: translateY(0);
+			transform: translateY(0%);
+			animation-timing-function: cubic-bezier(0.55, 0, 1, 0.45);
 		}
-		72% {
-			transform: translateY(-80%);
+		22% {
+			transform: translateY(-14%);
+			animation-timing-function: linear;
+		}
+		70% {
+			transform: translateY(-79%);
+			animation-timing-function: cubic-bezier(0.16, 0.86, 0.32, 1);
+		}
+		88% {
+			transform: translateY(-87.35%);
+			animation-timing-function: ease-out;
 		}
 		100% {
-			transform: translateY(-75%);
+			transform: translateY(-82.35%);
 		}
 	}
 
@@ -797,12 +825,13 @@
 	   pulse and the toast pop-in — all pure "motion" pieces. Timing/pacing
 	   (setTimeout delays in the script) is left alone, that's informational
 	   sequencing, not motion, and reduced-motion doesn't require collapsing
-	   it. The reel strip snaps straight to its landed position (-75%) so
-	   there's no jump once the real grid swaps in. */
+	   it. The reel strip snaps straight to its landed position (-82.35%,
+	   matching the 100% keyframe stop above) so there's no jump once the
+	   real grid swaps in. */
 	@media (prefers-reduced-motion: reduce) {
 		.slot-reel-strip {
 			animation: none;
-			transform: translateY(-75%);
+			transform: translateY(-82.35%);
 		}
 		.slot-cell-scatter-glow {
 			animation: none;
