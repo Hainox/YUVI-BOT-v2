@@ -22,18 +22,41 @@ export class ApiError extends Error {
 	}
 }
 
+// Плоский fetch() без таймаута мог зависнуть НАВСЕГДА (потерянное
+// соединение, перегруженный пул БД под нагрузкой и т.п.), и вызывающий код
+// — например roll() в gacha/+page.svelte — блокировался в `await` без
+// единого шанса дойти до своего finally: кнопки оставались задизейбленными
+// бессрочно, без ошибки на экране, помогал только перезаход на экран.
+// Жёсткий таймаут гарантирует, что любой fetch когда-нибудь ЗАВЕРШИТСЯ
+// (успехом или ошибкой) — вызывающий код всегда получит шанс на finally.
+const REQUEST_TIMEOUT_MS = 15000;
+
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
 	const url = new URL(path, window.location.origin);
 	if (chatId !== null) url.searchParams.set('chat_id', String(chatId));
 
-	const resp = await fetch(url.toString(), {
-		...init,
-		headers: {
-			...(init?.body ? { 'Content-Type': 'application/json' } : {}),
-			...init?.headers,
-			'X-Telegram-Init-Data': initData
+	const controller = new AbortController();
+	const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+	let resp: Response;
+	try {
+		resp = await fetch(url.toString(), {
+			...init,
+			signal: controller.signal,
+			headers: {
+				...(init?.body ? { 'Content-Type': 'application/json' } : {}),
+				...init?.headers,
+				'X-Telegram-Init-Data': initData
+			}
+		});
+	} catch (err) {
+		if (err instanceof DOMException && err.name === 'AbortError') {
+			throw new ApiError(0, 'timeout');
 		}
-	});
+		throw err;
+	} finally {
+		clearTimeout(timeoutId);
+	}
 
 	if (!resp.ok) {
 		let detail = '';
