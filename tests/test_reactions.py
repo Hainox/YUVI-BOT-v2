@@ -21,8 +21,10 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from bot.handlers.reactions import on_reaction
+from bot.services import reaction_service
 from common.models.message import Message as MessageModel
 from common.models.reaction import Reaction
+from common.models.user import User as UserModel
 
 
 async def _insert_message(session, chat_id: int, telegram_message_id: int) -> MessageModel:
@@ -150,3 +152,100 @@ async def test_repeated_reaction_update_replaces_previous_emoji_set(session):
     emojis = {row.emoji for row in rows}
     assert emojis == {"😂", "🔥"}
     assert "👍" not in emojis
+
+
+# --- get_top_reactions_received / get_top_reactions_given (карточка /card) ---
+
+
+async def _ensure_user(session, user_id: int, first_name: str = "Тест") -> None:
+    session.add(UserModel(id=user_id, first_name=first_name))
+    await session.flush()
+
+
+async def _insert_authored_message(
+    session, chat_id: int, telegram_message_id: int, author_id: int
+) -> MessageModel:
+    stmt = pg_insert(MessageModel).values(
+        chat_id=chat_id,
+        telegram_message_id=telegram_message_id,
+        user_id=author_id,
+        text="сообщение",
+        content_type="text",
+    )
+    stmt = stmt.on_conflict_do_nothing(index_elements=["chat_id", "telegram_message_id"])
+    await session.execute(stmt)
+    result = await session.execute(
+        select(MessageModel).where(
+            MessageModel.chat_id == chat_id,
+            MessageModel.telegram_message_id == telegram_message_id,
+        )
+    )
+    return result.scalar_one()
+
+
+@pytest.mark.asyncio
+async def test_get_top_reactions_received_counts_reactions_on_own_messages(session):
+    """received = реакции на сообщения, АВТОР которых — user_id (не важно, кто
+    их поставил)."""
+    chat_id = -100987654005
+    author_id, other_author_id, actor_id = 888100001, 888100002, 888100003
+    await _ensure_user(session, author_id, "Автор")
+    await _ensure_user(session, other_author_id, "Другой автор")
+    await _ensure_user(session, actor_id, "Реагирующий")
+
+    own_message = await _insert_authored_message(session, chat_id, 8001, author_id)
+    other_message = await _insert_authored_message(session, chat_id, 8002, other_author_id)
+
+    actor = User(id=actor_id, is_bot=False, first_name="Реагирующий")
+    await on_reaction(
+        _make_reaction_event(chat_id, own_message.telegram_message_id, actor, ["❤️", "🔥"]),
+        session,
+    )
+    # Реакция на ЧУЖОЕ сообщение не должна попасть в "полученные" author_id.
+    await on_reaction(
+        _make_reaction_event(chat_id, other_message.telegram_message_id, actor, ["😁"]),
+        session,
+    )
+
+    received = await reaction_service.get_top_reactions_received(session, chat_id, author_id)
+
+    assert {row["emoji"] for row in received} == {"❤️", "🔥"}
+    assert all(row["count"] == 1 for row in received)
+
+
+@pytest.mark.asyncio
+async def test_get_top_reactions_given_counts_reactions_placed_by_user(session):
+    """given = реакции, которые user_id САМ поставил на чужие сообщения."""
+    chat_id = -100987654006
+    author_id, actor_id, other_actor_id = 888100004, 888100005, 888100006
+    await _ensure_user(session, author_id, "Автор")
+    await _ensure_user(session, actor_id, "Ставящий")
+    await _ensure_user(session, other_actor_id, "Другой ставящий")
+
+    message = await _insert_authored_message(session, chat_id, 8003, author_id)
+
+    actor = User(id=actor_id, is_bot=False, first_name="Ставящий")
+    other_actor = User(id=other_actor_id, is_bot=False, first_name="Другой")
+    await on_reaction(
+        _make_reaction_event(chat_id, message.telegram_message_id, actor, ["🤣"]),
+        session,
+    )
+    # Реакция ДРУГОГО актора не должна попасть в "поставленные" actor_id.
+    await on_reaction(
+        _make_reaction_event(chat_id, message.telegram_message_id, other_actor, ["💔"]),
+        session,
+    )
+
+    given = await reaction_service.get_top_reactions_given(session, chat_id, actor_id)
+
+    assert given == [{"emoji": "🤣", "count": 1}]
+
+
+@pytest.mark.asyncio
+async def test_get_top_reactions_empty_for_user_with_no_reactions(session):
+    chat_id = -100987654007
+    user_id = 888100007
+    await _ensure_user(session, user_id, "Молчун")
+
+    assert await reaction_service.get_top_reactions_received(session, chat_id, user_id) == []
+    assert await reaction_service.get_top_reactions_given(session, chat_id, user_id) == []

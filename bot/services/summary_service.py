@@ -67,7 +67,12 @@ async def stream_summary(
     context = build_context(rows, char_budget)
 
     system_prompt = await settings_service.get_active_prompt(session, chat_id)
-    system_prompt += "\n\nСделай краткий пересказ переписки на русском языке."
+    system_prompt += (
+        "\n\nСделай краткий пересказ переписки на русском языке — энергично, "
+        "иронично, в стиле разбора а-ля «+100500» (живой язык, мемы, "
+        "сарказм; мат уместен, участники чата 18+), но по сути, не превращай "
+        "пересказ в один сплошной прикол."
+    )
     if focus:
         clipped_focus = focus[: settings.ai_max_custom_prompt_chars]
         system_prompt += f" Сфокусируйся на: {clipped_focus}"

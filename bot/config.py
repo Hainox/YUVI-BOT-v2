@@ -58,8 +58,20 @@ class Settings(BaseSettings):
         alias="NLP_EMBEDDING_MODEL",
     )
 
-    # --- Дайджест (D-12) ---
+    # --- Дайджест (D-12, формат "Дайджест чата" 2026-07-27) ---
     digest_min_messages: int = Field(default=10, alias="DIGEST_MIN_MESSAGES")
+    # Детектор "горячих окон" (ВСПЛЕСКИ): скользящее окно digest_burst_window_minutes
+    # по бакетам digest_burst_bucket_minutes, топ digest_burst_top_k
+    # непересекающихся окон, порог digest_burst_min_messages сообщений в окне
+    # (иначе тихий период не считается всплеском).
+    digest_burst_window_minutes: int = Field(default=40, alias="DIGEST_BURST_WINDOW_MINUTES")
+    digest_burst_bucket_minutes: int = Field(default=5, alias="DIGEST_BURST_BUCKET_MINUTES")
+    digest_burst_top_k: int = Field(default=5, alias="DIGEST_BURST_TOP_K")
+    digest_burst_min_messages: int = Field(default=15, alias="DIGEST_BURST_MIN_MESSAGES")
+    # "Пересказ чата" в дайджесте — последние N сообщений периода (не весь
+    # период целиком, иначе месячный /digest 30 разросся бы до нечитаемого
+    # контекста).
+    digest_recap_message_limit: int = Field(default=200, alias="DIGEST_RECAP_MESSAGE_LIMIT")
 
     # --- Экономика и рынки ставок (ECON/BET) ---
     economy_start_bonus: int = Field(default=5000, alias="ECONOMY_START_BONUS")

@@ -76,37 +76,38 @@ async def _resolve_target(message: Message, session: AsyncSession) -> tuple[int,
     return user.id, user.first_name or str(user.id)
 
 
+def _format_period(stats: dict) -> str:
+    if stats["first_active_date"] is None or stats["last_active_date"] is None:
+        return "нет данных"
+    return f"{stats['first_active_date']} — {stats['last_active_date']}"
+
+
+def _format_reactions_line(reactions: list[dict]) -> str:
+    if not reactions:
+        return "нет данных"
+    return ", ".join(f"{row['emoji']}×{row['count']}" for row in reactions)
+
+
 def format_card(display_name: str, card: dict) -> str:
-    """Рендерит три блока карточки (D-04). Портрет — LLM-текст, экранируется
-    здесь (не в card_service — сервис не должен знать про HTML-рендеринг)."""
+    """Рендерит числовую шапку + ОБРАЗ/ТЕМЫ/МАНЕРА/ЦИФРЫ (D-04, формат
+    2026-07-27). Числа считаются и форматируются здесь; профиль — LLM-текст,
+    экранируется целиком (не в card_service — сервис не должен знать про
+    HTML-рендеринг, а весь блок может отражать сырой текст переписки внутри
+    себя, T-02-19)."""
     stats = card["stats"]
-    nlp = card["nlp"]
 
     lines = [
-        f"<b>Карточка участника: {display_name}</b>",
+        "<b>Карточка участника</b>",
         "",
-        "🎭 <b>Портрет</b>",
-        html.escape(card["portrait"]),
+        f"Участник: {display_name}",
+        f"Всего сообщений: {stats['total_messages']}",
+        f"Период активности: {_format_period(stats)}",
+        f"Средняя длина сообщения: {card['avg_length']:.0f} симв.",
+        f"Топ реакций, полученных пользователем: {_format_reactions_line(card['reactions_received'])}",
+        f"Топ реакций, поставленных пользователем: {_format_reactions_line(card['reactions_given'])}",
         "",
-        "📊 <b>Статистика</b>",
-        f"Сообщений: {stats['total_messages']}",
-        f"Активных дней: {stats['active_days']}",
-        f"Текущая серия: {stats['streak']} дн. подряд",
+        html.escape(card["profile"]),
     ]
-    if stats["top_words"]:
-        words = ", ".join(html.escape(row["word"]) for row in stats["top_words"])
-        lines.append(f"Топ слов чата: {words}")
-
-    lines.append("")
-    lines.append("💬 <b>Настроение/токсичность</b>")
-    if nlp["classified_count"] == 0:
-        lines.append("Пока недостаточно данных.")
-    else:
-        if nlp["avg_sentiment"] is not None:
-            lines.append(f"Среднее настроение: {nlp['avg_sentiment']:.2f}")
-        if nlp["avg_toxicity"] is not None:
-            lines.append(f"Средняя токсичность: {nlp['avg_toxicity']:.2f}")
-        lines.append(f"Проанализировано сообщений: {nlp['classified_count']}")
 
     return "\n".join(lines)
 
