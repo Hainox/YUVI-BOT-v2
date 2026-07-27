@@ -23,8 +23,8 @@
 	// SPIN_BASE_MS/REVEAL_DELAY_MS.
 	import { apiFetch, ApiError } from '$lib/api';
 	import { haptic } from '$lib/tg';
+	import BetControl from '$lib/components/BetControl.svelte';
 
-	const BET_CHIPS = [10, 50, 100, 500, 1000];
 	const DICE_HOUSE_EDGE = 0.02; // casino_service.DICE_HOUSE_EDGE, informational mirror only
 	const SEEK_INTERVAL_MS = 55; // cosmetic jitter tick while the request is in flight
 	const SETTLE_MS = 650; // needle deceleration duration before the payout panel reveals
@@ -37,7 +37,7 @@
 		bank_capped?: boolean;
 	};
 
-	let bet = $state(BET_CHIPS[0]);
+	let bet = $state(10);
 	let target = $state(50);
 	let direction = $state<'over' | 'under'>('under');
 	let rolling = $state(false);
@@ -236,24 +236,7 @@
 		<div class="dice-error">{error}</div>
 	{/if}
 
-	<div class="bet-row">
-		<div class="bet-display">
-			<span class="bet-label">ставка</span>
-			<div class="bet-amount">{bet}<small>¥</small></div>
-		</div>
-		<div class="bet-chips">
-			{#each BET_CHIPS as v (v)}
-				<button
-					type="button"
-					class={`chip ${bet === v ? 'chip-on' : ''}`}
-					disabled={rolling}
-					onclick={() => (bet = v)}
-				>
-					{v}
-				</button>
-			{/each}
-		</div>
-	</div>
+	<BetControl bind:bet disabled={rolling} />
 
 	<button type="button" class="dice-cta" disabled={rolling} onclick={roll}>
 		<span class="dice-cta-label">{rolling ? 'бросаем…' : 'БРОСИТЬ КОСТИ'}</span>
@@ -522,39 +505,6 @@
 		padding: var(--space-sm) var(--space-md);
 		font-size: var(--font-body-size);
 		font-family: var(--font-body);
-	}
-
-	.bet-row {
-		display: flex;
-		align-items: center;
-		gap: var(--space-md);
-	}
-	.bet-display {
-		display: flex;
-		flex-direction: column;
-	}
-	.bet-label {
-		font-size: var(--font-label-size);
-		text-transform: uppercase;
-		letter-spacing: 0.08em;
-		color: var(--text-muted);
-	}
-	.bet-amount {
-		font-family: var(--font-numeric);
-		font-size: var(--font-display-size);
-		font-weight: 900;
-		color: var(--text-primary);
-	}
-	.bet-amount small {
-		font-size: 12px;
-		color: var(--accent-pink);
-		margin-left: 1px;
-	}
-	.bet-chips {
-		display: grid;
-		grid-template-columns: repeat(5, 1fr);
-		gap: var(--space-xs);
-		flex: 1;
 	}
 
 	.dice-cta {
