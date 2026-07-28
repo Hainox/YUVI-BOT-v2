@@ -410,21 +410,38 @@
 	// after landing for exactly this reason; the plain auto-spin loop was
 	// the one place missing it, invisible for single manual spins (a human
 	// tap is a real macrotask gap) but not for this tight `while` loop.
+	// _autoSpinRunId: the AUTO_SPIN_GAP_MS pause above is a real await, which
+	// opens a reentrancy window `spin()`'s own spinning/bonusActive guard
+	// doesn't cover — stop the run mid-gap, immediately start a NEW run, and
+	// the OLD run's gap timer would still fire and see the (now different)
+	// run's autoSpinsLeft as "still going", resurrecting itself into a
+	// second interleaved spin loop racing the new one on the same shared
+	// counter (real extra paid spins, corrupted "N ост." display). Each call
+	// captures its own id; the loop re-checks it's still current both before
+	// calling spin() again and right after the gap resolves, and
+	// stopAutoSpin() invalidates it unconditionally (whether or not a run is
+	// actually mid-gap right now) so a stale run can never resume.
+	let _autoSpinRunId = 0;
+
 	async function runAutoSpin(count: number) {
 		if (spinning || bonusActive || autoSpinning) return;
+		const myRunId = ++_autoSpinRunId;
 		autoSpinsLeft = count;
-		while (autoSpinsLeft !== null && autoSpinsLeft > 0) {
+		while (_autoSpinRunId === myRunId && autoSpinsLeft !== null && autoSpinsLeft > 0) {
 			await spin();
-			if (autoSpinsLeft === null || error) break;
+			if (_autoSpinRunId !== myRunId || autoSpinsLeft === null || error) break;
 			autoSpinsLeft -= 1;
 			if (autoSpinsLeft !== null && autoSpinsLeft > 0) {
 				await _wait(AUTO_SPIN_GAP_MS);
 			}
 		}
-		autoSpinsLeft = null;
+		if (_autoSpinRunId === myRunId) {
+			autoSpinsLeft = null;
+		}
 	}
 
 	function stopAutoSpin() {
+		_autoSpinRunId += 1;
 		autoSpinsLeft = null;
 	}
 </script>
