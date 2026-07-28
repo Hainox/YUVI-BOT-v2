@@ -37,7 +37,6 @@ daily_twin_max_posts` — жёсткий потолок на статистич�
 
 from __future__ import annotations
 
-import html
 import logging
 import secrets
 from datetime import datetime
@@ -212,8 +211,11 @@ async def maybe_post_proactively(session: AsyncSession, chat_id: int, bot: Bot) 
         # раз на следующем тике.
         return False
 
-    message_text = f"🎭 Двойник дня — {html.escape(name)}: {html.escape(text)}"
-    sent = await bot.send_message(chat_id, message_text, parse_mode="HTML")
+    # Голый текст, БЕЗ дисклеймер-префикса (запрошено 2026-07-28, явный отказ
+    # от D-02/Pitfall 8 — владелец бота осознанно выбрал неразмеченный пост
+    # вместо "🎭 Двойник дня — Имя:"). parse_mode не нужен — раньше HTML был
+    # только ради разметки префикса, сырой AI-текст отправляется как есть.
+    sent = await bot.send_message(chat_id, text)
     await record_post(session, chat_id, sent.message_id, user_id)
     await session.commit()
     return True

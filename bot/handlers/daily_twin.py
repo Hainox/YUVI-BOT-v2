@@ -40,7 +40,6 @@ SkipHandler) используется ТОЛЬКО после того, как �
 
 from __future__ import annotations
 
-import html
 import logging
 
 from aiogram import F
@@ -142,9 +141,10 @@ async def daily_twin_reaction(message: Message, session: AsyncSession) -> None:
     if raw_text == twin_service.TWIN_FALLBACK_TEXT:
         return  # не постим заглушку в чат ЯКОБЫ от лица человека
 
-    # D-02/Pitfall 8: дисклеймер хардкожен ЗДЕСЬ, тот же принцип, что и у
-    # bot/handlers/twin.py — сервис никогда не отдаёт префикс на генерацию модели.
-    text = f"🎭 Двойник дня — {html.escape(display_name)}: {html.escape(raw_text)}"
-    sent = await message.answer(text, parse_mode="HTML")
+    # Голый текст, БЕЗ дисклеймер-префикса (запрошено 2026-07-28, явный отказ
+    # от D-02/Pitfall 8 — владелец бота осознанно выбрал неразмеченный ответ
+    # вместо "🎭 Двойник дня — Имя:"). parse_mode не нужен — раньше HTML был
+    # только ради разметки префикса, сырой AI-текст отправляется как есть.
+    sent = await message.answer(raw_text)
     await daily_twin_service.record_post(session, message.chat.id, sent.message_id, target_user_id)
     await session.commit()
