@@ -5,16 +5,20 @@
 	// for the grid/wins/freespins/retriggers (D-03/T-04.1-01, slot_engine.py)
 	// — this screen only animates a cosmetic reel-drum spin (random filler
 	// symbols scrolling, landing on whatever POST /games/slots actually
-	// returned), a win/lose color-grade flash, and — new — a cosmetic
-	// step-by-step REPLAY of the bonus round the server already fully
-	// resolved in one shot (scatter glow -> freespin badge -> one toast per
-	// `outcome.retrigger_awards` entry). No client-side RNG affects payout,
-	// no client-side win computation (SLOT_SYMBOLS/SLOT_PAYLINES in
-	// lib/slotData.ts are rendering metadata only — name/tint/cell-
-	// highlighting, filler symbols during the spin are cosmetic noise, never
-	// probability/payout). The replay pacing is informational only — it does
-	// not invent outcomes, it only staggers the reveal of numbers the server
-	// already sent in `outcome`.
+	// returned), a win/lose color-grade flash, and a cosmetic step-by-step
+	// REPLAY of the bonus round the server already fully resolved in one
+	// shot: scatter glow -> one FULL reel-spin animation per bonus round the
+	// server actually played (`outcome.freespin_rounds`, added 2026-07-28 —
+	// before that, only the FINAL freespins count came back and the badge
+	// just ticked up a number, which read as an instant/faked bonus round
+	// instead of a real one) -> a toast on each round whose own grid triggers
+	// a retrigger. No client-side RNG affects payout, no client-side win
+	// computation (SLOT_SYMBOLS/SLOT_PAYLINES in lib/slotData.ts are
+	// rendering metadata only — name/tint/cell-highlighting, filler symbols
+	// during the spin are cosmetic noise, never probability/payout). The
+	// replay pacing is informational only — it does not invent outcomes, it
+	// only staggers the reveal of grids/numbers the server already sent in
+	// `outcome`.
 	import { onMount } from 'svelte';
 	import { apiFetch, ApiError } from '$lib/api';
 	import { haptic } from '$lib/tg';
@@ -44,16 +48,34 @@
 	const FILLER_ROWS = 14;
 	const STRIP_ROWS = FILLER_ROWS + 3;
 
-	// Пэйсинг реплея бонуса (04.2-11) — сколько держится scatter-пульс до
-	// объявления счётчика фриспинов, и тайминг тост-реплея ретриггеров.
-	// Чисто информационная задержка (не "motion"), поэтому НЕ гейтится
-	// prefers-reduced-motion — сама анимация (пульс/тост) гейтится в CSS.
+	// Пэйсинг реплея бонуса (04.2-11, расширено 2026-07-28) — сколько держится
+	// scatter-пульс до старта самого бонусного раунда, и тайминг тост-реплея
+	// ретриггеров/паузы между отдельными бонусными спинами. Чисто
+	// информационная задержка (не "motion"), поэтому НЕ гейтится
+	// prefers-reduced-motion — сама анимация барабана/пульс/тост гейтятся в CSS.
 	const SCATTER_GLOW_MS = 650;
 	const RETRIGGER_TOAST_GAP_MS = 350;
 	const RETRIGGER_TOAST_VISIBLE_MS = 900;
 	const BONUS_SETTLE_MS = 350;
+	// Пауза между двумя бонусными спинами БЕЗ ретриггера (когда нет тоста,
+	// который и так держит паузу сам) — чтобы результат раунда было видно
+	// хоть долю секунды, а не мгновенно сменялся следующим спином.
+	const FREESPIN_ROUND_GAP_MS = 550;
 
 	type SlotWin = { line_index: number; symbol: string; count: number; payout: number };
+	// Один реально сыгранный бонусный спин (04.2-11, расширено 2026-07-28:
+	// раньше бэк отдавал только ИТОГО число фриспинов и не отдавал сетки
+	// каждого — фронт бампал счётчик числом вместо честного прокрута каждого
+	// бонусного спина). `retrigger_award` > 0 — этот спин сам содержал >=3
+	// scatter и реально добавил ещё спинов (0, если подавлено
+	// FREESPINS_HARD_CAP — см. bot/services/slot_engine.py).
+	type FreespinRound = {
+		grid: string[][];
+		wins: SlotWin[];
+		payout: number;
+		scatter_count: number;
+		retrigger_award: number;
+	};
 	// CASINO-06: `jackpot` — null ТОЛЬКО на replay того же idem_key
 	// (casino_service.play_slots пропускает джекпот-слой целиком в этом
 	// случае) — этот экран всегда шлёт свежий idem_key на каждый спин, так
@@ -70,6 +92,7 @@
 			freespins: number;
 			scatter: number;
 			retrigger_awards: number[];
+			freespin_rounds: FreespinRound[];
 		};
 		jackpot: SlotJackpot;
 	};
@@ -97,6 +120,11 @@
 	let scatterGlow = $state(false);
 	let bonusActive = $state(false);
 	let bonusFreespinsShown = $state(0);
+	// Знаменатель для бэджа "N / M фриспинов" во время бонуса (запрошено
+	// 2026-07-28 вместе с честным прокрутом каждого раунда — растущий
+	// числитель без "из скольки" не показывает прогресс). Меняется только на
+	// ретриггере (M растёт вместе с реально доигрываемым остатком).
+	let bonusRoundsTotal = $state(0);
 	let bonusToast = $state<string | null>(null);
 
 	// Auto-spin (repeats spin() sequentially N times, or forever for ∞) — a
@@ -189,18 +217,21 @@
 
 	// (c)+(d) Реплей бонусного раунда ПОСЛЕ того, как барабаны уже
 	// приземлились на стартовую сетку. Сервер уже всё решил одним расчётом
-	// (slot_engine.evaluate_grid) — здесь только пэйсинг показа готовых
-	// чисел: scatter-глоу -> счётчик фриспинов -> по тосту на каждый
-	// ретриггер из `outcome.retrigger_awards`, пока счётчик не дойдёт до
-	// итогового `outcome.freespins` (это ИТОГО сыграно, включая ретриггеры —
-	// см. докстринг SlotResult.freespins в slot_engine.py).
+	// (slot_engine.evaluate_grid) — но, в отличие до 2026-07-28, теперь
+	// возвращает сетку/выигрыш КАЖДОГО реально сыгранного бонусного спина
+	// (`outcome.freespin_rounds`), а не только итоговое число: раньше счётчик
+	// фриспинов просто бампался числом ("авторасчёт"), что не читалось как
+	// честная игра. Теперь каждый бонусный спин проигрывается ТОЙ ЖЕ
+	// анимацией барабана, что обычный spin() (косметический скролл ->
+	// REVEAL_DELAY_MS -> посадка на реальную сетку этого раунда) — scatter-
+	// глоу перед стартом раунда и тост на каждый ретриггер сохранены как были.
 	async function _revealScatterAndBonus(res: SlotResult): Promise<void> {
 		const scatterN = res.outcome.scatter;
-		const totalFreespins = res.outcome.freespins;
+		const rounds = res.outcome.freespin_rounds ?? [];
 
 		if (scatterN < 3) {
 			scatterCount = scatterN;
-			freespins = totalFreespins;
+			freespins = res.outcome.freespins;
 			return;
 		}
 
@@ -214,20 +245,48 @@
 		await _wait(SCATTER_GLOW_MS);
 		scatterGlow = false;
 
-		const retriggerAwards = res.outcome.retrigger_awards ?? [];
-		const initialAward = totalFreespins - retriggerAwards.reduce((sum, n) => sum + n, 0);
+		// Знаменатель бэджа стартует с ИЗНАЧАЛЬНОЙ выдачи (не с грандтотала —
+		// `rounds` уже содержит ВСЕ раунды, включая будущие ретриггеры,
+		// значит `rounds.length` спойлерил бы ретриггер до его фактического
+		// наступления). Растёт ТОЛЬКО когда сам дошли до ретриггер-раунда —
+		// та же дисциплина "не выдавать будущее", что была в старом коде
+		// (`bonusFreespinsShown += award` только в момент тоста).
+		const grandRetriggerTotal = rounds.reduce((sum, r) => sum + r.retrigger_award, 0);
 		bonusActive = true;
-		bonusFreespinsShown = initialAward;
-		freespins = initialAward;
+		bonusFreespinsShown = 0;
+		bonusRoundsTotal = rounds.length - grandRetriggerTotal;
+		freespins = 0;
 
-		for (const award of retriggerAwards) {
-			await _wait(RETRIGGER_TOAST_GAP_MS);
-			bonusFreespinsShown += award;
+		for (const round of rounds) {
+			bonusFreespinsShown += 1;
 			freespins = bonusFreespinsShown;
-			bonusToast = `+${award} ФРИСПИНОВ — РЕТРИГГЕР!`;
-			haptic('retrigger');
-			await _wait(RETRIGGER_TOAST_VISIBLE_MS);
-			bonusToast = null;
+
+			// Та же хореография, что spin(): косметический скролл со старого
+			// хвоста -> посадка на РЕАЛЬНУЮ сетку этого бонусного спина ->
+			// пауза REVEAL_DELAY_MS, чтобы барабан честно доехал.
+			spinning = true;
+			reelStrips = _stripsFromGrid(grid);
+			haptic('spin');
+			reelStrips = _stripsFromGrid(round.grid);
+			await _wait(REVEAL_DELAY_MS);
+			spinning = false;
+
+			grid = round.grid;
+			wins = round.wins;
+			lastPayout = round.payout;
+			outcomeTint = round.payout > 0 ? 'win' : 'lose';
+			haptic(round.payout >= bet * 20 ? 'big-win' : round.payout > 0 ? 'win' : 'lose');
+
+			if (round.retrigger_award > 0) {
+				bonusRoundsTotal += round.retrigger_award;
+				await _wait(RETRIGGER_TOAST_GAP_MS);
+				bonusToast = `+${round.retrigger_award} ФРИСПИНОВ — РЕТРИГГЕР!`;
+				haptic('retrigger');
+				await _wait(RETRIGGER_TOAST_VISIBLE_MS);
+				bonusToast = null;
+			} else {
+				await _wait(FREESPIN_ROUND_GAP_MS);
+			}
 		}
 
 		await _wait(BONUS_SETTLE_MS);
@@ -351,7 +410,7 @@
 		<div class="slot-bonus-badge">
 			<span class="slot-bonus-badge-label">✦ БОНУС</span>
 			{#key bonusFreespinsShown}
-				<span class="slot-bonus-badge-count">{bonusFreespinsShown}</span>
+				<span class="slot-bonus-badge-count">{bonusFreespinsShown} / {bonusRoundsTotal}</span>
 			{/key}
 			<span class="slot-bonus-badge-sub">фриспинов</span>
 		</div>
@@ -434,8 +493,11 @@
 	</div>
 
 	{#if lastPayout !== null && !spinning}
+		<!-- Бонусные спины не берут отдельную ставку (freespins — уже
+		     оплаченный раунд), поэтому проигрышный бонусный спин показывает
+		     нейтральный "0¥", а не вводящее в заблуждение "−ставка¥". -->
 		<div class={`slot-result ${lastPayout > 0 ? 'slot-win' : 'slot-lose'}`}>
-			{lastPayout > 0 ? `+${lastPayout}¥` : `−${bet}¥`}
+			{lastPayout > 0 ? `+${lastPayout}¥` : bonusActive ? '0¥' : `−${bet}¥`}
 		</div>
 	{/if}
 

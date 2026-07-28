@@ -246,6 +246,97 @@ def test_bonus_retrigger_hard_cap_stops_unbounded_growth(monkeypatch):
     assert result.retrigger_awards == [slot_data.FREESPIN_TABLE[5]] * 13
 
 
+# --- freespin_rounds (запрошено 2026-07-28: полный прокрут каждого бонусного --
+# спина в miniapp вместо мгновенного бампа счётчика — фронту нужна сетка/
+# выигрыш/скаттер КАЖДОГО реально сыгранного бонусного спина, не только итог) --
+
+
+def test_freespin_rounds_one_entry_per_played_bonus_spin(monkeypatch):
+    """len(freespin_rounds) == freespins (ИТОГО сыграно, включая ретриггер) —
+    та же сдача/форсированная последовательность, что test_mid_bonus_
+    retrigger_extends_total, но проверяет НОВОЕ поле, а не freespins/
+    retrigger_awards."""
+    trigger_grid = [
+        ["keffiyeh", "sakaki", "keffiyeh", "sakaki", "sakaki"],
+        ["sakaki", "sakaki", "sakaki", "sakaki", "keffiyeh"],
+        ["sakaki", "sakaki", "sakaki", "sakaki", "sakaki"],
+    ]
+    no_scatter_spin = ["sakaki"] * 15
+    retrigger_spin = [
+        "keffiyeh", "sakaki", "sakaki",
+        "sakaki", "sakaki", "sakaki",
+        "keffiyeh", "sakaki", "sakaki",
+        "sakaki", "sakaki", "sakaki",
+        "keffiyeh", "sakaki", "sakaki",
+    ]
+    forced_sequence = no_scatter_spin + retrigger_spin + no_scatter_spin * 6
+    monkeypatch.setattr(slot_engine, "_rng", _ForcedGridRng(forced_sequence))
+
+    result = slot_engine.evaluate_grid(trigger_grid, bet_per_line=1)
+
+    assert len(result.freespin_rounds) == result.freespins == 8
+    for round_ in result.freespin_rounds:
+        assert set(round_) == {"grid", "wins", "payout", "scatter_count", "retrigger_award"}
+        assert len(round_["grid"]) == 3
+        assert all(len(row) == 5 for row in round_["grid"])
+
+    # Только ВТОРОЙ сыгранный бонусный спин (индекс 1) реально ретриггерил —
+    # тот же порядок, что forced_sequence: no_scatter_spin -> retrigger_spin -> ...
+    retrigger_flags = [r["retrigger_award"] > 0 for r in result.freespin_rounds]
+    assert retrigger_flags == [False, True, False, False, False, False, False, False]
+    assert result.freespin_rounds[1]["retrigger_award"] == slot_data.FREESPIN_TABLE[3]
+    assert result.freespin_rounds[1]["scatter_count"] == 3
+
+
+def test_freespin_rounds_payouts_sum_into_total_payout():
+    """Сумма payout всех freespin_rounds + линейный выигрыш стартовой сетки ==
+    result.total_payout — freespin_rounds не теряет и не задваивает деньги
+    относительно уже проверенного total_payout (никакой НОВОЙ денежной логики
+    это поле не вводит, только раскрывает уже посчитанное по раундам)."""
+    rng = random.Random(777)
+    grid = slot_engine.spin_grid(rng)
+    result = slot_engine.evaluate_grid(grid, bet_per_line=5)
+
+    _, line_total = slot_engine._sum_line_wins(result.grid, bet_per_line=5)
+    rounds_total = sum(r["payout"] for r in result.freespin_rounds)
+    assert line_total + rounds_total == result.total_payout
+
+
+def test_freespin_rounds_empty_without_scatter():
+    """Без >=3 scatter на стартовой сетке — freespins=0 и freespin_rounds
+    пуст (не None, не список с "пустыми" заглушками)."""
+    grid = [
+        ["sakaki", "sakaki", "sakaki", "sakaki", "sakaki"],
+        ["muscle", "muscle", "dog", "dog", "dog"],
+        ["bath-chibi", "bath-chibi", "bath-chibi", "bath-chibi", "bath-chibi"],
+    ]
+    result = slot_engine.evaluate_grid(grid, bet_per_line=1)
+    assert result.freespins == 0
+    assert result.freespin_rounds == []
+
+
+def test_freespin_rounds_hard_cap_matches_retrigger_awards(monkeypatch):
+    """Тот же патологический стрик, что test_bonus_retrigger_hard_cap_stops_
+    unbounded_growth — freespin_rounds должен согласовываться с уже
+    проверенным result.retrigger_awards: ровно len(retrigger_awards) записей
+    с retrigger_award > 0, суммарно равным sum(retrigger_awards) (хардкап
+    подавляет ИЗБЫТОЧНЫЕ ретриггеры одинаково что в агрегате, что по раундам)."""
+    trigger_grid = [
+        ["keffiyeh", "sakaki", "keffiyeh", "sakaki", "sakaki"],
+        ["sakaki", "sakaki", "sakaki", "sakaki", "keffiyeh"],
+        ["sakaki", "sakaki", "sakaki", "sakaki", "sakaki"],
+    ]
+    always_scatter_spin = ["keffiyeh"] * 15
+    monkeypatch.setattr(slot_engine, "_rng", _ForcedGridRng(always_scatter_spin))
+
+    result = slot_engine.evaluate_grid(trigger_grid, bet_per_line=1)
+
+    assert len(result.freespin_rounds) == result.freespins == 95
+    nonzero = [r["retrigger_award"] for r in result.freespin_rounds if r["retrigger_award"] > 0]
+    assert len(nonzero) == len(result.retrigger_awards) == 13
+    assert sum(nonzero) == sum(result.retrigger_awards)
+
+
 # --- Grid shape ---------------------------------------------------------------
 
 

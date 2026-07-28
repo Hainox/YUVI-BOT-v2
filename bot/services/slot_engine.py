@@ -43,14 +43,25 @@ class SlotResult:
     `[6]` значит "один ретриггер добавил 6 спинов". Пустой список — ретриггеров
     не было. Изначальная выдача восстанавливается как
     `freespins - sum(retrigger_awards)` при отсутствии срабатывания
-    хардкапа (см. `evaluate_grid`); фронт использует список, чтобы показать
-    тост/бейдж на каждый ретриггер по ходу бонусной серии."""
+    хардкапа (см. `evaluate_grid`).
+
+    `freespin_rounds` — по одной записи `{grid, wins, payout, scatter_count,
+    retrigger_award}` на КАЖДЫЙ реально сыгранный бонусный спин, в порядке
+    розыгрыша (запрошено 2026-07-28: раньше фронт просто бампал счётчик
+    фриспинов числом без показа самих раундов — "авторасчёт, а не полный
+    прокрут"; теперь у фронта есть всё нужное, чтобы проиграть КАЖДЫЙ
+    бонусный спин той же анимацией барабана, что и обычный). `retrigger_award`
+    на записи — размер ретриггера, ТОЛЬКО если он реально засчитан (не подавлен
+    `FREESPINS_HARD_CAP` — см. цикл ниже), иначе 0; `grid`/`wins`/`payout` —
+    те же поля и та же семантика, что у сдачи верхнего уровня, просто на
+    сетке ЭТОГО бонусного спина."""
 
     grid: list[list[str]]
     line_wins: list[dict]
     scatter_count: int
     freespins: int
     retrigger_awards: list[int]
+    freespin_rounds: list[dict]
     total_payout: int
 
 
@@ -195,23 +206,37 @@ def evaluate_grid(grid: list[list[str]], bet_per_line: int) -> SlotResult:
     played = 0
     total_awarded = initial_freespins  # played + remaining, монотонно растёт до капа
     retrigger_awards: list[int] = []
+    freespin_rounds: list[dict] = []
 
     while remaining > 0:
         fs_grid = spin_grid(_rng)
-        _fs_wins, fs_total = _sum_line_wins(fs_grid, bet_per_line)
+        fs_wins, fs_total = _sum_line_wins(fs_grid, bet_per_line)
         total_payout += fs_total
         played += 1
         remaining -= 1
 
         fs_scatter_count = _count_scatter(fs_grid)
         award = _freespins_for(fs_scatter_count)
+        retrigger_award = 0
         if award > 0 and total_awarded + award <= FREESPINS_HARD_CAP:
             remaining += award
             total_awarded += award
             retrigger_awards.append(award)
+            retrigger_award = award
         # else: award == 0 (нет ретриггера на этом бонусном спине) ИЛИ кап
-        # уже достигнут/был бы превышен — ретриггер не засчитывается, но
-        # `remaining` уже накопленный ранее доигрывается как обычно.
+        # уже достигнут/был бы превышен — ретриггер не засчитывается (0 в
+        # freespin_rounds тоже), но `remaining` уже накопленный ранее
+        # доигрывается как обычно.
+
+        freespin_rounds.append(
+            {
+                "grid": fs_grid,
+                "wins": fs_wins,
+                "payout": fs_total,
+                "scatter_count": fs_scatter_count,
+                "retrigger_award": retrigger_award,
+            }
+        )
 
     return SlotResult(
         grid=grid,
@@ -219,5 +244,6 @@ def evaluate_grid(grid: list[list[str]], bet_per_line: int) -> SlotResult:
         scatter_count=scatter_count,
         freespins=played,
         retrigger_awards=retrigger_awards,
+        freespin_rounds=freespin_rounds,
         total_payout=total_payout,
     )
