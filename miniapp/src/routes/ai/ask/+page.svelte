@@ -1,7 +1,7 @@
 <script lang="ts">
 	// /ask — miniapp screen over POST /api/v1/ai/ask (hub-parity for
 	// bot/handlers/ai_ask.py). RAG search over chat history, plain text answer.
-	import { apiFetch, ApiError } from '$lib/api';
+	import { AI_REQUEST_TIMEOUT_MS, apiFetch, ApiError } from '$lib/api';
 
 	let question = $state('');
 	let loading = $state(false);
@@ -15,10 +15,14 @@
 		error = null;
 		answer = null;
 		try {
-			const res = await apiFetch<{ answer: string }>('/api/v1/ai/ask', {
-				method: 'POST',
-				body: JSON.stringify({ question: q })
-			});
+			const res = await apiFetch<{ answer: string }>(
+				'/api/v1/ai/ask',
+				{
+					method: 'POST',
+					body: JSON.stringify({ question: q })
+				},
+				AI_REQUEST_TIMEOUT_MS
+			);
 			answer = res.answer;
 		} catch (err) {
 			error = err instanceof ApiError ? err.message : String(err ?? 'unknown_error');

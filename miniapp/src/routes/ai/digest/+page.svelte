@@ -3,7 +3,7 @@
 	// bot/handlers/ai_digest.py). Manual digest, no digest_min_messages
 	// suppression (same as the chat command — explicit ask, no spam concern).
 	import { onMount } from 'svelte';
-	import { apiFetch, ApiError } from '$lib/api';
+	import { AI_REQUEST_TIMEOUT_MS, apiFetch, ApiError } from '$lib/api';
 
 	const DAY_PRESETS = [1, 3, 7];
 
@@ -16,7 +16,11 @@
 		loading = true;
 		error = null;
 		try {
-			const res = await apiFetch<{ text: string }>(`/api/v1/ai/digest?days=${days}`);
+			const res = await apiFetch<{ text: string }>(
+				`/api/v1/ai/digest?days=${days}`,
+				undefined,
+				AI_REQUEST_TIMEOUT_MS
+			);
 			text = res.text;
 		} catch (err) {
 			error = err instanceof ApiError ? err.message : String(err ?? 'unknown_error');

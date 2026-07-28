@@ -35,18 +35,33 @@ export class ApiError extends Error {
 // обрыве, controller.abort() ничего не даст и исходный fetch()-промис
 // зависнет навсегда несмотря на таймер. Promise.race с отдельным
 // отклоняющимся таймером не зависит от того, слушается ли abort() —
-// apiFetch гарантированно осядет через REQUEST_TIMEOUT_MS в любом случае
-// (заброшенный fetch-промис просто утилизируется сборщиком мусора позже).
+// apiFetch гарантированно осядет через REQUEST_TIMEOUT_MS (или переданный
+// timeoutMs) в любом случае (заброшенный fetch-промис просто утилизируется
+// сборщиком мусора позже).
 const REQUEST_TIMEOUT_MS = 15000;
 
-export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+// Найдено 2026-07-28: /api/v1/ai/* (topics/phrase/joke/ask/card/digest/
+// summary) реально зовут внешнюю LLM (bot/services/ai_client.py,
+// AI_CALL_TIMEOUT_SEC=60 на бэкенде) — 15с общего дефолта клиент обрывал
+// запрос "timeout" ДО того, как сервер вообще успевал ответить (даже успешным
+// результатом), поэтому AI-экраны миниаппа передают этот более длинный
+// таймаут явным `timeoutMs` третьим параметром вместо дефолта. Небольшой
+// запас (65с) над серверными 60с — чтобы клиент никогда не сдавался раньше,
+// чем сервер реально мог бы ответить.
+export const AI_REQUEST_TIMEOUT_MS = 65000;
+
+export async function apiFetch<T>(
+	path: string,
+	init?: RequestInit,
+	timeoutMs: number = REQUEST_TIMEOUT_MS
+): Promise<T> {
 	const url = new URL(path, window.location.origin);
 	if (chatId !== null) url.searchParams.set('chat_id', String(chatId));
 
 	const controller = new AbortController();
-	const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+	const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 	const timeoutPromise = new Promise<never>((_, reject) => {
-		setTimeout(() => reject(new ApiError(0, 'timeout')), REQUEST_TIMEOUT_MS);
+		setTimeout(() => reject(new ApiError(0, 'timeout')), timeoutMs);
 	});
 
 	let resp: Response;

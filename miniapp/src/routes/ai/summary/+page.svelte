@@ -4,7 +4,7 @@
 	// ai_summary.py). Same N default (100) as the chat command; an optional
 	// focus field switches to the custom-prompt endpoint (empty focus = plain
 	// /summary, matching the two separate chat commands folded into one screen).
-	import { apiFetch, ApiError } from '$lib/api';
+	import { AI_REQUEST_TIMEOUT_MS, apiFetch, ApiError } from '$lib/api';
 
 	const N_PRESETS = [50, 100, 200];
 
@@ -21,11 +21,19 @@
 		try {
 			const trimmedFocus = focus.trim();
 			const res = trimmedFocus
-				? await apiFetch<{ text: string }>('/api/v1/ai/summary_custom', {
-						method: 'POST',
-						body: JSON.stringify({ n, focus: trimmedFocus })
-					})
-				: await apiFetch<{ text: string }>(`/api/v1/ai/summary?n=${n}`);
+				? await apiFetch<{ text: string }>(
+						'/api/v1/ai/summary_custom',
+						{
+							method: 'POST',
+							body: JSON.stringify({ n, focus: trimmedFocus })
+						},
+						AI_REQUEST_TIMEOUT_MS
+					)
+				: await apiFetch<{ text: string }>(
+						`/api/v1/ai/summary?n=${n}`,
+						undefined,
+						AI_REQUEST_TIMEOUT_MS
+					);
 			text = res.text;
 		} catch (err) {
 			error = err instanceof ApiError ? err.message : String(err ?? 'unknown_error');
