@@ -61,6 +61,10 @@
 	// который и так держит паузу сам) — чтобы результат раунда было видно
 	// хоть долю секунды, а не мгновенно сменялся следующим спином.
 	const FREESPIN_ROUND_GAP_MS = 550;
+	// Та же пауза, но между ОБЫЧНЫМИ (не бонусными) спинами при авто-ставке
+	// (см. runAutoSpin) — без неё результат каждого спина стирался следующим
+	// же спином раньше, чем браузер успевал хоть раз его отрисовать.
+	const AUTO_SPIN_GAP_MS = 550;
 
 	type SlotWin = { line_index: number; symbol: string; count: number; payout: number };
 	// Один реально сыгранный бонусный спин (04.2-11, расширено 2026-07-28:
@@ -125,6 +129,17 @@
 	// числитель без "из скольки" не показывает прогресс). Меняется только на
 	// ретриггере (M растёт вместе с реально доигрываемым остатком).
 	let bonusRoundsTotal = $state(0);
+	// Бегущая сумма выигрыша ЗА БОНУС (запрошено игроками 2026-07-28: жалоба
+	// "выиграл фриспин +200, баланс не изменился" — общий баланс в шапке
+	// экрана реально обновляется ОДНИМ разом сразу после ответа сервера,
+	// ДО начала многосекундного реплея бонуса (сервер считает и зачисляет
+	// весь раунд, включая фриспины, атомарно ЗА ОДИН вызов), так что к
+	// моменту, когда конкретный бонусный спин показывает "+200", шапка уже
+	// давно не меняется — игрок не видит связи между "вот мой выигрыш" и
+	// "вот баланс вырос". Этот счётчик растёт СИНХРОННО с самим реплеем
+	// (прямо на этом экране, там, где игрок и так смотрит), а не полагается
+	// на то, что игрок заметит скачок в шапке заранее.
+	let bonusWinTotal = $state(0);
 	let bonusToast = $state<string | null>(null);
 
 	// Auto-spin (repeats spin() sequentially N times, or forever for ∞) — a
@@ -255,6 +270,7 @@
 		bonusActive = true;
 		bonusFreespinsShown = 0;
 		bonusRoundsTotal = rounds.length - grandRetriggerTotal;
+		bonusWinTotal = 0;
 		freespins = 0;
 
 		for (const round of rounds) {
@@ -274,6 +290,7 @@
 			grid = round.grid;
 			wins = round.wins;
 			lastPayout = round.payout;
+			bonusWinTotal += round.payout;
 			outcomeTint = round.payout > 0 ? 'win' : 'lose';
 			haptic(round.payout >= bet * 20 ? 'big-win' : round.payout > 0 ? 'win' : 'lose');
 
@@ -377,6 +394,22 @@
 	// rather than silently burning through the rest, and can be cancelled
 	// between spins via stopAutoSpin() (a spin already in flight always
 	// finishes normally — only the NEXT one is skipped).
+	//
+	// AUTO_SPIN_GAP_MS (bug fix, reported by players 2026-07-28: "results
+	// just get skipped during auto-spin, spins fire one after another with
+	// nothing shown"): spin() sets the landed grid/wins/lastPayout, then
+	// returns through nothing but microtask-only awaits (a non-scatter
+	// `_revealScatterAndBonus` call has no internal `await`, so awaiting it
+	// still only yields a microtask, not a macrotask) — the browser never
+	// gets a rendering opportunity between "spin() shows its result" and
+	// "the very next spin() wipes it" (that reset — `wins = []; lastPayout =
+	// null; spinning = true`, right at spin()'s own top — runs before this
+	// loop's `await spin()` ever hits a real macrotask boundary like the
+	// network fetch). Every OTHER pacing step already in this file (the
+	// freespin-round loop below, retrigger toasts) uses a real `_wait(...)`
+	// after landing for exactly this reason; the plain auto-spin loop was
+	// the one place missing it, invisible for single manual spins (a human
+	// tap is a real macrotask gap) but not for this tight `while` loop.
 	async function runAutoSpin(count: number) {
 		if (spinning || bonusActive || autoSpinning) return;
 		autoSpinsLeft = count;
@@ -384,6 +417,9 @@
 			await spin();
 			if (autoSpinsLeft === null || error) break;
 			autoSpinsLeft -= 1;
+			if (autoSpinsLeft !== null && autoSpinsLeft > 0) {
+				await _wait(AUTO_SPIN_GAP_MS);
+			}
 		}
 		autoSpinsLeft = null;
 	}
@@ -414,6 +450,15 @@
 			{/key}
 			<span class="slot-bonus-badge-sub">фриспинов</span>
 		</div>
+		<!-- Бегущая сумма выигрыша за бонус (см. bonusWinTotal выше) — растёт
+		     ЗДЕСЬ, на самих реплеях, синхронно с посадкой каждого раунда, а не
+		     только в далёкой шапке экрана, которая уже обновилась разом в
+		     начале — жалоба игроков "выиграл, а баланс будто не изменился". -->
+		{#if bonusWinTotal > 0}
+			{#key bonusWinTotal}
+				<div class="slot-bonus-win-total">выиграно за бонус: +{bonusWinTotal}¥</div>
+			{/key}
+		{/if}
 	{:else if freespins > 0}
 		<div class="slot-freespins-pill">✦ {freespins} фриспинов доиграно автоматически</div>
 	{/if}
@@ -668,6 +713,24 @@
 		100% {
 			transform: scale(1);
 		}
+	}
+
+	/* Бегущая сумма выигрыша за бонус (см. bonusWinTotal) — та же зелёная
+	   роль-акцент, что и .slot-win ниже (это тоже "деньги в твою пользу"),
+	   но как самостоятельная плашка рядом с .slot-bonus-badge, не путается
+	   с итоговым .slot-result (тот показывает выигрыш ТЕКУЩЕГО раунда,
+	   этот — накопленную сумму за весь бонус). {#key} тем же приёмом
+	   переигрывает бамп-анимацию на каждое изменение числа. */
+	.slot-bonus-win-total {
+		align-self: flex-start;
+		background: var(--positive-bg);
+		color: var(--positive-text);
+		border-radius: 999px;
+		padding: 4px 12px;
+		font-size: 12px;
+		font-weight: 700;
+		font-family: var(--font-body);
+		animation: slotBonusCountBump 0.3s ease-out;
 	}
 
 	/* (d) Тост на каждый ретриггер (см. _revealScatterAndBonus) — тот же
@@ -1060,6 +1123,9 @@
 			animation: none;
 		}
 		.slot-bonus-badge-count {
+			animation: none;
+		}
+		.slot-bonus-win-total {
 			animation: none;
 		}
 		.slot-bonus-toast {
