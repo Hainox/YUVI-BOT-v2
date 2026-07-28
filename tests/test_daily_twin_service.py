@@ -92,7 +92,7 @@ async def test_get_todays_twin_picks_only_active_candidate(session):
 
     twin = await daily_twin_service.get_todays_twin(session, chat_id)
 
-    assert twin == (active_id, "Активный")
+    assert twin == (active_id, "Активный", None)
 
 
 @pytest.mark.asyncio
@@ -106,7 +106,7 @@ async def test_get_todays_twin_idempotent_same_day(session):
     first = await daily_twin_service.get_todays_twin(session, chat_id)
     second = await daily_twin_service.get_todays_twin(session, chat_id)
 
-    assert first == second == (user_id, "Один")
+    assert first == second == (user_id, "Один", None)
 
 
 # --- журнал постов: count/record/find --------------------------------------

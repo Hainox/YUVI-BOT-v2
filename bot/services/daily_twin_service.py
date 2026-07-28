@@ -6,8 +6,9 @@ opt-in: команда не создавать второй список сог�
 
 - изредка постит от его имени случайные реплики в чат (проактивный тик,
   `register_daily_twin_tick`);
-- отвечает на реплаи к своим же постам (`bot/handlers/daily_twin.py`,
-  контекстно через `twin_service.build_twin_reaction`).
+- отвечает на реплаи к своим же постам, на реплаи к РЕАЛЬНЫМ сообщениям
+  сегодняшней персоны и на её @упоминания (`bot/handlers/daily_twin.py`,
+  расширено 2026-07-28; контекстно через `twin_service.build_twin_reaction`).
 
 Идемпотентный пик персоны дня — поверх общего `daily_pick_service`
 (`kind="daily_twin"`, та же форма, что `victim_service`/`lottery_service`):
@@ -90,10 +91,13 @@ async def _active_candidates(session: AsyncSession, chat_id: int) -> list[int]:
     return [row[0] for row in result.all()]
 
 
-async def get_todays_twin(session: AsyncSession, chat_id: int) -> tuple[int, str] | None:
-    """(user_id, display_name) выбранной на сегодня персоны, либо None, если
-    сегодня ЕЩЁ никого не выбирали И прямо сейчас нет ни одного активного
-    согласия `/twin`, из которого выбрать.
+async def get_todays_twin(session: AsyncSession, chat_id: int) -> tuple[int, str, str | None] | None:
+    """(user_id, display_name, username) выбранной на сегодня персоны, либо
+    None, если сегодня ЕЩЁ никого не выбирали И прямо сейчас нет ни одного
+    активного согласия `/twin`, из которого выбрать. `username` нужен
+    реактивному хендлеру (bot/handlers/daily_twin.py) для матчинга
+    plain-@username-упоминаний (`text_mention`-упоминания Telegram уже
+    резолвит в user-объект напрямую, username для них не нужен).
 
     Кандидаты резолвятся ДО вызова `daily_pick_service.get_or_set_pick`, но
     сам пик на сегодня — если он УЖЕ существует — возвращается независимо от
@@ -119,10 +123,14 @@ async def get_todays_twin(session: AsyncSession, chat_id: int) -> tuple[int, str
     if is_new:
         await session.commit()
 
-    name = (
-        await session.execute(select(User.first_name).where(User.id == winner))
-    ).scalar_one_or_none() or str(winner)
-    return winner, name
+    row = (
+        await session.execute(
+            select(User.first_name, User.username).where(User.id == winner)
+        )
+    ).first()
+    name = (row.first_name if row else None) or str(winner)
+    username = row.username if row else None
+    return winner, name, username
 
 
 async def count_todays_posts(session: AsyncSession, chat_id: int) -> int:
@@ -188,7 +196,7 @@ async def maybe_post_proactively(session: AsyncSession, chat_id: int, bot: Bot) 
     twin = await get_todays_twin(session, chat_id)
     if twin is None:
         return False
-    user_id, name = twin
+    user_id, name, _username = twin
 
     posts_so_far = await count_todays_posts(session, chat_id)
     if posts_so_far >= settings.daily_twin_max_posts:
