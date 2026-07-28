@@ -43,7 +43,7 @@ async def build_joke(session: AsyncSession, chat_id: int) -> str:
     system_prompt = await settings_service.get_active_prompt(session, chat_id)
     system_prompt += SYSTEM_PROMPT_SUFFIX
 
-    model = await settings_service.get_active_model(session, chat_id)
+    model = await settings_service.get_active_model(session, chat_id, default=settings.ai_structured_model)
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": context},

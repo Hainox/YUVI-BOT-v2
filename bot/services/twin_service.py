@@ -109,7 +109,10 @@ async def build_twin_reply(
         f"{sample_context}\n\nНапиши ОДНУ короткую реплику в его стиле, 1-3 предложения. "
         "Не приписывай ему реальных фактов/обвинений на чувствительные темы."
     )
-    model = await settings_service.get_active_model(session, chat_id)  # model-agnostic
+    # Без явного default — фолбэк settings.openai_model (kimi-k2.6), выбранной
+    # именно под этот свободный стиль-мимикрия промпт (см. bot/config.py);
+    # остальные AI-сервисы передают default=settings.ai_structured_model.
+    model = await settings_service.get_active_model(session, chat_id)
     return await _stream_persona_reply(system_prompt, "Обычная реплика в духе этого человека.", model)
 
 

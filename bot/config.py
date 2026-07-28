@@ -32,7 +32,26 @@ class Settings(BaseSettings):
     # реальным /twin-промптом через bot.services.ai_client на живом ключе:
     # живой ответ за 6.0с, адекватное русское звучание — glm-5.1 был быстрее
     # формально, 2.3с, но выбрали kimi-k2.6 по качеству/стилю ответа).
+    #
+    # ВАЖНО (найдено 2026-07-28 живым инцидентом в проде): kimi-k2.6 отлично
+    # тянет ЭТОТ конкретный промпт (свободная реплика-мимикрия персоны, без
+    # строгого формата и без анти-инъекционной фразы), но систематически падает
+    # AIEmptyResponseError на промптах со строгими инструкциями формата +
+    # анти-инъекционной фразой (topics/phrase/joke — см. ai_structured_model
+    # ниже). Поэтому openai_model с этого момента используется ТОЛЬКО
+    # twin_service (build_twin_reply/build_twin_reaction) — единственное
+    # место, для которого её реально выбирали и где она реально работает.
     openai_model: str = Field(default="kimi-k2.6", alias="OPENAI_MODEL")
+    # Модель для ВСЕХ остальных AI-функций (ask/card/digest/summary/topics/
+    # phrase/joke/social roast+joke_order/lurker) — все они используют
+    # settings_service.get_active_prompt (или похожий строгий системный
+    # промпт) + анти-инъекционную фразу, тот же паттерн, на котором kimi-k2.6
+    # ловит AIEmptyResponseError. glm-5.1 — единственная модель каталога,
+    # прошедшая прогон model_bench2.py по ВСЕМ трём формам строгого промпта
+    # (topics/phrase/joke) быстро (3.9-14.5с) и без единого сбоя; qwen3.6-plus
+    # тоже прошла все три, но втрое медленнее (22-44с — риск упереться в
+    # ai_call_timeout_sec).
+    ai_structured_model: str = Field(default="glm-5.1", alias="AI_STRUCTURED_MODEL")
     # Тот же прогон вскрыл: kimi-k2/minimax-m2/qwen-3 — мёртвые ID каталога
     # (401 "Model ... is not supported", не медленные — реально не существуют
     # под этими именами), заменены на актуальные kimi-k2.6/qwen3.6-plus.

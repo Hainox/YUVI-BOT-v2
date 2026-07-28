@@ -53,6 +53,57 @@ async def test_get_active_model_falls_back_to_env_default(session):
 
 
 @pytest.mark.asyncio
+async def test_get_active_model_uses_explicit_default_when_no_override(session):
+    """default=... (найдено 2026-07-28: kimi-k2.6, дефолт openai_model,
+    систематически падает AIEmptyResponseError на строгих промптах — ask/
+    card/digest/итд передают default=settings.ai_structured_model) должен
+    победить settings.openai_model, когда нет override в БД."""
+    settings_service.clear_cache()
+    chat_id = -100666
+
+    value = await settings_service.get_active_model(session, chat_id, default=settings.ai_structured_model)
+
+    assert value == settings.ai_structured_model
+    assert value != settings.openai_model
+
+
+@pytest.mark.asyncio
+async def test_get_active_model_different_defaults_dont_leak_between_calls(session):
+    """Регрессия (найдено 2026-07-28): кэш get_setting раньше хранил уже
+    ПОДСТАВЛЕННЫЙ default, а не факт "есть ли override" — из-за этого ПЕРВЫЙ
+    вызов get_active_model для чата "залипал" в кэше, и ВТОРОЙ вызов с ДРУГИМ
+    default для того же чата получал закэшированный default первого вызова.
+    Ровно это ломало /model_show (двойник и остальные AI-функции — разные
+    default для одного chat_id) сразу после первого прогона."""
+    settings_service.clear_cache()
+    chat_id = -100888
+
+    twin_value = await settings_service.get_active_model(session, chat_id)
+    structured_value = await settings_service.get_active_model(
+        session, chat_id, default=settings.ai_structured_model
+    )
+
+    assert twin_value == settings.openai_model
+    assert structured_value == settings.ai_structured_model
+
+
+@pytest.mark.asyncio
+async def test_get_active_model_explicit_default_ignored_when_override_set(session):
+    """Явный override (/model_set) — ОДИН общий ключ на чат, побеждает ЛЮБОЙ
+    default, переданный вызывающим сервисом (twin vs остальные не разделяют
+    override, только фолбэк по умолчанию — см. settings_service.get_active_model)."""
+    settings_service.clear_cache()
+    chat_id = -100777
+
+    await settings_service.set_setting(
+        session, chat_id, settings_service.KEY_MODEL, "deepseek-v4-pro", updated_by_tg_id=1
+    )
+    value = await settings_service.get_active_model(session, chat_id, default=settings.ai_structured_model)
+
+    assert value == "deepseek-v4-pro"
+
+
+@pytest.mark.asyncio
 async def test_get_active_prompt_falls_back_to_env_default(session):
     settings_service.clear_cache()
     chat_id = -100444
