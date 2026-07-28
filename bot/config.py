@@ -46,22 +46,42 @@ class Settings(BaseSettings):
     # phrase/joke/social roast+joke_order/lurker) — все они используют
     # settings_service.get_active_prompt (или похожий строгий системный
     # промпт) + анти-инъекционную фразу, тот же паттерн, на котором kimi-k2.6
-    # ловит AIEmptyResponseError. glm-5.1 — единственная модель каталога,
-    # прошедшая прогон model_bench2.py по ВСЕМ трём формам строгого промпта
-    # (topics/phrase/joke) быстро (3.9-14.5с) и без единого сбоя; qwen3.6-plus
-    # тоже прошла все три, но втрое медленнее (22-44с — риск упереться в
-    # ai_call_timeout_sec).
-    ai_structured_model: str = Field(default="glm-5.1", alias="AI_STRUCTURED_MODEL")
-    # Тот же прогон вскрыл: kimi-k2/minimax-m2/qwen-3 — мёртвые ID каталога
-    # (401 "Model ... is not supported", не медленные — реально не существуют
-    # под этими именами), заменены на актуальные kimi-k2.6/qwen3.6-plus.
-    # glm-5.2 и minimax-m3 исключены совсем — glm-5.2 упал
+    # ловит AIEmptyResponseError.
+    #
+    # ВАЖНО (найдено 2026-07-28, тем же вечером): glm-5.1 (прошлый дефолт —
+    # прошла ВСЕ три формы topics/phrase/joke в первом прогоне model_bench2.py)
+    # сама упала AIEmptyResponseError на более сложной реальной задаче —
+    # group-by-topic анализ 315 шумных сообщений чата (chat_complaints_report.py,
+    # разовый диагностический скрипт). Расширенный прогон model_bench3.py по
+    # 10 моделям каталога Go (найдены в свежей документации opencode.ai/docs/ru/go)
+    # на ВСЕХ ЧЕТЫРЁХ формах (topics/phrase/joke + та самая сложная "complaints")
+    # показал: grok-4.5 — ЕДИНСТВЕННАЯ модель с 4/4 без единого сбоя, при этом
+    # быстрая (6.8-22.8с, комфортно ниже ai_call_timeout_sec=60/
+    # AI_REQUEST_TIMEOUT_MS=65с миниаппа). mimo-v2.5/mimo-v2.5-pro/minimax-m2.7
+    # тоже прошли 4/4 (чуть медленнее на complaints, 25-31с) — см.
+    # ai_available_models ниже, добавлены как проверенные альтернативы.
+    ai_structured_model: str = Field(default="grok-4.5", alias="AI_STRUCTURED_MODEL")
+    # Тот же (первый) прогон вскрыл: kimi-k2/minimax-m2/qwen-3 — мёртвые ID
+    # каталога (401 "Model ... is not supported", не медленные — реально не
+    # существуют под этими именами), заменены на актуальные kimi-k2.6/
+    # qwen3.6-plus. glm-5.2 и minimax-m3 исключены совсем — glm-5.2 упал
     # AIEmptyResponseError на этом же промпте (reasoning съедает весь
     # max_tokens), minimax-m3 вернул сырой английский `<think>...` ПРЯМО в
     # content (не через отдельное reasoning-поле, как остальные) — тихо
-    # "успешный" ответ, который на деле сломан и утёк бы в чат как есть.
+    # "успешный" ответ, который на деле сломан и утёк бы в чат как есть
+    # (подтвердилось СНОВА во втором прогоне model_bench3.py — та же болезнь).
+    #
+    # Второй прогон (model_bench3.py, 2026-07-28) добавил: grok-4.5, mimo-v2.5,
+    # mimo-v2.5-pro, minimax-m2.7 — все 4/4 на всех формах. НЕ добавлены:
+    # qwen3.7-max/qwen3.7-plus (тоже 4/4, но 34-74с — на сложных промптах
+    # реально рискуют упереться в таймаут), hy3 (2/4, ненадёжна), kimi-k3 и
+    # kimi-k2.7-code (мёртвые ID на нашем тарифе Go — 400 Bad Request сразу,
+    # не reasoning-сбой; k2.7-code вдобавок узкоспециализирована под код).
     ai_available_models: str = Field(
-        default="deepseek-v4-flash,deepseek-v4-pro,glm-5.1,kimi-k2.6,qwen3.6-plus",
+        default=(
+            "deepseek-v4-flash,deepseek-v4-pro,glm-5.1,grok-4.5,kimi-k2.6,"
+            "mimo-v2.5,mimo-v2.5-pro,minimax-m2.7,qwen3.6-plus"
+        ),
         alias="AI_AVAILABLE_MODELS",
     )
     ai_default_system_prompt: str = Field(
