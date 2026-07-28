@@ -9,8 +9,9 @@ bot/handlers/daily_twin.py) — против живого Postgres (фиксту
   сломались бы Command(...)-хендлеры и media_dl.py на пересекающихся
   апдейтах (например `/twin @username` — команда + text_mention entity).
 - Реплай ИМЕННО на пост двойника (найден в daily_twin_posts) — генерирует
-  контекстный ответ через twin_service.build_twin_reaction, хардкодит
-  дисклеймер-префикс "🎭 Двойник дня — {Имя}:" (D-02/Pitfall 8), и
+  контекстный ответ через twin_service.build_twin_reaction и отправляет его
+  ГОЛЫМ текстом, без дисклеймер-префикса (явный отказ от D-02/Pitfall 8,
+  запрошено 2026-07-28 — владелец бота осознанно выбрал неразмеченный ответ),
   журналирует СВОЙ ответ тоже (чтобы цепочка реплаев продолжалась).
 - Реплай на РЕАЛЬНОЕ сообщение сегодняшней персоны и её @упоминание
   (text_mention И plain @username) — та же реакция, расширено 2026-07-28.
@@ -171,8 +172,7 @@ async def test_reacts_and_records_own_reply(session, monkeypatch):
 
     message.answer.assert_awaited_once()
     text = message.answer.await_args.args[0]
-    assert text.startswith("🎭 Двойник дня — Дима:")
-    assert "норм чё" in text
+    assert text == "норм чё"
 
     # Собственный ответ тоже зажурналирован — цепочка реплаев может продолжаться.
     found = await daily_twin_service.find_target_by_post(session, chat_id, 800_005)
@@ -245,7 +245,7 @@ async def test_reacts_to_reply_on_real_message_of_todays_twin(session, monkeypat
 
     message.answer.assert_awaited_once()
     text = message.answer.await_args.args[0]
-    assert text.startswith("🎭 Двойник дня — Дима:")
+    assert text == "норм чё"
 
 
 @pytest.mark.asyncio
@@ -270,7 +270,7 @@ async def test_reacts_to_text_mention_of_todays_twin(session, monkeypatch):
     await daily_twin_handlers.daily_twin_reaction(message, session)
 
     message.answer.assert_awaited_once()
-    assert message.answer.await_args.args[0].startswith("🎭 Двойник дня — Дима:")
+    assert message.answer.await_args.args[0] == "норм чё"
 
 
 @pytest.mark.asyncio
@@ -295,7 +295,7 @@ async def test_reacts_to_plain_username_mention_of_todays_twin(session, monkeypa
     await daily_twin_handlers.daily_twin_reaction(message, session)
 
     message.answer.assert_awaited_once()
-    assert message.answer.await_args.args[0].startswith("🎭 Двойник дня — Дима:")
+    assert message.answer.await_args.args[0] == "норм чё"
 
 
 @pytest.mark.asyncio
@@ -354,4 +354,4 @@ async def test_own_bot_post_reply_takes_priority_over_mention(session, monkeypat
     await daily_twin_handlers.daily_twin_reaction(message, session)
 
     message.answer.assert_awaited_once()
-    assert message.answer.await_args.args[0].startswith("🎭 Двойник дня — Дима:")
+    assert message.answer.await_args.args[0] == "норм чё"

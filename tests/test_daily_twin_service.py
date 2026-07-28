@@ -253,8 +253,8 @@ async def test_maybe_post_proactively_posts_and_records(session, monkeypatch):
     assert posted is True
     bot.send_message.assert_awaited_once()
     sent_text = bot.send_message.await_args.args[1]
-    assert sent_text.startswith("🎭 Двойник дня — Тест:")
     assert "тестовая реплика" in sent_text
+    assert "Двойник дня" not in sent_text
 
     found = await daily_twin_service.find_target_by_post(session, chat_id, 555_001)
     assert found == user_id
