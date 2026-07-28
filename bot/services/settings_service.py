@@ -24,27 +24,39 @@ from common.models.bot_setting import BotSetting
 KEY_MODEL = "ai_model"
 KEY_PROMPT = "ai_system_prompt"
 
-_cache: dict[str, str] = {}
+# Sentinel "нет строки BotSetting" — ОТДЕЛЬНЫЙ от любого default (Pitfall,
+# найдено 2026-07-28): get_active_model теперь вызывается для ОДНОГО и того же
+# (chat_id, KEY_MODEL) с РАЗНЫМИ default (twin_service vs остальные сервисы,
+# см. ai_structured_model в bot/config.py). Если кэшировать уже подставленный
+# default, первый вызов для чата "залипает" в кэше навсегда — второй вызов с
+# другим default для того же чата получил бы ЧУЖОЙ закэшированный фолбэк
+# вместо своего. Кэш обязан хранить факт "есть ли override" отдельно от
+# default, который каждый вызывающий передаёт заново.
+_MISSING = object()
+
+_cache: dict[str, str | object] = {}
 
 
 async def get_setting(session: AsyncSession, chat_id: int, key: str, default: str) -> str:
     """Возвращает значение настройки: сперва из кэша, иначе из bot_settings.
 
-    Отсутствующая запись -> default (кэшируется тоже, чтобы не бить БД
-    повторными запросами до первого set_setting).
+    Отсутствующая запись -> default. Кэшируется РЕЗУЛЬТАТ ЗАПРОСА В БД
+    (значение строки или _MISSING, если строки нет) — НЕ подставленный default,
+    иначе повторный вызов с другим default для того же (chat_id, key) вернул бы
+    default из ПЕРВОГО вызова (см. комментарий у _MISSING).
     """
     cache_key = f"{chat_id}:{key}"
     if cache_key in _cache:
-        return _cache[cache_key]
+        cached = _cache[cache_key]
+        return default if cached is _MISSING else cached
 
     row = (
         await session.execute(
             select(BotSetting.value).where(BotSetting.chat_id == chat_id, BotSetting.key == key)
         )
     ).scalar_one_or_none()
-    value = row if row is not None else default
-    _cache[cache_key] = value
-    return value
+    _cache[cache_key] = row if row is not None else _MISSING
+    return row if row is not None else default
 
 
 async def set_setting(
@@ -69,9 +81,21 @@ async def set_setting(
     _cache[f"{chat_id}:{key}"] = value  # без окна устаревшего чтения
 
 
-async def get_active_model(session: AsyncSession, chat_id: int) -> str:
-    """Активная модель для чата — фолбэк на settings.openai_model (env-дефолт)."""
-    return await get_setting(session, chat_id, KEY_MODEL, settings.openai_model)
+async def get_active_model(session: AsyncSession, chat_id: int, default: str | None = None) -> str:
+    """Активная модель для чата — фолбэк на явно переданный `default`, иначе
+    на settings.openai_model (env-дефолт, historically twin-специфичный —
+    см. bot/config.py). `default` позволяет вызывающему сервису задать СВОЙ
+    фолбэк (найдено 2026-07-28: kimi-k2.6, дефолт openai_model, систематически
+    падает AIEmptyResponseError на промптах со строгим форматом — ask/card/
+    digest/summary/topics/phrase/joke/social/lurker передают
+    default=settings.ai_structured_model, twin_service ничего не передаёт и
+    получает openai_model как раньше). Override через /model_set — ОДИН общий
+    ключ (KEY_MODEL) на чат вне зависимости от default: явный выбор админа
+    сознательно перекрывает оба "направления" сразу, разделение — только в
+    фолбэке по умолчанию."""
+    return await get_setting(
+        session, chat_id, KEY_MODEL, default if default is not None else settings.openai_model
+    )
 
 
 async def get_active_prompt(session: AsyncSession, chat_id: int) -> str:

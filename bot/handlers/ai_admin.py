@@ -31,8 +31,21 @@ def _available_models() -> list[str]:
 
 @router.message(Command("model_show"))
 async def model_show_command(message: Message, session: AsyncSession) -> None:
-    model = await settings_service.get_active_model(session, message.chat.id)
-    await message.answer(f"Текущая AI-модель: <b>{html.escape(model)}</b>", parse_mode="HTML")
+    """Показывает ОБЕ модели раздельно (найдено 2026-07-28: kimi-k2.6 падает
+    AIEmptyResponseError на строгих промптах topics/phrase/joke/итд, поэтому
+    settings_service.get_active_model теперь резолвит разный дефолт в
+    зависимости от вызывающего сервиса — twin_service vs все остальные, см.
+    bot/config.py). /model_set по-прежнему один общий override на чат —
+    перекрывает ОБЕ строки сразу, если админ явно его ставил."""
+    twin_model = await settings_service.get_active_model(session, message.chat.id)
+    structured_model = await settings_service.get_active_model(
+        session, message.chat.id, default=settings.ai_structured_model
+    )
+    await message.answer(
+        f"Модель двойника (/twin): <b>{html.escape(twin_model)}</b>\n"
+        f"Модель остальных AI-функций: <b>{html.escape(structured_model)}</b>",
+        parse_mode="HTML",
+    )
 
 
 @router.message(Command("model_list"))

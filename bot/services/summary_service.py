@@ -77,7 +77,7 @@ async def stream_summary(
         clipped_focus = focus[: settings.ai_max_custom_prompt_chars]
         system_prompt += f" Сфокусируйся на: {clipped_focus}"
 
-    model = await settings_service.get_active_model(session, chat_id)
+    model = await settings_service.get_active_model(session, chat_id, default=settings.ai_structured_model)
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": context or "Сообщений нет."},

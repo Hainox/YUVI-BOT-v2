@@ -285,7 +285,7 @@ async def build_burst_blurbs(session: AsyncSession, chat_id: int, bursts: list[B
 
     system_prompt = await settings_service.get_active_prompt(session, chat_id)
     system_prompt += _BURST_BLURB_SYSTEM_SUFFIX
-    model = await settings_service.get_active_model(session, chat_id)
+    model = await settings_service.get_active_model(session, chat_id, default=settings.ai_structured_model)
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": context},
@@ -367,7 +367,7 @@ async def build_vibe(session: AsyncSession, chat_id: int, sample_context: str) -
     показываем строку "Атмосфера" в композиции)."""
     system_prompt = await settings_service.get_active_prompt(session, chat_id)
     system_prompt += _VIBE_SYSTEM_SUFFIX
-    model = await settings_service.get_active_model(session, chat_id)
+    model = await settings_service.get_active_model(session, chat_id, default=settings.ai_structured_model)
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": sample_context or "Сообщений нет."},
@@ -416,7 +416,7 @@ async def build_structured_recap(session: AsyncSession, chat_id: int, rows: list
 
     system_prompt = await settings_service.get_active_prompt(session, chat_id)
     system_prompt += _RECAP_SYSTEM_SUFFIX
-    model = await settings_service.get_active_model(session, chat_id)
+    model = await settings_service.get_active_model(session, chat_id, default=settings.ai_structured_model)
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": context or "Сообщений нет."},

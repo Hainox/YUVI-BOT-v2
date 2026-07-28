@@ -103,7 +103,7 @@ async def build_portrait(
         "юмористический портрет — какой этот человек в чате, 2-4 предложения, "
         "по-доброму, без оскорблений."
     )
-    model = await settings_service.get_active_model(session, chat_id)
+    model = await settings_service.get_active_model(session, chat_id, default=settings.ai_structured_model)
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": context},
@@ -179,7 +179,7 @@ async def build_profile_sections(
         received=_format_reaction_counts(reactions_received),
         given=_format_reaction_counts(reactions_given),
     )
-    model = await settings_service.get_active_model(session, chat_id)
+    model = await settings_service.get_active_model(session, chat_id, default=settings.ai_structured_model)
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": context},
