@@ -214,6 +214,102 @@ async def test_grant_all_replayed_message_does_not_double_credit(session, monkey
     assert balance == settings.economy_start_bonus + 150
 
 
+# --- /giveaway -----------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_giveaway_refuses_non_owner(session):
+    chat_id = -100930021
+    non_owner_id, other_id = 930028, 930029
+    assert non_owner_id != settings.owner_id
+    await _ensure_user(session, non_owner_id, "Не владелец")
+    await _ensure_user(session, other_id, "Участник")
+    await economy_service.get_balance(session, chat_id, other_id)
+
+    message = _fake_message(chat_id, non_owner_id, "Не владелец", "/giveaway 100")
+    await owner_handlers.giveaway_command(message, session)
+
+    message.reply.assert_awaited_once()
+    assert "владельцу" in message.reply.await_args.args[0].lower()
+
+    balance = await economy_service.get_balance(session, chat_id, other_id)
+    assert balance == settings.economy_start_bonus
+
+
+@pytest.mark.asyncio
+async def test_giveaway_credits_random_participant_for_owner(session, monkeypatch):
+    monkeypatch.setattr(settings, "owner_id", 930030)
+    chat_id = -100930022
+    user_a, user_b = 930031, 930032
+    await _ensure_user(session, user_a, "Первый")
+    await _ensure_user(session, user_b, "Второй")
+    await economy_service.get_balance(session, chat_id, user_a)
+    await economy_service.get_balance(session, chat_id, user_b)
+
+    message = _fake_message(chat_id, 930030, "Владелец", "/giveaway 300")
+    await owner_handlers.giveaway_command(message, session)
+
+    message.answer.assert_awaited_once()
+    text = message.answer.await_args.args[0]
+    assert "300" in text
+
+    balance_a = await economy_service.get_balance(session, chat_id, user_a)
+    balance_b = await economy_service.get_balance(session, chat_id, user_b)
+    # Ровно один из двух получил приз (реальный RNG, как у /grant/grant_all —
+    # не форсируем, но проверяем, что деньги реально сдвинулись у ОДНОГО).
+    winners = [
+        uid
+        for uid, bal in ((user_a, balance_a), (user_b, balance_b))
+        if bal == settings.economy_start_bonus + 300
+    ]
+    assert len(winners) == 1
+
+
+@pytest.mark.asyncio
+async def test_giveaway_invalid_args_gives_usage_hint(session, monkeypatch):
+    monkeypatch.setattr(settings, "owner_id", 930033)
+    chat_id = -100930023
+    await _ensure_user(session, 930033, "Владелец")
+
+    message = _fake_message(chat_id, 930033, "Владелец", "/giveaway not_a_number")
+    await owner_handlers.giveaway_command(message, session)
+
+    message.answer.assert_awaited_once()
+    assert "использование" in message.answer.await_args.args[0].lower()
+
+
+@pytest.mark.asyncio
+async def test_giveaway_no_participants_reports_nobody_to_pick(session, monkeypatch):
+    monkeypatch.setattr(settings, "owner_id", 930034)
+    chat_id = -100930024
+    await _ensure_user(session, 930034, "Владелец")
+    # Владелец сам НЕ участник экономики этого чата — UserBalance пуст.
+
+    message = _fake_message(chat_id, 930034, "Владелец", "/giveaway 100")
+    await owner_handlers.giveaway_command(message, session)
+
+    message.answer.assert_awaited_once()
+    assert "не для кого" in message.answer.await_args.args[0].lower()
+
+
+@pytest.mark.asyncio
+async def test_giveaway_replayed_message_shows_same_winner(session, monkeypatch):
+    monkeypatch.setattr(settings, "owner_id", 930035)
+    chat_id = -100930025
+    user_a = 930036
+    await _ensure_user(session, user_a, "Единственный")
+    await economy_service.get_balance(session, chat_id, user_a)
+
+    # Единственный участник экономики -> победитель однозначен без монкипатча
+    # RNG на уровне хендлера (RNG форсируется отдельно в test_giveaway_service.py).
+    message = _fake_message(chat_id, 930035, "Владелец", "/giveaway 150", message_id=88)
+    await owner_handlers.giveaway_command(message, session)
+    await owner_handlers.giveaway_command(message, session)  # same message_id -> same ref_id
+
+    balance = await economy_service.get_balance(session, chat_id, user_a)
+    assert balance == settings.economy_start_bonus + 150
+
+
 # --- /post_update --------------------------------------------------------------
 
 
