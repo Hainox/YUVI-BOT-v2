@@ -3,7 +3,7 @@
 	// phrase,joke} (hub-parity for bot/handlers/ai_topics.py). All three are
 	// parameterless one-shot generations, folded into a single screen with a
 	// tab per command instead of three separate hub tiles.
-	import { apiFetch, ApiError } from '$lib/api';
+	import { AI_REQUEST_TIMEOUT_MS, apiFetch, ApiError } from '$lib/api';
 
 	type Tab = 'topics' | 'phrase' | 'joke';
 	const TABS: { key: Tab; label: string; title: string }[] = [
@@ -21,7 +21,11 @@
 		loading = true;
 		error = null;
 		try {
-			const res = await apiFetch<{ text: string }>(`/api/v1/ai/${tab}`);
+			const res = await apiFetch<{ text: string }>(
+				`/api/v1/ai/${tab}`,
+				undefined,
+				AI_REQUEST_TIMEOUT_MS
+			);
 			results = { ...results, [tab]: res.text };
 		} catch (err) {
 			error = err instanceof ApiError ? err.message : String(err ?? 'unknown_error');

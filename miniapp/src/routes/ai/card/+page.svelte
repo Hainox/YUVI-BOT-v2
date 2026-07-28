@@ -3,7 +3,7 @@
 	// bot/handlers/ai_card.py). No target picked = self (same default as the
 	// chat command when called with no reply/@arg).
 	import { onMount } from 'svelte';
-	import { apiFetch, ApiError } from '$lib/api';
+	import { AI_REQUEST_TIMEOUT_MS, apiFetch, ApiError } from '$lib/api';
 	import UserPicker from '$lib/components/UserPicker.svelte';
 
 	type TopWord = { word: string; count: number };
@@ -27,7 +27,7 @@
 				targetUserId === null
 					? '/api/v1/ai/card'
 					: `/api/v1/ai/card?target_user_id=${targetUserId}`;
-			card = await apiFetch<Card>(path);
+			card = await apiFetch<Card>(path, undefined, AI_REQUEST_TIMEOUT_MS);
 		} catch (err) {
 			error = err instanceof ApiError ? err.message : String(err ?? 'unknown_error');
 		} finally {
