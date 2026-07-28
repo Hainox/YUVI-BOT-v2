@@ -236,6 +236,37 @@ async def credit(
     return True
 
 
+async def credit_all_in_chat(
+    session: AsyncSession, chat_id: int, amount: int, kind: str, ref_id_prefix: str
+) -> tuple[int, list[int]]:
+    """Массовое начисление `amount` КАЖДОМУ участнику экономики этого чата
+    (/grant_all, bot/handlers/owner.py) — "участник" здесь тот же критерий,
+    что у `get_leaderboard`: у кого уже есть строка UserBalance (получал
+    баланс хотя бы раз, необязательно все Telegram-аккаунты чата вообще).
+
+    Идемпотентность — НА КАЖДОГО пользователя отдельно (`ref_id =
+    f"{ref_id_prefix}:{user_id}"`, тот же партиал-UNIQUE(chat_id, ref_id,
+    kind), что и у `credit`): повтор всей рассылки целиком (напр. ретрай
+    апдейта Telegram с тем же message_id -> тот же ref_id_prefix) не
+    начисляет повторно НИКОМУ, даже если первый прогон применился лишь
+    частично (упал посередине). Возвращает (число участников экономики
+    чата, user_id тех, кому реально начислено В ЭТОМ вызове — уже
+    применённые ref_id в список не попадают). Не коммитит — транзакцию
+    завершает вызывающий (та же дисциплина, что у credit/debit)."""
+    user_ids = (
+        await session.execute(select(UserBalance.user_id).where(UserBalance.chat_id == chat_id))
+    ).scalars().all()
+
+    credited: list[int] = []
+    for user_id in user_ids:
+        applied = await credit(
+            session, chat_id, user_id, amount, kind=kind, ref_id=f"{ref_id_prefix}:{user_id}"
+        )
+        if applied:
+            credited.append(user_id)
+    return len(user_ids), credited
+
+
 async def debit(
     session: AsyncSession, chat_id: int, user_id: int, amount: int, kind: str, ref_id: str
 ) -> bool:

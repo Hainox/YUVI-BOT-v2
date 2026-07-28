@@ -124,6 +124,96 @@ async def test_grant_replayed_ref_id_does_not_double_credit(session, monkeypatch
     assert balance == settings.economy_start_bonus + 200
 
 
+# --- /grant_all ----------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_grant_all_refuses_non_owner(session):
+    chat_id = -100930016
+    non_owner_id, other_id = 930019, 930020
+    assert non_owner_id != settings.owner_id
+    await _ensure_user(session, non_owner_id, "Не владелец")
+    await _ensure_user(session, other_id, "Участник")
+    await economy_service.get_balance(session, chat_id, other_id)  # даёт other_id строку UserBalance
+
+    message = _fake_message(chat_id, non_owner_id, "Не владелец", "/grant_all 100")
+    await owner_handlers.grant_all_command(message, session)
+
+    message.reply.assert_awaited_once()
+    assert "владельцу" in message.reply.await_args.args[0].lower()
+
+    balance = await economy_service.get_balance(session, chat_id, other_id)
+    assert balance == settings.economy_start_bonus
+
+
+@pytest.mark.asyncio
+async def test_grant_all_credits_every_participant_for_owner(session, monkeypatch):
+    monkeypatch.setattr(settings, "owner_id", 930021)
+    chat_id = -100930017
+    user_a, user_b = 930022, 930023
+    await _ensure_user(session, user_a, "Первый")
+    await _ensure_user(session, user_b, "Второй")
+    # get_balance get-or-creates the UserBalance row (тот же критерий
+    # "участник", что get_leaderboard) — до этого их нет в чате вообще.
+    await economy_service.get_balance(session, chat_id, user_a)
+    await economy_service.get_balance(session, chat_id, user_b)
+
+    message = _fake_message(chat_id, 930021, "Владелец", "/grant_all 300")
+    await owner_handlers.grant_all_command(message, session)
+
+    message.answer.assert_awaited_once()
+    text = message.answer.await_args.args[0]
+    assert "300" in text
+    assert "2" in text  # "2 из 2"
+
+    assert await economy_service.get_balance(session, chat_id, user_a) == settings.economy_start_bonus + 300
+    assert await economy_service.get_balance(session, chat_id, user_b) == settings.economy_start_bonus + 300
+
+
+@pytest.mark.asyncio
+async def test_grant_all_invalid_args_gives_usage_hint(session, monkeypatch):
+    monkeypatch.setattr(settings, "owner_id", 930024)
+    chat_id = -100930018
+    await _ensure_user(session, 930024, "Владелец")
+
+    message = _fake_message(chat_id, 930024, "Владелец", "/grant_all not_a_number")
+    await owner_handlers.grant_all_command(message, session)
+
+    message.answer.assert_awaited_once()
+    assert "использование" in message.answer.await_args.args[0].lower()
+
+
+@pytest.mark.asyncio
+async def test_grant_all_no_participants_reports_nobody_to_credit(session, monkeypatch):
+    monkeypatch.setattr(settings, "owner_id", 930025)
+    chat_id = -100930019
+    await _ensure_user(session, 930025, "Владелец")
+    # Владелец сам НЕ участник экономики этого чата (никогда не звал
+    # get_balance в нём) — UserBalance пуст для chat_id.
+
+    message = _fake_message(chat_id, 930025, "Владелец", "/grant_all 100")
+    await owner_handlers.grant_all_command(message, session)
+
+    message.answer.assert_awaited_once()
+    assert "некому" in message.answer.await_args.args[0].lower()
+
+
+@pytest.mark.asyncio
+async def test_grant_all_replayed_message_does_not_double_credit(session, monkeypatch):
+    monkeypatch.setattr(settings, "owner_id", 930026)
+    chat_id = -100930020
+    user_a = 930027
+    await _ensure_user(session, user_a, "Участник")
+    await economy_service.get_balance(session, chat_id, user_a)
+
+    message = _fake_message(chat_id, 930026, "Владелец", "/grant_all 150", message_id=77)
+    await owner_handlers.grant_all_command(message, session)
+    await owner_handlers.grant_all_command(message, session)  # same message_id -> same ref_id per user
+
+    balance = await economy_service.get_balance(session, chat_id, user_a)
+    assert balance == settings.economy_start_bonus + 150
+
+
 # --- /post_update --------------------------------------------------------------
 
 
