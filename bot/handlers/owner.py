@@ -13,6 +13,12 @@
 что у /leaderboard (economy_service.credit_all_in_chat), не буквально
 каждый Telegram-аккаунт чата.
 
+/giveaway (версия 2.0, запрошено 2026-07-28): разовый случайный розыгрыш —
+владелец может запускать сколько угодно раз в день, каждый вызов независим
+(giveaway_service.run_giveaway, НЕ daily_pick_service — тому нужно "раз в
+день", здесь наоборот). Приз минтится, как /grant/grant_all, не капается
+банком чата.
+
 /post_update (WHATSNEW-01, запрошено 2026-07-24): публикация записи в ленту
 «Что нового» Mini App (`bot/services/changelog_service.py`) — первая строка
 текста команды становится заголовком, остальное — телом записи.
@@ -34,14 +40,17 @@ from aiogram.filters import Command
 from aiogram.filters import CommandObject
 from aiogram.types import FSInputFile
 from aiogram.types import Message
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
 from bot.services import changelog_service
 from bot.services import economy_service
+from bot.services import giveaway_service
 from bot.services import jackpot_service
 from bot.services import lurker_service
 from bot.services.target_resolution_service import resolve_by_username_or_id
+from common.models.user import User
 
 logger = logging.getLogger(__name__)
 
@@ -159,6 +168,72 @@ async def grant_all_command(message: Message, session: AsyncSession) -> None:
         message.chat.id,
         len(credited),
         total,
+    )
+
+
+def _parse_giveaway_args(message: Message) -> int | None:
+    """Парсит `/giveaway <сумма>` — ровно один токен, сумма положительное
+    целое (та же валидация, что `_parse_grant_all_args`)."""
+    if message.text is None:
+        return None
+    parts = message.text.split()
+    if len(parts) != 2:
+        return None
+    amount_raw = parts[1]
+    if not amount_raw.lstrip("-").isdigit():
+        return None
+    amount = int(amount_raw)
+    if amount <= 0:
+        return None
+    return amount
+
+
+@router.message(Command("giveaway"))
+async def giveaway_command(message: Message, session: AsyncSession) -> None:
+    if message.from_user is None:
+        return
+    if message.from_user.id != settings.owner_id:
+        await message.reply("Эта команда доступна только владельцу бота.")
+        return
+
+    amount = _parse_giveaway_args(message)
+    if amount is None:
+        await message.answer("Использование: /giveaway <сумма>")
+        return
+
+    ref_id = f"owner_giveaway:{message.chat.id}:{message.message_id}"
+    result = await giveaway_service.run_giveaway(session, message.chat.id, amount, ref_id=ref_id)
+
+    if result["winner"] is None:
+        await message.answer(
+            "В чате пока нет ни одного участника экономики — разыгрывать не для кого."
+        )
+        return
+
+    name = (
+        await session.execute(select(User.first_name).where(User.id == result["winner"]))
+    ).scalar_one_or_none() or str(result["winner"])
+    name = html.escape(name)
+
+    if not result["credited"]:
+        await message.answer(
+            f"🎉 Этот розыгрыш уже проведён: <b>{name}</b> получил {amount}¥.",
+            parse_mode="HTML",
+        )
+        return
+
+    await message.answer(
+        f"🎉 <b>Розыгрыш!</b> Из {result['total_candidates']} участников экономики чата "
+        f"выиграл: <b>{name}</b>\nПриз: {amount}¥.",
+        parse_mode="HTML",
+    )
+    logger.info(
+        "giveaway_command: owner=%s winner=%s amount=%s chat=%s total_candidates=%d",
+        message.from_user.id,
+        result["winner"],
+        amount,
+        message.chat.id,
+        result["total_candidates"],
     )
 
 
