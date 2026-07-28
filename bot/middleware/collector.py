@@ -22,6 +22,39 @@ from bot.services import message_service
 
 logger = logging.getLogger(__name__)
 
+# Служебный аккаунт Telegram (уведомления о привязанном канале приходят в чат
+# как обычное Message с этим from_user.id, is_bot=False — не ловится обычной
+# is_bot-проверкой ниже). Жалоба владельца бота 2026-07-28: "половина
+# номинации уходит Telegram" — этот аккаунт наравне с реальными участниками
+# копил daily_stats.message_count и выигрывал /awards.
+_TELEGRAM_SERVICE_ACCOUNT_ID = 777000
+
+
+def _is_service_message(event: Message) -> bool:
+    """Системные уведомления чата (вступил/вышел/закреп/сменилось
+    название и т.п.) — не реальная активность участника, не должны
+    попадать ни в messages, ни в daily_stats/частоты слов. Тот же
+    перечень полей, что уже используется в backfill_service (там —
+    через pyrogram's message.service, здесь эквивалента нет, поэтому
+    перечисляем явно)."""
+    return any(
+        (
+            event.new_chat_members,
+            event.left_chat_member,
+            event.new_chat_title,
+            event.new_chat_photo,
+            event.delete_chat_photo,
+            event.group_chat_created,
+            event.supergroup_chat_created,
+            event.channel_chat_created,
+            event.pinned_message,
+            event.video_chat_started,
+            event.video_chat_ended,
+            event.video_chat_scheduled,
+            event.message_auto_delete_timer_changed,
+        )
+    )
+
 
 class CollectorMiddleware(BaseMiddleware):
     async def __call__(
@@ -32,9 +65,18 @@ class CollectorMiddleware(BaseMiddleware):
     ) -> Any:
         session: AsyncSession = data["session"]
 
-        if event.from_user is None or event.from_user.is_bot:
-            # Анонимный админ чата / linked-channel пост / сам бот (Pitfall 5) —
-            # запись пропускаем, но роутинг НЕ блокируем.
+        if (
+            event.from_user is None
+            or event.from_user.is_bot
+            or event.from_user.id == _TELEGRAM_SERVICE_ACCOUNT_ID
+            or _is_service_message(event)
+            or (event.text is not None and event.text.startswith("/"))
+        ):
+            # Анонимный админ чата / linked-channel пост / сам бот (Pitfall 5) /
+            # служебный аккаунт Telegram / системное уведомление / команда —
+            # запись пропускаем (не активность участника), но роутинг НЕ
+            # блокируем: команды по-прежнему обязаны доходить до своих
+            # хендлеров, см. модульный докстринг.
             return await handler(event, data)
 
         try:
