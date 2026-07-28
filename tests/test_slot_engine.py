@@ -455,3 +455,48 @@ async def test_play_slots_payout_capped_to_bank(session, monkeypatch):
     theoretical_max = slot_data.PAYTABLE["muscle"][5] * (bet_total // slot_engine.TOTAL_LINES) * slot_engine.TOTAL_LINES
     assert result["payout"] < theoretical_max
     assert result["payout"] <= small_bank + bet_total
+
+
+@pytest.mark.asyncio
+async def test_play_slots_scatter_freespin_wins_credit_to_balance(session, monkeypatch):
+    """Репорты игроков (2026-07-28: "выиграл фриспин +200, баланс не
+    изменился") заставили перепроверить, что деньги за фриспины реально
+    доходят до UserBalance — раньше ни один тест не гонял play_slots
+    ЦЕЛИКОМ (через реальный _settle/pay_from_bank) со scatter-триггерящей
+    стартовой сеткой; test_play_slots_settles_and_is_idempotent и
+    test_play_slots_payout_capped_to_bank форсируют сетки БЕЗ scatter, а
+    тесты freespin_rounds выше вызывают evaluate_grid() напрямую, в обход
+    settle-ядра. Результат: `total_payout` (стартовая линия + все бонусные
+    раунды) доходит до баланса одним атомарным движением денег — баг,
+    судя по всему, не в зачислении (см. коммит выше про фикс автопрокрута
+    во фронте, miniapp/.../slots/+page.svelte)."""
+    chat_id = -100900201
+    user_id = 900201
+    await _ensure_user(session, user_id)
+    balance_before = await _fund(session, chat_id, user_id)
+    await economy_service.credit_bank(
+        session, chat_id, 10_000_000, kind="test_seed", ref_id="test_slot_scatter_seed"
+    )
+    await session.commit()
+
+    initial_grid_symbols = [
+        "keffiyeh", "sakaki", "keffiyeh", "sakaki", "sakaki",
+        "sakaki", "sakaki", "sakaki", "sakaki", "keffiyeh",
+        "sakaki", "sakaki", "sakaki", "sakaki", "sakaki",
+    ]
+    monkeypatch.setattr(casino_service, "_rng", _ForcedGridRng(initial_grid_symbols))
+    # Every auto-played bonus spin: 5-in-a-row wild on all 15 cells (big win,
+    # no scatter -> no retrigger, keeps the math simple).
+    monkeypatch.setattr(slot_engine, "_rng", _ForcedGridRng(["muscle"] * 15))
+
+    bet_total = 10 * slot_engine.TOTAL_LINES
+    result = await casino_service.play_slots(session, chat_id, user_id, bet_total, "test_scatter_fs")
+
+    assert result["outcome"]["scatter"] == 3
+    assert result["outcome"]["freespins"] == slot_data.FREESPIN_TABLE[3]
+    assert len(result["outcome"]["freespin_rounds"]) == slot_data.FREESPIN_TABLE[3]
+    for round_ in result["outcome"]["freespin_rounds"]:
+        assert round_["payout"] > 0  # every forced-wild bonus spin should win big
+
+    balance_after = await _get_user_balance(session, chat_id, user_id)
+    assert balance_after == balance_before - bet_total + result["payout"]
