@@ -157,7 +157,7 @@ class Settings(BaseSettings):
     # ювиков. Намеренно settings, не константы — трафик ещё не устоялся
     # (первые 5 дней показали резкий спад: 1973->81 спинов/день), подкрутить
     # по факту накопленной статистики без правки кода.
-    slot_jackpot_skim_pct: float = Field(default=0.01, alias="SLOT_JACKPOT_SKIM_PCT")
+    slot_jackpot_skim_pct: float = Field(default=0.03, alias="SLOT_JACKPOT_SKIM_PCT")
     slot_jackpot_odds: int = Field(default=10_000, alias="SLOT_JACKPOT_ODDS")
     slot_jackpot_seed: int = Field(default=1_000, alias="SLOT_JACKPOT_SEED")
 
