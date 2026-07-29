@@ -217,6 +217,38 @@ async def test_natural_pays_2_5x(session, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_double_natural_pushes_not_2_5x(session, monkeypatch):
+    """Двойной натурал (натурал и у игрока, и у дилера одновременно) обязан
+    settle'иться как push (1.0x, полный возврат ставки), а НЕ как natural
+    (2.5x) — ternary `("push", 1.0) if dealer_natural else ("natural", 2.5)`
+    в blackjack_engine.settle_outcome ни разу не проходил True-ветку ни в
+    одном тесте репозитория (все существующие натурал-тесты используют одну
+    и ту же колоду, где у дилера всегда 8+4=12, не натурал)."""
+    chat_id = -100910012
+    user_id = 910012
+    await _ensure_user(session, user_id)
+    balance_before = await _fund(session, chat_id, user_id)
+    await _seed_bank(session, chat_id, 100_000, "test_bj_double_natural_seed_bank")
+
+    # p1=A,p2=K (натурал 21); d1=A,d2=Q (тоже натурал 21)
+    monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["A♠", "K♠", "A♥", "Q♦"]))
+
+    bet = 100
+    result = await casino_service.start_blackjack(
+        session, chat_id, user_id, bet, "test_bj_double_natural"
+    )
+
+    assert result["status"] == "settled"
+    assert result["outcome"]["result"] == "push"
+    assert result["payout"] == bet  # ровно 1x, не int(bet * 2.5)
+    assert await _get_user_balance(session, chat_id, user_id) == balance_before
+
+    game = await _get_casino_game(session, user_id, "test_bj_double_natural")
+    assert game.outcome["result"] == "push"
+    assert game.payout == bet
+
+
+@pytest.mark.asyncio
 async def test_regular_win_pays_2x(session, monkeypatch):
     chat_id = -100910004
     user_id = 910004
@@ -283,6 +315,49 @@ async def test_bust_loses(session, monkeypatch):
     )
 
     assert result["outcome"]["result"] == "bust"
+    assert result["payout"] == 0
+    assert await _get_user_balance(session, chat_id, user_id) == balance_before - bet
+
+
+@pytest.mark.asyncio
+async def test_dealer_natural_beats_non_natural_21_reached_via_hit(session, monkeypatch):
+    """Дилерский натурал в первых двух картах никогда не пикается при
+    раздаче (start_blackjack проверяет натурал ТОЛЬКО у игрока) — раздача,
+    где игрок не натурал, остаётся активной, даже если у дилера уже скрытый
+    натурал. Если игрок потом добирает до 21 через hit (3 карты, НЕ
+    натурал), settle_outcome обязан всё равно засчитать проигрыш
+    (`if dealer_natural: return "lose", 0.0`), а не push по обычному
+    сравнению сумм 21==21 — эта ветка ни разу не форсировалась сидированным
+    RNG ни в одном тесте репозитория."""
+    chat_id = -100910011
+    user_id = 910011
+    await _ensure_user(session, user_id)
+    balance_before = await _fund(session, chat_id, user_id)
+    await _seed_bank(session, chat_id, 100_000, "test_bj_dealer_natural_seed_bank")
+
+    # p1=7,p2=4 (11, не натурал); d1=A,d2=K (21, натурал дилера, скрыт);
+    # hit-карта=10 -> игрок [7,4,10]=21 (3 карты, не натурал, не bust)
+    monkeypatch.setattr(
+        casino_service, "_rng", _FixedDeckRng(["7♠", "4♠", "A♥", "K♦", "10♠"])
+    )
+
+    bet = 100
+    started = await casino_service.start_blackjack(
+        session, chat_id, user_id, bet, "test_bj_dealer_natural"
+    )
+    assert started["status"] == "active"  # игрок не натурал -> дилерский натурал не пикается
+
+    hit_result = await casino_service.blackjack_action(
+        session, chat_id, started["id"], user_id, "hit"
+    )
+    assert hit_result["status"] == "active"  # 21 через 3 карты — не натурал, не bust
+    assert hit_result["player"] == ["7♠", "4♠", "10♠"]
+
+    result = await casino_service.blackjack_action(
+        session, chat_id, started["id"], user_id, "stand"
+    )
+
+    assert result["outcome"]["result"] == "lose"  # натурал дилера бьёт не-натуральную 21
     assert result["payout"] == 0
     assert await _get_user_balance(session, chat_id, user_id) == balance_before - bet
 
@@ -478,6 +553,84 @@ async def test_timeout_batch_does_not_clobber_concurrently_settled_row(session, 
     other_row = await _reload(session, other_id)
     assert other_row.payout == 999999
     assert other_row.outcome["result"] == "concurrent_live_win"
+
+
+@pytest.mark.asyncio
+async def test_timeout_batch_isolates_row_that_raises(session, monkeypatch):
+    """`resolve_blackjack_timeouts` оборачивает обработку КАЖДОЙ просроченной
+    раздачи в свой per-row try/except с `session.rollback()` в except-ветке
+    (докстрока: "одна застрявшая раздача не должна ронять весь батч") — до
+    этого теста except-ветка ни разу фактически не выполнялась ни одним
+    тестом. Форсируем реальное исключение внутри тела try (уже ПОСЛЕ того,
+    как `dealer_play` доиграл RNG за дилера) для ВТОРОЙ обрабатываемой в
+    батче раздачи (какая из двух окажется "второй" — не важно, проверка не
+    привязана к конкретному game_id) и проверяем: сам вызов
+    resolve_blackjack_timeouts не падает целиком (обе раздачи оказались
+    процессed'ы — исключение во второй не остановило цикл раньше времени и
+    не просочилось наружу), но settle'илась и засчиталась в resolved_count
+    только ПЕРВАЯ (упавшая — нет). `resolved_count`/`processed_order` —
+    чистая Python-бухгалтерия внутри самого вызова, insensitive к тому, что
+    происходит с БД внутри except.
+
+    Примечание про фикстуру `session` (см. `test_get_todays_twin_recreates_pick_after_commit_failure`
+    в tests/test_daily_twin_service.py): явный `session.rollback()` внутри
+    теста откатывает ЦЕЛИКОМ всю транзакцию теста (проверено экспериментально
+    для этого же паттерна fixture) — `resolve_blackjack_timeouts` делает
+    именно такой rollback внутри своего except. Хуже: экспериментально же
+    установлено, что ПОСЛЕ этого rollback тестовая транзакция оказывается
+    "deassociated" от исходной connection-транзакции фикстуры (SAWarning), и
+    любой ПОСЛЕДУЮЩИЙ `session.commit()` в том же тесте перестаёт быть
+    частью изолированной тестовой транзакции — становится настоящим,
+    неоткатываемым коммитом в общую живую БД (проверено: ловили реальные
+    осиротевшие строки users/user_balance/chat_bank/casino_games после
+    первой же попытки добавить сюда "retry-фазу" со своими commit'ами после
+    этой точки — пришлось вручную подчищать). Поэтому тест НЕ делает никаких
+    записей после того, как реальный `session.rollback()` внутри
+    `resolve_blackjack_timeouts` уже сработал — только чтение уже
+    вычисленных в Python-памяти `resolved_count`/`processed_order`."""
+    chat_id = -100910013
+    user_a, user_b = 910013, 910017
+    await _ensure_user(session, user_a)
+    await _ensure_user(session, user_b)
+    await _fund(session, chat_id, user_a)
+    await _fund(session, chat_id, user_b)
+    await _seed_bank(session, chat_id, 100_000, "test_bj_timeout_rollback_seed_bank")
+
+    # game_a: p1=10,p2=10 (20); d1=10,d2=5 (15) -> добор 2 -> 17; игрок выигрывает 2x
+    monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["10♠", "10♣", "10♥", "5♠", "2♠"]))
+    game_a = await casino_service.start_blackjack(
+        session, chat_id, user_a, 100, "test_bj_timeout_rollback_a"
+    )
+    await _set_turn_deadline_past(session, game_a["id"])
+
+    # game_b: p1=9,p2=9 (18); d1=9,d2=9 (18, дилер уже >=17) -> push
+    monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["9♠", "9♣", "9♥", "9♦"]))
+    game_b = await casino_service.start_blackjack(
+        session, chat_id, user_b, 100, "test_bj_timeout_rollback_b"
+    )
+    await _set_turn_deadline_past(session, game_b["id"])
+
+    real_finalize = casino_service._finalize_blackjack
+    processed_order: list[int] = []
+
+    async def _finalize_second_raises(session, game_row, player, dealer, outcome_name, payout, *, state=None):
+        processed_order.append(game_row.id)
+        if len(processed_order) == 2:
+            raise RuntimeError("сорвался на второй раздаче батча — форсируем except/rollback")
+        await real_finalize(session, game_row, player, dealer, outcome_name, payout, state=state)
+
+    monkeypatch.setattr(casino_service, "_finalize_blackjack", _finalize_second_raises)
+
+    resolved_count = await casino_service.resolve_blackjack_timeouts(session)
+
+    # Обе раздачи батча были ДОСТИГНУТЫ циклом (вторая не была молча
+    # пропущена и не оборвала обработку раньше времени), но settle'илась и
+    # засчиталась только первая — вторая упала и была отброшена per-row
+    # rollback'ом, не уронив вызов целиком.
+    assert len(processed_order) == 2
+    assert processed_order[0] != processed_order[1]
+    assert {processed_order[0], processed_order[1]} == {game_a["id"], game_b["id"]}
+    assert resolved_count == 1
 
 
 # --- Bank cap (D-06) ----------------------------------------------------------

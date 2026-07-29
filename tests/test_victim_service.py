@@ -22,6 +22,7 @@ test_duel_service.py). Доказывают:
 from __future__ import annotations
 
 from datetime import date
+from datetime import datetime
 from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -35,6 +36,7 @@ from bot.services import daily_pick_service
 from bot.services import economy_service
 from bot.services import victim_service
 from common.models.chat_bank import ChatBank
+from common.models.daily_pick import DailyPick
 from common.models.daily_stat import DailyStat
 from common.models.user import User
 from common.models.user_balance import UserBalance
@@ -83,6 +85,20 @@ class _ForcedChoiceRng:
 
     def choice(self, seq):
         return self._choice_value
+
+
+class _FixedUtcNow:
+    """Тестовый стаб, monkeypatched вместо `victim_service.datetime` —
+    форсирует детерминированный `.utcnow()` (реальный `timedelta` не
+    трогаем, он импортирован в victim_service отдельно)."""
+
+    current: datetime
+
+    def __init__(self, current: datetime):
+        self.current = current
+
+    def utcnow(self):
+        return self.current
 
 
 def _fake_message(
@@ -349,3 +365,132 @@ async def test_victim_handler_rolls_back_session_on_grant_title_db_error(session
     message.answer.assert_awaited_once()
 
     message.answer.assert_awaited_once()
+
+
+# --- expires_at не продлевается повторным /victim в тот же день -------------
+
+
+@pytest.mark.asyncio
+async def test_run_victim_expires_at_not_extended_on_replay(session, monkeypatch):
+    """run_victim пересчитывает `expires_at = utcnow() + 24h` НА КАЖДОМ
+    вызове (bot/services/victim_service.py строка 67) и всегда передаёт его
+    в get_or_set_pick, но контракт get_or_set_pick — игнорировать
+    `expires_at` при уже существующей строке (docstring, daily_pick_service.py
+    строки 50-52). Форсируем ОЧЕНЬ разные "текущие моменты" между первым и
+    вторым вызовом (monkeypatch victim_service.datetime.utcnow), чтобы если
+    бы игнорирование когда-нибудь сломалось (например, on_conflict_do_nothing
+    заменили апдейтом или убрали ранний return), stored expires_at второго
+    вызова резко отличался бы от первого — тест это гарантированно поймает."""
+    chat_id = -1009004011
+    uid = 9004011
+    await _ensure_user(session, uid, "Жертва")
+    await _fund(session, chat_id, uid)
+    await _seed_daily_stat(session, chat_id, uid)
+    await economy_service.credit_bank(
+        session, chat_id, 10_000, kind="test_seed", ref_id="test_victim_expires_replay_seed"
+    )
+    await session.commit()
+
+    monkeypatch.setattr(daily_pick_service, "_rng", _ForcedChoiceRng(uid))
+
+    fake_now = _FixedUtcNow(datetime(2026, 1, 1, 0, 0, 0))
+    monkeypatch.setattr(victim_service, "datetime", fake_now)
+
+    first = await victim_service.run_victim(session, chat_id)
+    assert first["is_new"] is True
+    assert first["expires_at"] == fake_now.current + timedelta(hours=victim_service.VICTIM_DEBUFF_HOURS)
+
+    # "Текущий момент" второго вызова — на 100 дней позже первого. Если бы
+    # expires_at реально продлевался при replay, второй stored expires_at
+    # отличался бы от первого ровно на эти 100 дней.
+    fake_now.current = datetime(2026, 4, 11, 0, 0, 0)
+
+    second = await victim_service.run_victim(session, chat_id)
+    assert second["is_new"] is False
+    assert second["expires_at"] == first["expires_at"]
+
+
+# --- Откат ДО commit при ошибке между RNG-ролом и коммитом (rollback-on-error) --
+
+
+@pytest.mark.asyncio
+async def test_run_victim_rolls_back_cleanly_on_payout_error(session, monkeypatch):
+    """run_victim делает get_or_set_pick (RNG-ролл + INSERT, не закоммичено)
+    -> pay_from_bank -> SELECT stored_expires_at -> ЕДИНСТВЕННЫЙ
+    session.commit() в конце, без try/except вокруг всего блока
+    (bot/services/victim_service.py строки 62-96). Форсируем
+    economy_service.pay_from_bank (импортированный в victim_service) на
+    RuntimeError ПОСЛЕ того, как RNG уже выбрал жертву и get_or_set_pick уже
+    вставил (не закоммитил) строку — и проверяем ДВЕ вещи:
+
+    1) session.commit() физически НЕ достигается (мокаем сам `session.commit`
+       и проверяем, что его не вызвали) — это и есть контракт "RNG-ролл и
+       выплата коммитятся строго атомарно вместе", а не благое пожелание.
+    2) Откат незакоммиченной работы run_victim (форма того, что реально
+       делает `async with SessionLocal()` у DbSessionMiddleware/
+       register_daily_autopost._job при закрытии сессии на этой ошибке — там
+       это session.close()/полный rollback сессии) снимает пик полностью:
+       день не "сожжён", свежий (рабочий) вызов run_victim всё ещё выбирает
+       жертву и платит приз, а не молча пропускает выплату из-за залипшего
+       пика.
+
+    Откат здесь сделан через `session.begin_nested()` (SAVEPOINT) вокруг
+    самого вызова run_victim, а не через прямой `session.rollback()` —
+    фикстура `session` в conftest.py держит весь тест в ОДНОЙ обёрточной
+    транзакции connection-уровня, и голый `session.rollback()` обрывает её
+    целиком (включая уже закоммиченные ранее в тесте seed-данные, причём
+    необратимо для всех дальнейших commit() в этом тесте — ловушка именно
+    этого тестового окружения, не имеющая отношения к проверяемому
+    контракту). SAVEPOINT — стандартный SQLAlchemy-способ откатить РОВНО
+    работу run_victim, не трогая ни seed-данные до него, ни изоляцию теста."""
+    chat_id = -1009004013
+    uid = 9004013
+    await _ensure_user(session, uid, "Жертва")
+    balance_before = await _fund(session, chat_id, uid)
+    await _seed_daily_stat(session, chat_id, uid)
+    await economy_service.credit_bank(
+        session, chat_id, 10_000, kind="test_seed", ref_id="test_victim_rollback_seed"
+    )
+    await session.commit()
+    bank_before = await _get_bank_balance(session, chat_id)
+
+    real_pay_from_bank = economy_service.pay_from_bank
+    monkeypatch.setattr(daily_pick_service, "_rng", _ForcedChoiceRng(uid))
+    monkeypatch.setattr(
+        victim_service.economy_service,
+        "pay_from_bank",
+        AsyncMock(side_effect=RuntimeError("boom: сбой БД/сети в момент выплаты")),
+    )
+    commit_mock = AsyncMock(wraps=session.commit)
+    monkeypatch.setattr(session, "commit", commit_mock)
+
+    with pytest.raises(RuntimeError):
+        async with session.begin_nested():
+            await victim_service.run_victim(session, chat_id)
+
+    # Контракт "атомарно вместе": исключение из pay_from_bank пробрасывается
+    # ДО того, как run_victim успевает дойти до своего единственного commit().
+    commit_mock.assert_not_awaited()
+
+    # SAVEPOINT откатил незакоммиченный пик и всё, что успел сделать
+    # run_victim, — день не "сожжён", деньги не сдвинуты.
+    pending_pick_winner = (
+        await session.execute(
+            select(DailyPick.winner_user_id).where(
+                DailyPick.chat_id == chat_id, DailyPick.kind == "victim"
+            )
+        )
+    ).scalar_one_or_none()
+    assert pending_pick_winner is None
+    assert await _get_user_balance(session, chat_id, uid) == balance_before
+    assert await _get_bank_balance(session, chat_id) == bank_before
+
+    # Рабочий pay_from_bank восстановлен — следующий вызов run_victim всё ещё
+    # выбирает жертву и платит приз, а не молча пропускает выплату.
+    monkeypatch.setattr(victim_service.economy_service, "pay_from_bank", real_pay_from_bank)
+
+    retry = await victim_service.run_victim(session, chat_id)
+    assert retry["winner"] == uid
+    assert retry["is_new"] is True
+    assert retry["prize"] == victim_service.VICTIM_PRIZE
+    assert await _get_user_balance(session, chat_id, uid) == balance_before + victim_service.VICTIM_PRIZE

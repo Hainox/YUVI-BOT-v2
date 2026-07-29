@@ -55,12 +55,16 @@ async def run_giveaway(session: AsyncSession, chat_id: int, amount: int, ref_id:
     должен ни перевыбирать победителя, ни начислять повторно): ролл
     происходит ДО credit(), поэтому при replay (credit() вернёт
     credited=False) функция дополнительно перечитывает РЕАЛЬНОГО уже
-    оплаченного победителя из economy_tx по (chat_id, kind, ref_id) —
-    иначе повторный вызов показал бы новый случайный ролл вместо
-    уже выплаченного результата (деньги при этом и так не задвоятся:
+    оплаченного победителя И реально начисленную ему сумму из economy_tx
+    по (chat_id, kind, ref_id) — иначе повторный вызов показал бы новый
+    случайный ролл и/или сумму текущего (повторного) вызова вместо уже
+    выплаченного результата (деньги при этом и так не задвоятся:
     UNIQUE(chat_id, ref_id, kind) на economy_tx не зависит от user_id).
 
-    Коммитит. Возвращает {winner, amount, credited, total_candidates}.
+    Коммитит. Возвращает {winner, amount, credited, total_candidates} —
+    при credited=True amount равен переданному аргументу, при
+    credited=False (replay) — исторически начисленной сумме из economy_tx,
+    даже если текущий вызов передал другой amount.
     Если в чате ещё нет ни одного участника экономики — {winner: None,
     amount, credited: False, total_candidates: 0} (проверка ДО _rng.choice —
     вызов на пустом списке кандидатов поднимает ValueError)."""
@@ -70,23 +74,36 @@ async def run_giveaway(session: AsyncSession, chat_id: int, amount: int, ref_id:
         return {"winner": None, "amount": amount, "credited": False, "total_candidates": 0}
 
     winner = _rng.choice(candidates)
-    credited = await economy_service.credit(
-        session, chat_id, winner, amount, kind=GIVEAWAY_KIND, ref_id=ref_id
-    )
-    if not credited:
-        # Replay одного и того же message_id — возвращаем РЕАЛЬНОГО ранее
-        # оплаченного победителя, а не наш только что случайно выбранный.
-        winner = (
-            await session.execute(
-                select(EconomyTx.user_id).where(
-                    EconomyTx.chat_id == chat_id,
-                    EconomyTx.kind == GIVEAWAY_KIND,
-                    EconomyTx.ref_id == ref_id,
+    try:
+        credited = await economy_service.credit(
+            session, chat_id, winner, amount, kind=GIVEAWAY_KIND, ref_id=ref_id
+        )
+        if not credited:
+            # Replay одного и того же message_id — возвращаем РЕАЛЬНОГО ранее
+            # оплаченного победителя И реально начисленную ему сумму (а не
+            # наш только что случайно выбранный winner / переданный текущим
+            # вызовом amount — они могут не совпасть с историческими).
+            winner, amount = (
+                await session.execute(
+                    select(EconomyTx.user_id, EconomyTx.amount).where(
+                        EconomyTx.chat_id == chat_id,
+                        EconomyTx.kind == GIVEAWAY_KIND,
+                        EconomyTx.ref_id == ref_id,
+                    )
                 )
-            )
-        ).scalar_one()
+            ).one()
 
-    await session.commit()
+        await session.commit()
+    except Exception:
+        # Явный rollback вместо неявной подчистки в DbSessionMiddleware —
+        # тот же прецедент, что WR-05 (05-REVIEW.md, см.
+        # test_victim_service.py::test_victim_handler_rolls_back_session_on_grant_title_db_error):
+        # любая НЕ-IntegrityError ошибка после того, как RNG уже выбрал
+        # победителя (credit()/commit()/повторное чтение amount выше), не
+        # должна оставлять сессию в aborted-состоянии или молча удерживать
+        # частично применённые изменения баланса.
+        await session.rollback()
+        raise
     return {
         "winner": winner,
         "amount": amount,

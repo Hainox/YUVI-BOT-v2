@@ -18,6 +18,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock
+
 import pytest
 from sqlalchemy import select
 
@@ -196,3 +198,110 @@ async def test_giveaway_single_candidate_pool(session):
     assert result["credited"] is True
     assert result["total_candidates"] == 1
     assert await _get_user_balance(session, chat_id, uid) == balance_before + 50
+
+
+# --- Явный rollback при НЕ-IntegrityError ошибке после выбора победителя -----
+
+
+@pytest.mark.asyncio
+async def test_giveaway_rolls_back_session_on_post_roll_db_error(session, monkeypatch):
+    """WR-05-style (см. test_victim_service.py::
+    test_victim_handler_rolls_back_session_on_grant_title_db_error): RNG уже
+    выбрал победителя (uid1), а economy_service.credit() падает НЕ-IntegrityError
+    ошибкой (например обрыв соединения) — run_giveaway обязан явно откатить
+    сессию сам, а не полагаться на неявную подчистку в DbSessionMiddleware.
+    Проверяем, что session.rollback() реально вызывается (не просто "не упало"),
+    и что исключение пробрасывается наверх (деньги не подтверждены как выданные)."""
+    chat_id = -1009006010
+    uid1, uid2 = 9006010, 9006011
+    await _ensure_user(session, uid1, "Первый")
+    await _ensure_user(session, uid2, "Второй")
+    await economy_service.get_balance(session, chat_id, uid1)
+    await economy_service.get_balance(session, chat_id, uid2)
+    await session.commit()
+
+    monkeypatch.setattr(giveaway_service, "_rng", _ForcedChoiceRng(uid1))
+    monkeypatch.setattr(
+        economy_service, "credit", AsyncMock(side_effect=RuntimeError("db down"))
+    )
+
+    rollback_mock = AsyncMock(wraps=session.rollback)
+    monkeypatch.setattr(session, "rollback", rollback_mock)
+
+    with pytest.raises(RuntimeError, match="db down"):
+        await giveaway_service.run_giveaway(session, chat_id, 300, ref_id="giveaway:dberror")
+
+    rollback_mock.assert_awaited_once()
+
+
+# --- Replay с другим amount возвращает ИСТОРИЧЕСКИ начисленную сумму ---------
+
+
+@pytest.mark.asyncio
+async def test_giveaway_replay_returns_originally_credited_amount_not_current_call_amount(
+    session, monkeypatch
+):
+    """При replay (credited=False) result['amount'] должен быть суммой,
+    реально начисленной ПЕРВЫМ вызовом (перечитанной из economy_tx), а не
+    аргументом amount ТЕКУЩЕГО (повторного) вызова — иначе вызывающий получил
+    бы заведомо неверную информацию о движении денег."""
+    chat_id = -1009006012
+    uid1, uid2 = 9006012, 9006013
+    await _ensure_user(session, uid1, "Настоящий")
+    await _ensure_user(session, uid2, "Призрак")
+    balance1_before = await economy_service.get_balance(session, chat_id, uid1)
+    await economy_service.get_balance(session, chat_id, uid2)
+    await session.commit()
+
+    monkeypatch.setattr(giveaway_service, "_rng", _ForcedChoiceRng(uid1))
+    first = await giveaway_service.run_giveaway(session, chat_id, 200, ref_id="giveaway:mismatch")
+
+    # Второй вызов с ТЕМ ЖЕ ref_id, но ДРУГИМ amount — реального начисления
+    # 999999 быть не должно (идемпотентность), а result["amount"] обязан
+    # отражать исторические 200, а не текущие 999999.
+    second = await giveaway_service.run_giveaway(
+        session, chat_id, 999999, ref_id="giveaway:mismatch"
+    )
+
+    assert first["winner"] == uid1
+    assert first["amount"] == 200
+    assert first["credited"] is True
+    assert second["winner"] == uid1
+    assert second["credited"] is False
+    assert second["amount"] == 200
+    assert await _get_user_balance(session, chat_id, uid1) == balance1_before + 200
+
+
+# --- Пустой пул -> появление кандидата с ТЕМ ЖЕ ref_id -----------------------
+
+
+@pytest.mark.asyncio
+async def test_giveaway_same_ref_id_after_empty_pool_then_candidate_appears_rolls_for_real(
+    session,
+):
+    """Пустой пул НЕ фиксирует ref_id как использованный (ранний return —
+    до economy_service.credit()): повторный вызов с тем же ref_id после
+    появления кандидата обязан провести настоящий ролл и начисление, а не
+    молча повторить "нет участников" навсегда."""
+    chat_id = -1009006014
+    uid = 9006014
+    ref_id = "giveaway:late"
+
+    empty_result = await giveaway_service.run_giveaway(session, chat_id, 100, ref_id=ref_id)
+    assert empty_result == {
+        "winner": None,
+        "amount": 100,
+        "credited": False,
+        "total_candidates": 0,
+    }
+
+    await _ensure_user(session, uid, "Опоздавший")
+    balance_before = await economy_service.get_balance(session, chat_id, uid)
+    await session.commit()
+
+    result = await giveaway_service.run_giveaway(session, chat_id, 100, ref_id=ref_id)
+
+    assert result["winner"] == uid
+    assert result["credited"] is True
+    assert result["total_candidates"] == 1
+    assert await _get_user_balance(session, chat_id, uid) == balance_before + 100

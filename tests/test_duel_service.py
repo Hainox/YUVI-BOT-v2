@@ -326,6 +326,156 @@ async def test_accept_idempotent_on_resolved(session, monkeypatch):
     assert await _get_user_balance(session, chat_id, challenger_id) == balance_after_first
 
 
+@pytest.mark.asyncio
+async def test_accept_duel_ref_id_collision_across_two_duels_leaves_second_pending(
+    session, monkeypatch
+):
+    """Аудит-регрессия (idempotency-replay): «защитный backstop» в accept_duel
+    (bot/services/duel_service.py, `escrowed = await _escrow_stake(...); if not
+    escrowed: raise DuelAlreadyResolved(...)`, строки 224-229) — ref_id, случайно
+    переиспользованный между ДВУМЯ РАЗНЫМИ pending-дуэлями с общим opponent_id
+    (напр. клиент вывел ref_id из message_id, который Telegram повторно
+    доставил на другое приглашение, либо оппонент почти одновременно принял
+    два разных вызова с одинаковым derived ref_id). Первый accept резолвит
+    duel A; второй accept с тем же ref_id на ещё pending duel B обязан
+    поднять DuelAlreadyResolved, НЕ повредив duel B (статус остаётся
+    "pending", баланс оппонента не списан повторно за duel B) — и duel B
+    должна оставаться корректно резолвируемой свежим ref_id.
+
+    Прим.: НЕ используем здесь session.rollback() (см. пояснение в
+    test_accept_duel_payout_failure_after_rng_does_not_fabricate_or_double_charge
+    ниже про join_transaction_mode этой фикстуры) — оно и не нужно: неудавшийся
+    accept_duel(duel_b, shared_ref) не оставляет НИКАКИХ незакоммиченных
+    изменений duel_b (`_escrow_stake` ловит IntegrityError внутри собственного
+    SAVEPOINT и откатывает его целиком ДО раскрытия наружу), так что duel_b
+    безопасно перепроверяема и резолвируема прямо в текущей транзакции."""
+    chat_id = -100990102
+    challenger_a_id, challenger_b_id, opponent_id = 990102, 990103, 990104
+    await _ensure_user(session, challenger_a_id, "ЧелленджерA")
+    await _ensure_user(session, challenger_b_id, "ЧелленджерB")
+    await _ensure_user(session, opponent_id, "Оппонент")
+    await _fund(session, chat_id, challenger_a_id)
+    await _fund(session, chat_id, challenger_b_id)
+    await _fund(session, chat_id, opponent_id)
+
+    stake = 100
+    duel_a = await duel_service.create_duel(
+        session, chat_id, challenger_a_id, opponent_id, stake, "test_ref_collision_create_a"
+    )
+    duel_b = await duel_service.create_duel(
+        session, chat_id, challenger_b_id, opponent_id, stake, "test_ref_collision_create_b"
+    )
+
+    shared_ref = "test_ref_collision_shared"
+    monkeypatch.setattr(duel_service, "_rng", _ForcedChoiceRng(challenger_a_id))
+    first = await duel_service.accept_duel(session, chat_id, duel_a.id, opponent_id, shared_ref)
+    assert first["status"] == "resolved"
+
+    opponent_balance_after_a = await _get_user_balance(session, chat_id, opponent_id)
+
+    # Форсированный RNG второй попытки указывает на opponent — если бы
+    # регрессия сделала так, что RNG всё же вызывается на этой ветке, тест
+    # заметил бы это по некорректно резолвленной duel B ниже.
+    monkeypatch.setattr(duel_service, "_rng", _ForcedChoiceRng(opponent_id))
+    with pytest.raises(duel_service.DuelAlreadyResolved):
+        await duel_service.accept_duel(session, chat_id, duel_b.id, opponent_id, shared_ref)
+
+    duel_b_row = await _get_duel(session, duel_b.id)
+    assert duel_b_row.status == "pending"
+    assert duel_b_row.winner_id is None
+    assert await _get_user_balance(session, chat_id, opponent_id) == opponent_balance_after_a
+
+    # duel B всё ещё корректно резолвируема свежим ref_id.
+    monkeypatch.setattr(duel_service, "_rng", _ForcedChoiceRng(challenger_b_id))
+    second = await duel_service.accept_duel(
+        session, chat_id, duel_b.id, opponent_id, "test_ref_collision_fresh_b"
+    )
+    assert second["status"] == "resolved"
+    assert second["winner_id"] == challenger_b_id
+    assert second["loser_id"] == opponent_id
+
+
+@pytest.mark.asyncio
+async def test_accept_duel_payout_failure_after_rng_does_not_fabricate_or_double_charge(
+    session, monkeypatch
+):
+    """Аудит-регрессия (rollback-on-error): после RNG-ролла (`_rng.choice`,
+    bot/services/duel_service.py строка 241) accept_duel ещё делает
+    credit_bank(ставка челленджера) + pay_from_bank + запись полей Duel в ТОЙ
+    ЖЕ незакоммиченной транзакции до единственного финального
+    `session.commit()` (строка 253). Форсируем economy_service.pay_from_bank
+    на RuntimeError ПОСЛЕ RNG-ролла — исключение обязано пробрасываться
+    НЕПОДМЕНЁННЫМ, дуэль не должна оказаться наполовину resolved (winner_id/
+    fee проставлены без реальной выплаты), а деньги — не фабриковаться и не
+    теряться: эскроу оппонента + перевод ставки челленджера в банк УЖЕ реально
+    произошли (это шаги ДО RNG-ролла/pay_from_bank в коде) внутри текущей,
+    пока не завершённой транзакции. Наивный повтор с ТЕМ ЖЕ ref_id (то, что
+    реально сделал бы клиент после сетевого таймаута) обязан провалиться
+    DuelAlreadyResolved, а не списать ставку оппонента повторно.
+
+    Прим. про рамки теста (форма
+    tests/test_casino_service.py::test_settle_payout_failure_after_rng_does_not_fabricate_or_double_charge):
+    явный `session.rollback()` здесь НЕ используется — фикстура `session`
+    (tests/conftest.py) кладёт AsyncSession поверх уже открытой внешней
+    транзакции соединения; экспериментально проверено (см. session.rollback()
+    в этом файле после нескольких вложенных SAVEPOINT-циклов economy_service),
+    что mid-test `session.rollback()` в этой связке откатывает ВСЮ транзакцию
+    теста целиком (включая уже закоммиченный сетап create_duel), а не только
+    этот вызов — поэтому здесь проверяем денежный инвариант БЕЗ явного
+    rollback: списание уже произошло (деньги "в подвешенном" состоянии до
+    итога транзакции), дуэль не записана как резолвленная, а наивный повтор
+    с тем же ref_id явно проваливается, не двигая деньги повторно."""
+    chat_id = -100990105
+    challenger_id, opponent_id = 990105, 990106
+    await _ensure_user(session, challenger_id, "Челленджер")
+    await _ensure_user(session, opponent_id, "Оппонент")
+    await _fund(session, chat_id, challenger_id)
+    opponent_before = await _fund(session, chat_id, opponent_id)
+
+    stake = 100
+    duel = await duel_service.create_duel(
+        session, chat_id, challenger_id, opponent_id, stake, "test_atomic_rollback_create"
+    )
+    challenger_before = await _get_user_balance(session, chat_id, challenger_id)
+    bank_before = await _get_bank_balance(session, chat_id)
+
+    monkeypatch.setattr(duel_service, "_rng", _ForcedChoiceRng(challenger_id))
+    monkeypatch.setattr(
+        economy_service,
+        "pay_from_bank",
+        AsyncMock(side_effect=RuntimeError("симулированный сбой БД после RNG-ролла")),
+    )
+
+    ref_id = "test_atomic_rollback_accept"
+    with pytest.raises(RuntimeError):
+        await duel_service.accept_duel(session, chat_id, duel.id, opponent_id, ref_id)
+
+    # Дуэль НЕ наполовину resolved — исключение проброшено ДО присвоения
+    # winner_id/loser_id/fee/status (bot/services/duel_service.py 248-253).
+    duel_row = await _get_duel(session, duel.id)
+    assert duel_row.status == "pending"
+    assert duel_row.winner_id is None
+    assert duel_row.fee is None
+
+    # Деньги реально "в подвешенном" состоянии внутри текущей (пока не
+    # завершённой) транзакции: эскроу оппонента + перевод ставки челленджера
+    # в банк УЖЕ применились (шаги ДО RNG-ролла/pay_from_bank), выплата — нет.
+    assert await _get_user_balance(session, chat_id, opponent_id) == opponent_before - stake
+    assert await _get_user_balance(session, chat_id, challenger_id) == challenger_before
+    assert await _get_bank_balance(session, chat_id) == bank_before + 2 * stake
+
+    # Наивный повтор с ТЕМ ЖЕ ref_id (клиент после сетевого таймаута) не
+    # должен списать ставку оппонента повторно — escrow-гард ловит коллизию
+    # ref_id и поднимает DuelAlreadyResolved ДО повторного RNG-ролла/платежа.
+    with pytest.raises(duel_service.DuelAlreadyResolved):
+        await duel_service.accept_duel(session, chat_id, duel.id, opponent_id, ref_id)
+
+    # Баланс/банк не изменились повторно (никакого двойного списания).
+    assert await _get_user_balance(session, chat_id, opponent_id) == opponent_before - stake
+    assert await _get_user_balance(session, chat_id, challenger_id) == challenger_before
+    assert await _get_bank_balance(session, chat_id) == bank_before + 2 * stake
+
+
 # --- duelbot (D-08: против банка) --------------------------------------------
 
 
@@ -385,6 +535,56 @@ async def test_duelbot_vs_bank_challenger_loses(session, monkeypatch):
 
     assert await _get_user_balance(session, chat_id, challenger_id) == challenger_before - stake
     assert await _get_bank_balance(session, chat_id) == bank_before + stake
+
+
+@pytest.mark.asyncio
+async def test_duelbot_replay_same_ref_id_does_not_reroll_rng(session, monkeypatch):
+    """Аудит-регрессия (idempotency-replay): duelbot ловит повтор ref_id через
+    escrow-гард `_escrow_stake` (bot/services/duel_service.py строки 279-282)
+    ДО RNG-ролла `_rng.choice` (строка 285) — повторный вызов с тем же ref_id
+    (симуляция ретрая Telegram-апдейта с тем же message_id) обязан поднять
+    DuelAlreadyResolved БЕЗ повторного вызова RNG и БЕЗ второй Duel-записи,
+    даже если форсированный RNG-исход второго вызова противоположен первому
+    (защита от будущего рефакторинга, который мог бы переставить RNG-ролл
+    выше escrow-гарда)."""
+    chat_id = -100990101
+    challenger_id = 990101
+    await _ensure_user(session, challenger_id)
+    await _fund(session, chat_id, challenger_id)
+    await economy_service.credit_bank(
+        session, chat_id, 100_000, kind="test_seed", ref_id="test_duelbot_replay_seed_bank"
+    )
+    await session.commit()
+
+    ref_id = "test_duelbot_replay_ref"
+    stake = 100
+
+    monkeypatch.setattr(duel_service, "_rng", _ForcedChoiceRng(True))
+    first = await duel_service.duelbot(session, chat_id, challenger_id, stake, ref_id)
+    assert first["winner_id"] == challenger_id
+
+    balance_after_first = await _get_user_balance(session, chat_id, challenger_id)
+
+    # Форсированный исход второго вызова — противоположный первому. Если бы
+    # RNG-ролл когда-нибудь оказался выше escrow-гарда, второй вызов создал
+    # бы вторую resolved-запись с challenger в роли loser_id.
+    monkeypatch.setattr(duel_service, "_rng", _ForcedChoiceRng(False))
+    with pytest.raises(duel_service.DuelAlreadyResolved):
+        await duel_service.duelbot(session, chat_id, challenger_id, stake, ref_id)
+
+    # Ровно одна Duel-запись, с исходом ПЕРВОГО вызова.
+    duels = (
+        await session.execute(
+            select(Duel).where(Duel.chat_id == chat_id, Duel.challenger_id == challenger_id)
+        )
+    ).scalars().all()
+    assert len(duels) == 1
+    assert duels[0].winner_id == challenger_id
+    assert duels[0].loser_id is None
+    assert duels[0].fee == first["fee"]
+
+    # Деньги не двинулись повторно.
+    assert await _get_user_balance(session, chat_id, challenger_id) == balance_after_first
 
 
 # --- decline_duel / cancel_duel (полный рефанд) ------------------------------

@@ -354,7 +354,7 @@ async def post_slots(
         result["user_balance_after"] = balance
 
         jackpot = result.get("jackpot")
-        if jackpot and jackpot.get("won"):
+        if jackpot and jackpot.get("won") and jackpot.get("amount", 0) > 0:
             await _announce_jackpot_win(
                 request, session, auth.chat_id, auth.user_id, jackpot["amount"], jackpot["pool"]
             )

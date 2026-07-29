@@ -159,7 +159,7 @@ async def _apply_dupe(
         row.stars += 1
     else:
         refunded = gacha_catalog.DUPE_REFUND[char.tier]
-        await economy_service.credit(
+        credited = await economy_service.credit(
             session,
             chat_id,
             user_id,
@@ -167,6 +167,11 @@ async def _apply_dupe(
             kind="gacha_refund",
             ref_id=f"gacha_refund:{chat_id}:{user_id}:{char.char_id}:{row.copies}",
         )
+        if not credited:
+            # ref_id уже применялся (идемпотентный replay) — credit НЕ
+            # начислил деньги повторно, поэтому ответ не должен заявлять
+            # рефанд, которого фактически не произошло.
+            refunded = 0
     await session.flush()
     return {"char_id": char.char_id, "tier": char.tier, "stars": row.stars, "refunded": refunded}
 
