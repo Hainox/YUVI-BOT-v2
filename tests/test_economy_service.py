@@ -21,6 +21,7 @@ from sqlalchemy import func
 from sqlalchemy import select
 
 from bot.config import settings
+from bot.constants import TELEGRAM_SERVICE_ACCOUNT_ID
 from bot.services import economy_service
 from common.models.chat_bank import ChatBank
 from common.models.economy_tx import EconomyTx
@@ -409,3 +410,107 @@ def test_economy_tx_is_append_only_static():
     assert "delete(EconomyTx" not in source
     assert "UPDATE economy_tx" not in source
     assert "DELETE FROM economy_tx" not in source
+
+
+# --- TELEGRAM_SERVICE_ACCOUNT_ID (777000) исключён из участников экономики --
+#
+# Служебный Telegram-аккаунт привязанного канала (777000) шлёт реальные
+# Message с is_bot=False, поэтому раньше проскакивал во всех "кто участник
+# экономики" запросах наравне с людьми. Сеем строку напрямую в модель (в
+# обход economy_service.get_balance/credit — обычные сервисные функции для
+# 777000 никогда бы вызваны не были в проде, но directly-seeded строка могла
+# остаться от до-фикса периода), убеждаемся, что она нигде не всплывает.
+
+
+async def _seed_balance_row(session, chat_id: int, user_id: int, balance: int) -> None:
+    """Заводит UserBalance НАПРЯМУЮ (в обход get_balance/_get_or_create_balance) —
+    имитирует уже существующую до фикса строку служебного аккаунта."""
+    session.add(User(id=user_id, first_name="Telegram"))
+    session.add(UserBalance(chat_id=chat_id, user_id=user_id, balance=balance))
+    await session.flush()
+
+
+async def _seed_tx_row(session, chat_id: int, user_id: int, amount: int, kind: str, ref_id: str) -> None:
+    """Заводит EconomyTx НАПРЯМУЮ (в обход _log_tx) для служебного аккаунта."""
+    session.add(EconomyTx(chat_id=chat_id, user_id=user_id, amount=amount, kind=kind, ref_id=ref_id))
+    await session.flush()
+
+
+@pytest.mark.asyncio
+async def test_credit_all_in_chat_excludes_telegram_service_account(session):
+    chat_id = -100700030
+    u1, u2 = 800200, 800201
+    await _ensure_user(session, u1, "Реальный1")
+    await _ensure_user(session, u2, "Реальный2")
+    await economy_service.get_balance(session, chat_id, u1)
+    await economy_service.get_balance(session, chat_id, u2)
+    await _seed_balance_row(session, chat_id, TELEGRAM_SERVICE_ACCOUNT_ID, 999_999_999)
+    await session.commit()
+
+    total, credited = await economy_service.credit_all_in_chat(
+        session, chat_id, 10, kind="test_grant_all", ref_id_prefix="test_grant_all_exclusion"
+    )
+    await session.commit()
+
+    assert total == 2  # только u1/u2 — 777000 не считается участником
+    assert TELEGRAM_SERVICE_ACCOUNT_ID not in credited
+    assert set(credited) == {u1, u2}
+    assert await _get_user_balance(session, chat_id, TELEGRAM_SERVICE_ACCOUNT_ID) == 999_999_999
+
+
+@pytest.mark.asyncio
+async def test_get_leaderboard_excludes_telegram_service_account(session):
+    chat_id = -100700031
+    u1 = 800210
+    await _ensure_user(session, u1, "Реальный")
+    await economy_service.get_balance(session, chat_id, u1)
+    # Служебный аккаунт с заведомо огромным балансом — если бы исключение
+    # было сломано, он бы гарантированно возглавил лидерборд.
+    await _seed_balance_row(session, chat_id, TELEGRAM_SERVICE_ACCOUNT_ID, 999_999_999)
+    await session.commit()
+
+    leaderboard = await economy_service.get_leaderboard(session, chat_id, limit=10)
+
+    user_ids = [row["user_id"] for row in leaderboard]
+    assert TELEGRAM_SERVICE_ACCOUNT_ID not in user_ids
+    assert u1 in user_ids
+
+
+@pytest.mark.asyncio
+async def test_get_transactions_excludes_telegram_service_account_in_chatwide_feed(session):
+    chat_id = -100700032
+    u1 = 800220
+    await _ensure_user(session, u1, "Реальный")
+    await economy_service.get_balance(session, chat_id, u1)  # start_bonus tx
+    await _ensure_user(session, TELEGRAM_SERVICE_ACCOUNT_ID, "Telegram")
+    await _seed_tx_row(
+        session, chat_id, TELEGRAM_SERVICE_ACCOUNT_ID, 500, "test_ghost_credit", "test_tx_777000_a"
+    )
+    await session.commit()
+
+    rows = await economy_service.get_transactions(session, chat_id, user_id=None, limit=100)
+
+    user_ids = {row["user_id"] for row in rows}
+    assert TELEGRAM_SERVICE_ACCOUNT_ID not in user_ids
+    assert u1 in user_ids
+
+
+@pytest.mark.asyncio
+async def test_get_transactions_null_user_id_row_stays_visible_with_non_hidden_kind(session):
+    """Регрессия на is_distinct_from vs `!=` (см. docstring get_transactions):
+    строка с user_id IS NULL и kind ВНЕ HIDDEN_KINDS (напр. как у duel_service/
+    markets_service/gacha_service, чей banking-leg тоже user_id=None) обязана
+    остаться видимой в чат-ленте. Наивный `EconomyTx.user_id != 777000` дал бы
+    здесь NULL (не TRUE) и молча выкинул бы эту строку — ровно та ошибка,
+    которую is_distinct_from и предотвращает."""
+    chat_id = -100700033
+    u1 = 800230
+    await _ensure_user(session, u1, "Реальный")
+    await economy_service.get_balance(session, chat_id, u1)  # start_bonus tx
+    await _seed_tx_row(session, chat_id, None, 100, "duel_stake", "test_tx_null_user_visible")
+    await session.commit()
+
+    rows = await economy_service.get_transactions(session, chat_id, user_id=None, limit=100)
+
+    kinds = [row["kind"] for row in rows]
+    assert "duel_stake" in kinds

@@ -17,17 +17,11 @@ from aiogram import BaseMiddleware
 from aiogram.types import Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from bot.constants import TELEGRAM_SERVICE_ACCOUNT_ID
 from bot.services import frequency_service
 from bot.services import message_service
 
 logger = logging.getLogger(__name__)
-
-# Служебный аккаунт Telegram (уведомления о привязанном канале приходят в чат
-# как обычное Message с этим from_user.id, is_bot=False — не ловится обычной
-# is_bot-проверкой ниже). Жалоба владельца бота 2026-07-28: "половина
-# номинации уходит Telegram" — этот аккаунт наравне с реальными участниками
-# копил daily_stats.message_count и выигрывал /awards.
-_TELEGRAM_SERVICE_ACCOUNT_ID = 777000
 
 
 def _is_service_message(event: Message) -> bool:
@@ -68,7 +62,7 @@ class CollectorMiddleware(BaseMiddleware):
         if (
             event.from_user is None
             or event.from_user.is_bot
-            or event.from_user.id == _TELEGRAM_SERVICE_ACCOUNT_ID
+            or event.from_user.id == TELEGRAM_SERVICE_ACCOUNT_ID
             or _is_service_message(event)
             or (event.text is not None and event.text.startswith("/"))
         ):

@@ -79,7 +79,7 @@ async def test_transfer_command_reply_moves_money_with_fee(session):
     await economy_service.get_balance(session, chat_id, sender_id)
     await economy_service.get_balance(session, chat_id, receiver_id)
 
-    reply_to = SimpleNamespace(from_user=SimpleNamespace(id=receiver_id, first_name="Получатель"))
+    reply_to = SimpleNamespace(from_user=SimpleNamespace(id=receiver_id, is_bot=False, first_name="Получатель"))
     message = _fake_message(
         chat_id, sender_id, "Отправитель", "/transfer 100",
         message_id=555, reply_to_message=reply_to,
@@ -119,7 +119,7 @@ async def test_transfer_command_insufficient_funds_gives_clear_message(session):
     await economy_service.get_balance(session, chat_id, sender_id)
     await economy_service.get_balance(session, chat_id, receiver_id)
 
-    reply_to = SimpleNamespace(from_user=SimpleNamespace(id=receiver_id, first_name="Получатель"))
+    reply_to = SimpleNamespace(from_user=SimpleNamespace(id=receiver_id, is_bot=False, first_name="Получатель"))
     message = _fake_message(
         chat_id, sender_id, "Отправитель", "/transfer 999999",
         message_id=556, reply_to_message=reply_to,
@@ -138,7 +138,7 @@ async def test_transfer_command_self_transfer_gives_clear_message(session):
     await _ensure_user(session, user_id, "Соло")
     await economy_service.get_balance(session, chat_id, user_id)
 
-    reply_to = SimpleNamespace(from_user=SimpleNamespace(id=user_id, first_name="Соло"))
+    reply_to = SimpleNamespace(from_user=SimpleNamespace(id=user_id, is_bot=False, first_name="Соло"))
     message = _fake_message(
         chat_id, user_id, "Соло", "/transfer 10",
         message_id=557, reply_to_message=reply_to,

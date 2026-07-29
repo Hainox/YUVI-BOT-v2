@@ -321,7 +321,7 @@ def _fake_message(chat_id: int, actor_id: int, text: str, target_id: int, target
         message_id=1,
         text=text,
         reply_to_message=SimpleNamespace(
-            from_user=SimpleNamespace(id=target_id, first_name=target_name)
+            from_user=SimpleNamespace(id=target_id, is_bot=False, first_name=target_name)
         ),
         entities=None,
         answer=AsyncMock(),

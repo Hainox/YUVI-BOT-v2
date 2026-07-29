@@ -37,6 +37,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
+from bot.constants import TELEGRAM_SERVICE_ACCOUNT_ID
 from bot.services import frequency_service
 from common.db.session import SessionLocal
 from common.models.daily_stat import DailyStat
@@ -245,11 +246,19 @@ def _pyrogram_message_to_row(message: Any, chat_id: int) -> dict[str, Any] | Non
 
     Пропускает служебные сообщения и сообщения без автора (Pitfall 5 — тот же
     None-check, что в CollectorMiddleware): системные события (join/leave и т.п.)
-    и сообщения ботов в backfill не нужны.
+    и сообщения ботов в backfill не нужны. Также пропускает
+    TELEGRAM_SERVICE_ACCOUNT_ID (777000, служебный аккаунт привязанного
+    канала) — иначе повторный /backfill каждый раз заново заводил бы для
+    него users/messages/daily_stats строки, сводя на нет фикс в остальных
+    сервисах (bot/constants.py).
     """
     if getattr(message, "service", None) or getattr(message, "empty", False):
         return None
-    if message.from_user is None or message.from_user.is_bot:
+    if (
+        message.from_user is None
+        or message.from_user.is_bot
+        or message.from_user.id == TELEGRAM_SERVICE_ACCOUNT_ID
+    ):
         return None
 
     media = _extract_pyrogram_media(message)

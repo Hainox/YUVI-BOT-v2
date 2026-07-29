@@ -23,6 +23,7 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import select
 
+from bot.constants import TELEGRAM_SERVICE_ACCOUNT_ID
 from bot.services import economy_service
 from bot.services import giveaway_service
 from common.models.chat_bank import ChatBank
@@ -305,3 +306,53 @@ async def test_giveaway_same_ref_id_after_empty_pool_then_candidate_appears_roll
     assert result["credited"] is True
     assert result["total_candidates"] == 1
     assert await _get_user_balance(session, chat_id, uid) == balance_before + 100
+
+
+# --- TELEGRAM_SERVICE_ACCOUNT_ID (777000) исключён из кандидатов ------------
+
+
+@pytest.mark.asyncio
+async def test_economy_candidates_excludes_telegram_service_account(session):
+    """Служебный аккаунт (777000) может иметь UserBalance-строку (сеем
+    напрямую в модель, в обход обычных сервисных функций, имитируя
+    до-фиксовую строку) — _economy_candidates не должен его вернуть."""
+    chat_id = -1009006020
+    uid = 9006020
+    await _ensure_user(session, uid, "Реальный")
+    await economy_service.get_balance(session, chat_id, uid)
+    session.add(User(id=TELEGRAM_SERVICE_ACCOUNT_ID, first_name="Telegram"))
+    session.add(UserBalance(chat_id=chat_id, user_id=TELEGRAM_SERVICE_ACCOUNT_ID, balance=999_999_999))
+    await session.flush()
+    await session.commit()
+
+    candidates = await giveaway_service._economy_candidates(session, chat_id)
+
+    assert TELEGRAM_SERVICE_ACCOUNT_ID not in candidates
+    assert uid in candidates
+
+
+@pytest.mark.asyncio
+async def test_giveaway_never_picks_telegram_service_account_as_winner(session):
+    """Реальный сценарий с реальным (не форсированным) RNG: единственный
+    легитимный кандидат — uid, служебный аккаунт с заведомо огромным балансом
+    сидится напрямую в UserBalance. Победитель обязан быть uid, независимо от
+    того, что RNG не подменён (единственный валидный кандидат в пуле)."""
+    chat_id = -1009006021
+    uid = 9006021
+    await _ensure_user(session, uid, "Реальный")
+    balance_before = await economy_service.get_balance(session, chat_id, uid)
+    session.add(User(id=TELEGRAM_SERVICE_ACCOUNT_ID, first_name="Telegram"))
+    session.add(UserBalance(chat_id=chat_id, user_id=TELEGRAM_SERVICE_ACCOUNT_ID, balance=999_999_999))
+    await session.flush()
+    await session.commit()
+
+    for i in range(10):
+        result = await giveaway_service.run_giveaway(
+            session, chat_id, 10, ref_id=f"giveaway:no-service-account:{i}"
+        )
+        assert result["winner"] == uid
+        assert result["winner"] != TELEGRAM_SERVICE_ACCOUNT_ID
+        assert result["total_candidates"] == 1
+
+    assert await _get_user_balance(session, chat_id, uid) == balance_before + 100
+    assert await _get_user_balance(session, chat_id, TELEGRAM_SERVICE_ACCOUNT_ID) == 999_999_999

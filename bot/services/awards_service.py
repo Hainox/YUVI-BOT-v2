@@ -35,6 +35,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
+from bot.constants import TELEGRAM_SERVICE_ACCOUNT_ID
 from bot.services import economy_service
 from bot.services import steam_service
 from common.db.session import SessionLocal
@@ -107,13 +108,22 @@ async def compute_nominations(session: AsyncSession, chat_id: int, day_msk: date
     DESC-номинации с победной метрикой `0` (или отсутствием строк за день)
     возвращают `winner_user_id=None` — "никто", выплата не производится
     (пустая номинация не должна награждать случайного участника с нулём).
+
+    Исключает TELEGRAM_SERVICE_ACCOUNT_ID (служебный аккаунт привязанного
+    канала) — исторические daily_stats-строки для него могли остаться от
+    до-фикса периода (жалоба владельца 2026-07-28: "половина номинации
+    уходит Telegram").
     """
     results: list[dict] = []
     for nom in NOMINATIONS:
         order = nom["column"].desc() if nom["direction"] == "desc" else nom["column"].asc()
         stmt = (
             select(DailyStat.user_id, nom["column"])
-            .where(DailyStat.chat_id == chat_id, DailyStat.stat_date == day_msk)
+            .where(
+                DailyStat.chat_id == chat_id,
+                DailyStat.stat_date == day_msk,
+                DailyStat.user_id != TELEGRAM_SERVICE_ACCOUNT_ID,
+            )
             .order_by(order, DailyStat.user_id.asc())
             .limit(1)
         )

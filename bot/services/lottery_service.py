@@ -28,6 +28,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
+from bot.constants import TELEGRAM_SERVICE_ACCOUNT_ID
 from bot.services import daily_pick_service
 from common.db.session import SessionLocal
 from common.models.daily_stat import DailyStat
@@ -39,11 +40,16 @@ logger = logging.getLogger(__name__)
 async def _yesterday_candidates(session: AsyncSession, chat_id: int) -> list[int]:
     """Кандидаты в Yuvi_Yuvi дня — ВЧЕРАШНИЕ активные участники
     (distinct daily_stats.user_id за stat_date=вчера относительно
-    daily_pick_service._today_msk()), не все подряд."""
+    daily_pick_service._today_msk()), не все подряд. Исключает
+    TELEGRAM_SERVICE_ACCOUNT_ID (служебный аккаунт привязанного канала)."""
     yesterday = daily_pick_service._today_msk() - timedelta(days=1)
     result = await session.execute(
         select(DailyStat.user_id)
-        .where(DailyStat.chat_id == chat_id, DailyStat.stat_date == yesterday)
+        .where(
+            DailyStat.chat_id == chat_id,
+            DailyStat.stat_date == yesterday,
+            DailyStat.user_id != TELEGRAM_SERVICE_ACCOUNT_ID,
+        )
         .distinct()
     )
     return [row[0] for row in result.all()]

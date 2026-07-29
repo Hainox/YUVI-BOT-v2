@@ -26,6 +26,7 @@ from datetime import date
 import pytest
 from sqlalchemy import select
 
+from bot.constants import TELEGRAM_SERVICE_ACCOUNT_ID
 from bot.services import awards_service
 from bot.services import economy_service
 from common.models.chat_bank import ChatBank
@@ -282,3 +283,117 @@ async def test_awards_idempotent_on_replay(session, monkeypatch):
     winners_first = {n["key"]: n["winner_user_id"] for n in first["nominations"]}
     winners_second = {n["key"]: n["winner_user_id"] for n in second["nominations"]}
     assert winners_first == winners_second
+
+
+# --- TELEGRAM_SERVICE_ACCOUNT_ID (777000) исключён из номинаций -------------
+
+
+@pytest.mark.asyncio
+async def test_compute_nominations_excludes_telegram_service_account(session):
+    """daily_stats-строка служебного аккаунта (777000) с заведомо огромными
+    метриками — если бы исключение было сломано, он бы выиграл ВСЕ 6
+    номинаций (владелец бота жаловался именно на это, см. докстринг
+    compute_nominations: 'половина номинации уходит Telegram'). Реальный
+    участник с обычными метриками обязан выиграть вместо него."""
+    chat_id = -100900660008
+    real_user = 900660060
+    await _ensure_user(session, real_user, "Обычный")
+    await _ensure_user(session, TELEGRAM_SERVICE_ACCOUNT_ID, "Telegram")
+
+    await _seed_daily_stat(
+        session,
+        chat_id,
+        real_user,
+        TEST_DAY,
+        message_count=10,
+        profanity_count=2,
+        photo_count=1,
+        forward_count=1,
+        longest_msg_len=50,
+    )
+    # Заведомо огромные метрики служебного аккаунта — гарантированно
+    # выиграл бы каждую DESC-номинацию, будь он допущен к участию.
+    await _seed_daily_stat(
+        session,
+        chat_id,
+        TELEGRAM_SERVICE_ACCOUNT_ID,
+        TEST_DAY,
+        message_count=999_999,
+        profanity_count=999_999,
+        photo_count=999_999,
+        forward_count=999_999,
+        longest_msg_len=999_999,
+    )
+
+    noms = await awards_service.compute_nominations(session, chat_id, TEST_DAY)
+
+    for nom in noms:
+        assert nom["winner_user_id"] != TELEGRAM_SERVICE_ACCOUNT_ID, (
+            f"nomination {nom['key']!r} should never award the Telegram service account"
+        )
+    # DESC-номинации достаются реальному участнику (единственному валидному
+    # кандидату с ненулевой метрикой).
+    for key in ("most_messages", "profanity", "photos", "forwards", "longest"):
+        assert _nom(noms, key)["winner_user_id"] == real_user
+
+
+@pytest.mark.asyncio
+async def test_run_awards_never_pays_telegram_service_account(session, monkeypatch):
+    """Сквозной прогон run_awards: служебный аккаунт с огромными метриками не
+    получает выплату ни по одной номинации, деньги идут реальному участнику."""
+    _patch_today(monkeypatch)
+    chat_id = -100900660009
+    real_user = 900660061
+    await _ensure_user(session, real_user, "Обычный")
+    await _ensure_user(session, TELEGRAM_SERVICE_ACCOUNT_ID, "Telegram")
+    balance_before = await _fund(session, chat_id, real_user)
+    await economy_service.credit_bank(
+        session, chat_id, 100_000, kind="test_seed", ref_id="test_awards_no_service_account_seed"
+    )
+    await session.commit()
+
+    await _seed_daily_stat(
+        session,
+        chat_id,
+        real_user,
+        TEST_DAY,
+        message_count=10,
+        profanity_count=2,
+        photo_count=1,
+        forward_count=1,
+        longest_msg_len=50,
+    )
+    await _seed_daily_stat(
+        session,
+        chat_id,
+        TELEGRAM_SERVICE_ACCOUNT_ID,
+        TEST_DAY,
+        message_count=999_999,
+        profanity_count=999_999,
+        photo_count=999_999,
+        forward_count=999_999,
+        longest_msg_len=999_999,
+    )
+
+    result = await awards_service.run_awards(session, chat_id)
+
+    for nom in result["nominations"]:
+        assert nom["winner_user_id"] != TELEGRAM_SERVICE_ACCOUNT_ID
+
+    # real_user — единственный валидный кандидат, выигрывает ВСЕ 6 номинаций:
+    # main(322) + profanity/photos/forwards/longest(228*4) + least_active(228).
+    assert (
+        await _get_user_balance(session, chat_id, real_user)
+        == balance_before + 322 + 228 * 4 + 228
+    )
+    # Служебный аккаунт никогда не получал выплату — pay_from_bank даже не
+    # заводил ему UserBalance-строку (get_or_create срабатывает только при
+    # реальной выплате).
+    service_account_balance = (
+        await session.execute(
+            select(UserBalance.balance).where(
+                UserBalance.chat_id == chat_id, UserBalance.user_id == TELEGRAM_SERVICE_ACCOUNT_ID
+            )
+        )
+    ).scalar_one_or_none()
+    assert service_account_balance is None
