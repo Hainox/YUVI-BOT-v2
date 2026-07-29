@@ -75,22 +75,25 @@ async def _gather_persona_context(
 
 async def _stream_persona_reply(system_prompt: str, user_prompt: str, model: str) -> str:
     """Общий стриминг + graceful-деградация — тело try/except одинаковое у
-    build_twin_reply/build_twin_reaction (reasoning-only модель -> фолбэк,
-    не 500, Pitfall 3)."""
+    build_twin_reply/build_twin_reaction (reasoning-only/сетевой сбой ->
+    фолбэк, не 500, Pitfall 3).
+
+    complete_with_fallback уже пробует весь каталог settings.ai_available_models
+    ПОСЛЕ основной модели (обычно kimi-k2.6, см. build_twin_reply/
+    build_twin_reaction) — TWIN_FALLBACK_TEXT остаётся последним рубежом
+    только на случай, если ВСЕ модели каталога подряд не смогли ответить
+    (не единственной попыткой, как было до 2026-07-28)."""
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
     ]
     try:
-        parts = [
-            delta
-            async for delta in ai_client.stream(
-                messages, model=model, max_tokens=settings.twin_max_output_tokens
-            )
-        ]
+        text = await ai_client.complete_with_fallback(
+            messages, primary_model=model, max_tokens=settings.twin_max_output_tokens
+        )
     except RuntimeError:  # reasoning-only модель — деградация, не 500 (Pitfall 3)
         return TWIN_FALLBACK_TEXT
-    return "".join(parts).strip() or TWIN_FALLBACK_TEXT
+    return text.strip() or TWIN_FALLBACK_TEXT
 
 
 async def build_twin_reply(

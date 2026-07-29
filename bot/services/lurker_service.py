@@ -59,10 +59,11 @@ async def build_daily_message(session: AsyncSession, chat_id: int) -> str:
         {"role": "system", "content": _SYSTEM_PROMPT},
         {"role": "user", "content": "Напиши сегодняшнее сообщение."},
     ]
-    parts: list[str] = []
-    async for delta in ai_client.stream(messages, model=model, max_tokens=settings.ai_max_output_tokens):
-        parts.append(delta)
-    text = "".join(parts).strip()
+    text = (
+        await ai_client.complete_with_fallback(
+            messages, primary_model=model, max_tokens=settings.ai_max_output_tokens
+        )
+    ).strip()
     if not text:
         return ""
     return f"{text}\n\n#мем"

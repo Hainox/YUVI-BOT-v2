@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
 from bot.filters.chat_admin import ChatAdminFilter
+from bot.services import ai_client
 from bot.services import settings_service
 
 router = Router()
@@ -26,7 +27,9 @@ router.message.filter(ChatAdminFilter())
 
 
 def _available_models() -> list[str]:
-    return [m.strip() for m in settings.ai_available_models.split(",") if m.strip()]
+    """Тонкая обёртка над ai_client.available_models() (единственное место
+    парсинга settings.ai_available_models — раньше дублировалось здесь)."""
+    return ai_client.available_models()
 
 
 @router.message(Command("model_show"))
@@ -53,6 +56,24 @@ async def model_list_command(message: Message) -> None:
     models = _available_models()
     lines = ["<b>Доступные модели</b>"]
     lines.extend(f"- {html.escape(m)}" for m in models)
+    await message.answer("\n".join(lines), parse_mode="HTML")
+
+
+@router.message(Command("model_health"))
+async def model_health_command(message: Message) -> None:
+    """Число отказов по моделям (AIEmptyResponseError/таймаут/сеть/rate-limit/
+    5xx/не найдена), из-за которых complete_with_fallback переключился на
+    следующую модель каталога, с момента последнего запуска процесса бота
+    (in-memory счётчик, не персистентный — см. ai_client.get_failure_counts,
+    тех.долг "надёжность AI-фич", запрошено 2026-07-29)."""
+    counts = ai_client.get_failure_counts()
+    if not counts:
+        await message.answer("Отказов моделей с последнего запуска бота не было.")
+        return
+
+    lines = ["<b>Отказы моделей с последнего запуска бота</b>"]
+    for model, count in sorted(counts.items(), key=lambda kv: kv[1], reverse=True):
+        lines.append(f"- {html.escape(model)}: {count}")
     await message.answer("\n".join(lines), parse_mode="HTML")
 
 

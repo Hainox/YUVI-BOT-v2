@@ -109,13 +109,9 @@ async def build_portrait(
         {"role": "user", "content": context},
     ]
 
-    parts = [
-        delta
-        async for delta in ai_client.stream(
-            messages, model=model, max_tokens=settings.ai_max_output_tokens
-        )
-    ]
-    return "".join(parts)
+    return await ai_client.complete_with_fallback(
+        messages, primary_model=model, max_tokens=settings.ai_max_output_tokens
+    )
 
 
 _PROFILE_SECTIONS_PROMPT_TEMPLATE = (
@@ -185,13 +181,11 @@ async def build_profile_sections(
         {"role": "user", "content": context},
     ]
 
-    parts = [
-        delta
-        async for delta in ai_client.stream(
-            messages, model=model, max_tokens=settings.ai_max_output_tokens
+    return (
+        await ai_client.complete_with_fallback(
+            messages, primary_model=model, max_tokens=settings.ai_max_output_tokens
         )
-    ]
-    return "".join(parts).strip()
+    ).strip()
 
 
 async def build_card(session: AsyncSession, chat_id: int, user_id: int, display_name: str) -> dict:
