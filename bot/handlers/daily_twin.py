@@ -49,6 +49,7 @@ from aiogram.types import Message
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from bot.config import settings
 from bot.services import daily_twin_service
 from bot.services import twin_service
 from common.models.user import User
@@ -116,6 +117,20 @@ async def daily_twin_reaction(message: Message, session: AsyncSession) -> None:
 
     if target_user_id is None:
         raise SkipHandler
+
+    # Тот же жёсткий суточный потолок, что и у проактивного тика
+    # (`daily_twin_service.maybe_post_proactively`) — БЕЗ него реактивная
+    # ветка не имела вообще никакого ограничения: если сегодняшняя персона
+    # оказывается активным участником, на которого часто отвечают/которого
+    # часто упоминают, бот генерировал ответ на КАЖДЫЙ такой апдейт без
+    # перерыва (живой инцидент 2026-07-29 — воспринималось как спам).
+    # `count_todays_posts` уже считает посты ОБОИХ путей (одна и та же
+    # таблица `daily_twin_posts`), поэтому проверка здесь и там делят один
+    # и тот же бюджет на день, а не два независимых. Апдейт уже точно наш
+    # (target_user_id найден) — молчим обычным `return`, не `SkipHandler`.
+    posts_so_far = await daily_twin_service.count_todays_posts(session, message.chat.id)
+    if posts_so_far >= settings.daily_twin_max_posts:
+        return
 
     if display_name is None:
         display_name = (
