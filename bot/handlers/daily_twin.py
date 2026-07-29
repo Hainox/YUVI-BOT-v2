@@ -80,6 +80,13 @@ async def daily_twin_reaction(message: Message, session: AsyncSession) -> None:
     if message.from_user is None or message.text is None or message.text.startswith("/"):
         raise SkipHandler
 
+    # Глобальный админ-рубильник (/daily_twin_off, bot/handlers/daily_twin_admin.py)
+    # — фича выключена целиком для этого чата, апдейт явно не наш, обычный
+    # SkipHandler (та же дисциплина, что у остальных "не для нас" веток
+    # этого файла, см. модульный докстринг).
+    if not await daily_twin_service.is_enabled(session, message.chat.id):
+        raise SkipHandler
+
     # (1) Реплай на пост САМОГО бота (любой прошлый день) — приоритет
     # первым, это самый однозначный сигнал.
     target_user_id: int | None = None

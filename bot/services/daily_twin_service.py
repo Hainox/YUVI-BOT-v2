@@ -49,6 +49,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
 from bot.services import daily_pick_service
+from bot.services import settings_service
 from bot.services import twin_service
 from common.db.session import SessionLocal
 from common.models.daily_twin_post import DailyTwinPost
@@ -67,9 +68,36 @@ _TICK_JOB_ID = "daily_twin_tick"
 
 _KIND = "daily_twin"
 
+# Глобальный админ-рубильник фичи целиком (TWIN-03, запрошено 2026-07-29 —
+# живой инцидент: персона дня оказалась активным участником треда,
+# реактивный хендлер отвечал на каждый матчащий апдейт почти без остановки).
+# Отдельно от /twin_pause/-resume (personal opt-out ОДНОГО участника из
+# пика/чтения, twin_opt_ins) — это переключатель на ВЕСЬ чат разом,
+# выключающий одновременно и проактивный тик (maybe_post_proactively), и
+# реактивные ответы (bot/handlers/daily_twin.py), не трогая остальной
+# функционал бота. Персистентно через bot_settings/settings_service (та же
+# KV, что и /model_set) — переживает рестарт бота, не требует правки .env.
+KEY_DAILY_TWIN_ENABLED = "daily_twin_enabled"
+
 # server-authoritative RNG-seam (форма daily_pick_service._rng) —
 # monkeypatchable в тестах.
 _rng = secrets.SystemRandom()
+
+
+async def is_enabled(session: AsyncSession, chat_id: int) -> bool:
+    """Отсутствие строки в bot_settings = включено (текущее поведение по
+    умолчанию для всех существующих чатов, обратная совместимость с тем,
+    что было до этого рубильника)."""
+    value = await settings_service.get_setting(session, chat_id, KEY_DAILY_TWIN_ENABLED, "1")
+    return value != "0"
+
+
+async def set_enabled(session: AsyncSession, chat_id: int, enabled: bool, updated_by_tg_id: int) -> None:
+    """Не коммитит — та же дисциплина, что и у остального проекта
+    (вызывающий, здесь — bot/handlers/daily_twin_admin.py, коммитит сам)."""
+    await settings_service.set_setting(
+        session, chat_id, KEY_DAILY_TWIN_ENABLED, "1" if enabled else "0", updated_by_tg_id
+    )
 
 
 def _tick_probability() -> float:
@@ -188,6 +216,9 @@ async def maybe_post_proactively(session: AsyncSession, chat_id: int, bot: Bot) 
     (не окно, нет кандидатов, потолок постов, не выпала монета, AI не
     ответил). `TwinConsentError` НЕ ловится здесь — это осознанно (см.
     модульный докстринг): вызывающий (`_job`) отличает его от прочих ошибок."""
+    if not await is_enabled(session, chat_id):
+        return False
+
     now_msk = datetime.now(daily_pick_service.MSK)
     if not _in_posting_window(now_msk):
         return False
