@@ -226,7 +226,7 @@ async def test_roast_ai_empty_response_returns_400_and_skips_delivery(monkeypatc
     monkeypatch.setattr(telegram_client, "send_message", send_message_mock)
 
     async def empty_reasoning_stream(messages, model, max_tokens):
-        raise AIEmptyResponseError("Модель вернула только reasoning без ответа — попробуйте другую модель")
+        raise AIEmptyResponseError(model)
         yield  # pragma: no cover - делает функцию async generator, не выполняется
 
     monkeypatch.setattr(social_service.ai_client, "stream", empty_reasoning_stream)

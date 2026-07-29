@@ -291,11 +291,11 @@ async def build_burst_blurbs(session: AsyncSession, chat_id: int, bursts: list[B
         {"role": "user", "content": context},
     ]
 
-    parts = [
-        delta
-        async for delta in ai_client.stream(messages, model=model, max_tokens=settings.ai_max_output_tokens)
-    ]
-    raw = "".join(parts).strip()
+    raw = (
+        await ai_client.complete_with_fallback(
+            messages, primary_model=model, max_tokens=settings.ai_max_output_tokens
+        )
+    ).strip()
 
     blurbs_by_index: dict[int, str] = {}
     for line in raw.splitlines():
@@ -373,11 +373,11 @@ async def build_vibe(session: AsyncSession, chat_id: int, sample_context: str) -
         {"role": "user", "content": sample_context or "Сообщений нет."},
     ]
 
-    parts = [
-        delta
-        async for delta in ai_client.stream(messages, model=model, max_tokens=settings.ai_max_output_tokens)
-    ]
-    raw = "".join(parts).strip()
+    raw = (
+        await ai_client.complete_with_fallback(
+            messages, primary_model=model, max_tokens=settings.ai_max_output_tokens
+        )
+    ).strip()
 
     atmosphere_match = _ATMOSPHERE_LINE_RE.search(raw)
     atmosphere = atmosphere_match.group(1).strip() if atmosphere_match else ""
@@ -422,11 +422,11 @@ async def build_structured_recap(session: AsyncSession, chat_id: int, rows: list
         {"role": "user", "content": context or "Сообщений нет."},
     ]
 
-    parts = [
-        delta
-        async for delta in ai_client.stream(messages, model=model, max_tokens=settings.ai_max_output_tokens)
-    ]
-    text = "".join(parts).strip()
+    text = (
+        await ai_client.complete_with_fallback(
+            messages, primary_model=model, max_tokens=settings.ai_max_output_tokens
+        )
+    ).strip()
     return f"Пересказ чата\n{text}" if text else "Пересказ чата\nПересказ недоступен — недостаточно сообщений."
 
 

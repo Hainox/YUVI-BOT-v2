@@ -148,7 +148,6 @@ async def answer(session: AsyncSession, chat_id: int, question: str) -> str:
         {"role": "user", "content": f"Цитаты из истории чата:\n{context}\n\nВопрос: {question}"},
     ]
 
-    parts: list[str] = []
-    async for delta in ai_client.stream(messages, model=model, max_tokens=settings.ai_max_output_tokens):
-        parts.append(delta)
-    return "".join(parts)
+    return await ai_client.complete_with_fallback(
+        messages, primary_model=model, max_tokens=settings.ai_max_output_tokens
+    )

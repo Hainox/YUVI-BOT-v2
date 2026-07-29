@@ -86,6 +86,7 @@ _ADMIN_ONLY_COMMANDS: list[BotCommand] = [
     BotCommand(command="model_show", description="[Админ] Текущая AI-модель"),
     BotCommand(command="model_list", description="[Админ] Список AI-моделей"),
     BotCommand(command="model_set", description="[Админ] Сменить AI-модель"),
+    BotCommand(command="model_health", description="[Админ] Отказы моделей с последнего рестарта"),
     BotCommand(command="prompt_show", description="[Админ] Текущий промпт"),
     BotCommand(command="prompt_set", description="[Админ] Задать промпт"),
     BotCommand(command="prompt_reset", description="[Админ] Сбросить промпт"),
