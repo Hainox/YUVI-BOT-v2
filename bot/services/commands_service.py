@@ -55,7 +55,6 @@ _PUBLIC_COMMANDS: list[BotCommand] = [
     BotCommand(command="exchange_claim", description="Заклеймить листинг биржи"),
     BotCommand(command="exchange_cancel", description="Отменить свой листинг биржи"),
     BotCommand(command="exchange_confirm", description="Подтвердить сделку на бирже"),
-    BotCommand(command="donate", description="Задонатить звёздами Telegram"),
     BotCommand(command="fb", description="Оставить фидбек, баг или идею"),
     BotCommand(command="poke", description="Толкнуть участника"),
     BotCommand(command="hug", description="Обнять участника"),

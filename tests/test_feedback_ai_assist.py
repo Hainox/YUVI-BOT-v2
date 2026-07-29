@@ -3,7 +3,7 @@
 паттерн, что `bot/services/topics_service.py`, RESEARCH.md Pattern 3).
 
 Тот же fixture-паттерн ASGITransport + monkeypatch `telegram_client.
-get_chat_member_status`, что `test_api_feedback.py`/`test_api_donate.py`;
+get_chat_member_status`, что `test_api_feedback.py`/`test_api_shop.py`;
 `ai_client.stream` дополнительно монкипатчится на async-генератор (валидный
 JSON / невалидный текст) или на функцию, поднимающую исключение при первом
 `__anext__` (симуляция сбоя LLM-стрима).

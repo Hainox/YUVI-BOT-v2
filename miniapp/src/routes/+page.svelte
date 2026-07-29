@@ -73,12 +73,6 @@
 		{ title: 'Жертва дня', desc: 'приз, титул и дебафф на 24ч', accent: 'pink', href: '/victim' },
 		{ title: 'Итоги дня', desc: '7 номинаций и игра дня из Steam', accent: 'yellow', href: '/awards' },
 		{ title: 'Перевод', desc: 'закинь другу ювиков', href: '/transfer' },
-		{
-			title: 'Донат',
-			desc: 'задонать звёздами Telegram — получи ювики',
-			accent: 'yellow',
-			href: '/donate'
-		},
 		{ title: 'Правила', desc: 'как это всё работает', href: '/rules' },
 		{ title: 'Что новое', desc: 'обновления и планы разработки', href: '/whatsnew' },
 		{ title: 'Фидбек', desc: 'баг, идея или жалоба — админы увидят', href: '/feedback' },
