@@ -52,6 +52,7 @@ from api.main import app
 from bot.config import settings
 from bot.services import casino_service
 from bot.services import economy_service
+from bot.services import slot_engine
 from common.db.session import engine
 from common.db.session import SessionLocal
 from common.models.casino_game import CasinoGame
@@ -78,6 +79,10 @@ BLACKJACK_CHAT_ID = -900308
 # Отдельный chat_id для GET /games/slots/jackpot (CASINO-06) — свежий пул,
 # не смешивается с пулом, накопленным остальными slots-тестами в SLOTS_CHAT_ID.
 JACKPOT_CHAT_ID = -900309
+# Отдельный СВЕЖИЙ chat_id (bank_balance стартует с 0) для регрессии
+# "джекпот + пустой банк -> +0¥ анонс не должен уйти" — не смешивается с
+# банком/пулом, уже накопленными JACKPOT_CHAT_ID остальными тестами выше.
+JACKPOT_EMPTY_BANK_CHAT_ID = -900310
 
 
 class _ForcedWinRng:
@@ -947,6 +952,43 @@ async def test_slots_jackpot_loss_does_not_announce(monkeypatch):
 
     assert resp.status_code == 200
     assert resp.json()["jackpot"]["won"] is False
+    send_animation_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_slots_jackpot_win_with_drained_bank_does_not_announce(monkeypatch):
+    """Баг-регрессия: тот же спин одновременно (а) срывает джекпот-кубик
+    (RNG) и (б) выдаёт честный line-win (muscle wild на всех 15 клетках =
+    максимально возможная выплата, заведомо превышающая любой банк) — этот
+    line-win выплачивается ПЕРВЫМ (внутри `_settle`) и полностью выедает
+    chat_bank (свежий чат, банк = только что зачисленная ставка) ДО того, как
+    `jackpot_service` пытается заплатить пул. К моменту джекпот-ролла
+    bank_balance == 0 -> `pay_from_bank` платит 0. Роут не должен публиковать
+    анонс "+0¥"."""
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    send_animation_mock = AsyncMock(return_value={"ok": True})
+    monkeypatch.setattr(telegram_client, "send_animation", send_animation_mock)
+    forced_symbols = ["muscle"] * 15
+    monkeypatch.setattr(casino_service, "_rng", _ForcedJackpotGridRng(forced_symbols))
+
+    user_id = 300411
+    await _ensure_user(user_id)
+    await _topup(JACKPOT_EMPTY_BANK_CHAT_ID, user_id)
+    init_data = _build_init_data(user_id=user_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/games/slots",
+            params={"chat_id": JACKPOT_EMPTY_BANK_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={"bet": 10 * slot_engine.TOTAL_LINES, "idem_key": str(uuid.uuid4())},
+        )
+
+    assert resp.status_code == 200
+    jackpot = resp.json()["jackpot"]
+    assert jackpot["won"] is True
+    assert jackpot["amount"] == 0  # банк уже выеден выплатой честного line-win
     send_animation_mock.assert_not_awaited()
 
 

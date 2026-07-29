@@ -87,6 +87,12 @@ async def contribute_and_maybe_award(
     банка, тот же примитив, что и обычная выплата слота) и сбрасывает пул на
     seed; на неудаче просто возвращает выросший пул.
 
+    Если банк чата в момент выигрыша пуст (роздан другими выплатами
+    казино/дуэлей) — `pay_from_bank` вернёт 0, и пул НЕ сбрасывается: сброс на
+    seed оправдан только тогда, когда пул реально выплачен игроку, иначе
+    накопленный много-спиновый пул сгорал бы без единого выплаченного ювика
+    ради нулевой выплаты.
+
     Вызывающий (casino_service.play_slots) обязан звать это ТОЛЬКО для
     подтверждённо нового спина (не replay одного и того же idem_key) — иначе
     один и тот же спин пополнял бы пул/бросал кубик повторно."""
@@ -101,5 +107,6 @@ async def contribute_and_maybe_award(
     paid = await economy_service.pay_from_bank(
         session, chat_id, user_id, amount, kind="slot_jackpot", ref_id=f"slot_jackpot:{chat_id}:{idem_key}"
     )
-    row.pool = settings.slot_jackpot_seed
+    if paid > 0:
+        row.pool = settings.slot_jackpot_seed
     return {"won": True, "amount": paid, "pool": row.pool}

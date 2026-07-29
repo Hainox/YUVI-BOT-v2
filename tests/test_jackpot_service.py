@@ -21,11 +21,13 @@ from __future__ import annotations
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from bot.config import settings
 from bot.services import casino_service
 from bot.services import economy_service
 from bot.services import jackpot_service
+from common.db.session import SessionLocal
 from common.models.chat_bank import ChatBank
 from common.models.slot_jackpot import SlotJackpot
 from common.models.user import User
@@ -180,6 +182,126 @@ async def test_contribute_award_capped_to_bank_balance(session):
     assert jackpot["amount"] <= small_bank
     assert jackpot["pool"] == settings.slot_jackpot_seed
     assert await _get_bank_balance(session, chat_id) >= 0
+
+
+@pytest.mark.asyncio
+async def test_contribute_award_with_empty_bank_does_not_reset_pool(session):
+    """Баг-регрессия: банк чата пуст (bank_balance == 0, роздан другими
+    выплатами казино/дуэлей) в момент срыва джекпота -> `pay_from_bank`
+    возвращает paid=0. Накопленный за много спинов пул НЕ должен обнуляться
+    до seed ради нулевой выплаты — иначе он сгорал бы без единого
+    выплаченного ювика."""
+    chat_id = -100900207
+    user_id = 900207
+    await _ensure_user(session, user_id)
+    await _fund(session, chat_id, user_id)
+    # ChatBank НЕ пополняется вовсе -> баланс банка остаётся ровно 0.
+    await session.commit()
+    assert await _get_bank_balance(session, chat_id) == 0
+
+    bet = 500
+    skim = int(bet * settings.slot_jackpot_skim_pct)
+    losing_rng = _ForcedRng(randint_value=42)  # никогда не 1 -> копим пул без выигрыша
+
+    for i in range(3):
+        await jackpot_service.contribute_and_maybe_award(
+            session, chat_id, user_id, bet, f"test_jackpot_empty_bank_grow_{i}", losing_rng
+        )
+        await session.commit()
+
+    pool_before_award = settings.slot_jackpot_seed + 3 * skim
+    assert await jackpot_service.get_pool(session, chat_id) == pool_before_award
+
+    jackpot = await jackpot_service.contribute_and_maybe_award(
+        session, chat_id, user_id, bet, "test_jackpot_empty_bank_win", _ForcedRng(randint_value=1)
+    )
+    await session.commit()
+
+    # Ещё один skim добавляется ДО броска (тем же кодом, что и в проигрышных
+    # спинах выше) -> пул к моменту ролла на skim больше pool_before_award.
+    pool_at_roll = pool_before_award + skim
+    assert jackpot["won"] is True
+    assert jackpot["amount"] == 0  # банк пуст -> pay_from_bank отдаёт 0
+    # Главный инвариант регрессии: пул НЕ сброшен до seed.
+    assert jackpot["pool"] == pool_at_roll
+    row = await _get_pool_row(session, chat_id)
+    assert row.pool == pool_at_roll
+    assert await _get_bank_balance(session, chat_id) == 0
+
+
+@pytest.mark.asyncio
+async def test_contribute_award_exception_before_commit_is_rolled_back(monkeypatch):
+    """Незафиксированный тестом инвариант (не баг на сегодняшнем коде): если
+    `pay_from_bank` падает ПОСЛЕ RNG-выигрыша (до финального
+    `session.commit()` в `play_slots`), исключение должно пробрасываться
+    наружу необработанным, а откат сессии обязан откатить ЛЮБУЮ несохранённую
+    мутацию `row.pool` этого вызова — деньги либо полностью проведены, либо
+    не проведены вовсе.
+
+    Намеренно НЕ использует `session`-фикстуру этого файла (она откатывает
+    ВСЮ транзакцию теста целиком по завершении — включая уже "закоммиченные"
+    внутри теста шаги, т.к. это одна и та же внешняя транзакция; мидтестовый
+    `session.rollback()` на ней стирает состояние не только неудачного
+    вызова, но и всей предыдущей истории теста). Вместо этого — та же
+    дисциплина, что в проде (`api/routes/games.py::post_slots`: отдельная
+    `SessionLocal()` на запрос, коммитящая и закрывающаяся ДО следующего):
+    предыдущее ("уже подтверждённое") состояние заводится и коммитится в
+    ОТДЕЛЬНОЙ, независимо закрытой сессии, затем последующий (падающий)
+    вызов — в своей собственной сессии, которую явно откатываем, а проверка
+    состояния — уже в ТРЕТЬЕЙ, свежей сессии, как это увидел бы следующий
+    реальный HTTP-запрос."""
+    chat_id = -100900208
+    user_id = 900208
+    bet = 500
+
+    async with SessionLocal() as setup_session:
+        stmt = (
+            pg_insert(User)
+            .values(id=user_id, first_name="Тест")
+            .on_conflict_do_nothing(index_elements=["id"])
+        )
+        await setup_session.execute(stmt)
+        await setup_session.commit()
+        await economy_service.get_balance(setup_session, chat_id, user_id)
+        await economy_service.credit_bank(
+            setup_session, chat_id, 1_000_000, kind="test_seed", ref_id="test_jackpot_rollback_bank_seed"
+        )
+        # Растим пул одним проигрышным спином -- реально коммитим (не
+        # rollback-изолированная фикстура), чтобы следующий шаг теста
+        # столкнулся с ГЕНУИННО подтверждённым "предыдущим" состоянием.
+        await jackpot_service.contribute_and_maybe_award(
+            setup_session, chat_id, user_id, bet, "test_jackpot_rollback_grow", _ForcedRng(randint_value=42)
+        )
+        await setup_session.commit()
+
+    async with SessionLocal() as check_session:
+        pool_before = await jackpot_service.get_pool(check_session, chat_id)
+        bank_before = await _get_bank_balance(check_session, chat_id)
+        user_balance_before = await economy_service.get_balance(check_session, chat_id, user_id)
+
+    async def _boom(*args, **kwargs):
+        raise RuntimeError("simulated pay_from_bank failure")
+
+    monkeypatch.setattr(economy_service, "pay_from_bank", _boom)
+
+    # Тот же паттерн, что `async with SessionLocal() as session:` в
+    # post_slots/play_slots: необработанное исключение поднимается из
+    # contribute_and_maybe_award ПОСЛЕ RNG-выигрыша, ДО какого-либо commit --
+    # явный rollback (то, что сделал бы __aexit__ на необработанном
+    # исключении) обязан откатить несохранённую мутацию row.pool целиком.
+    async with SessionLocal() as failing_session:
+        with pytest.raises(RuntimeError):
+            await jackpot_service.contribute_and_maybe_award(
+                failing_session, chat_id, user_id, bet, "test_jackpot_rollback_win", _ForcedRng(randint_value=1)
+            )
+        await failing_session.rollback()
+
+    async with SessionLocal() as final_session:
+        assert await jackpot_service.get_pool(final_session, chat_id) == pool_before
+        row = await _get_pool_row(final_session, chat_id)
+        assert row.pool == pool_before
+        assert await _get_bank_balance(final_session, chat_id) == bank_before
+        assert await economy_service.get_balance(final_session, chat_id, user_id) == user_balance_before
 
 
 # --- Wiring в casino_service.play_slots: только для НОВОГО спина -------------

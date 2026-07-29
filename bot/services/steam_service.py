@@ -61,6 +61,14 @@ _CACHE_TTL_SEC = 6 * 3600
 _cache_items: list[dict] | None = None
 _cache_fetched_at: float = 0.0
 _name_cache: dict[int, str] = {}
+# День -> уже выбранный результат (Pitfall 5): "один MSK-день = одна игра"
+# должно держаться независимо от того, когда именно в течение дня истёк
+# TTL-кэш _cache_items и что успело измениться в живом Steam-wishlist за это
+# время. Кэшируем сам ИТОГ выбора за день, а не только сырой список позиций.
+# Неудачные попытки (None) намеренно НЕ кэшируются здесь — graceful-degradation
+# (D-11) должен продолжать ретраить HTTP на следующий вызов, а не запоминать
+# сбой на весь день.
+_daily_pick_cache: tuple[date, str] | None = None
 
 
 async def _fetch_wishlist_json(key: str, steamid: str) -> dict:
@@ -138,6 +146,10 @@ async def get_random_wishlist_game(day_msk: date) -> str | None:
     if not settings.steam_api_key or not settings.steam_id64:
         return None
 
+    global _daily_pick_cache
+    if _daily_pick_cache is not None and _daily_pick_cache[0] == day_msk:
+        return _daily_pick_cache[1]
+
     # WR-03 (05-REVIEW.md): раньше только _get_wishlist_items() был под
     # try/except — сортировка/форматирование ниже могли бросить необработанный
     # AttributeError (например, позиции wishlist не той формы/схемы), который
@@ -166,7 +178,11 @@ async def get_random_wishlist_game(day_msk: date) -> str | None:
     # (не весь wishlist) через _resolve_app_name.
     inline_name = chosen.get("name")
     if inline_name:
-        return inline_name
-    if appid is None:
-        return "Steam App #?"
-    return await _resolve_app_name(appid)
+        result = inline_name
+    elif appid is None:
+        result = "Steam App #?"
+    else:
+        result = await _resolve_app_name(appid)
+
+    _daily_pick_cache = (day_msk, result)
+    return result

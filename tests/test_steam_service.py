@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import time
 from datetime import date
 from unittest.mock import AsyncMock
 
@@ -28,6 +29,7 @@ def _reset_cache(monkeypatch) -> None:
     monkeypatch.setattr(steam_service, "_cache_items", None)
     monkeypatch.setattr(steam_service, "_cache_fetched_at", 0.0)
     monkeypatch.setattr(steam_service, "_name_cache", {})
+    monkeypatch.setattr(steam_service, "_daily_pick_cache", None)
 
 
 def _set_steam_settings(monkeypatch, key: str = "fake-key", steamid: str = "fake-id") -> None:
@@ -215,3 +217,142 @@ async def test_resolved_name_is_cached_across_calls(monkeypatch):
 
     assert first == second == "Elden Ring"
     mock_appdetails.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_item_without_appid_or_name_falls_back_to_placeholder(monkeypatch):
+    """Ветка 'chosen без appid и без name' (повреждённый/пустой элемент
+    wishlist среди в остальном валидных позиций, например баг сериализации
+    на стороне Steam) — отличается от test_malformed_item_shape_graceful_none,
+    где элементы вообще не dict и падают на sorted()/AttributeError ДО этой
+    ветки. Здесь sorted_items валиден, RNG выбирает конкретно пустой dict,
+    и код должен вернуть литерал 'Steam App #?', а не 'Steam App #None' и не
+    None."""
+    _reset_cache(monkeypatch)
+    _set_steam_settings(monkeypatch)
+    monkeypatch.setattr(
+        steam_service,
+        "_fetch_wishlist_json",
+        AsyncMock(
+            return_value={
+                "response": {
+                    "items": [
+                        {"appid": 10, "name": "Игра A"},
+                        {"appid": 20, "name": "Игра B"},
+                        {},
+                    ]
+                }
+            }
+        ),
+    )
+
+    # Дата подобрана явно так, чтобы random.Random(day.toordinal()).choice(...)
+    # после сортировки по appid (missing -> 0, значит {} идёт первым)
+    # детерминированно попадал на повреждённый элемент {} — проверено
+    # вычислением, не полагаемся на "авось повезёт".
+    result = await steam_service.get_random_wishlist_game(date(2026, 1, 1))
+
+    assert result == "Steam App #?"
+
+
+@pytest.mark.asyncio
+async def test_same_day_pick_stable_despite_wishlist_ttl_refresh(monkeypatch):
+    """Регрессионный тест на нарушение гарантии из докстринга модуля
+    ('day-seeded детерминизм — единственный источник стабильности повторного
+    /awards в тот же день'): TTL-кэш сырого wishlist (6ч) может истечь в
+    середине MSK-дня, а состав живого Steam-wishlist за это время —
+    измениться. Проверено вычислением: для day=2026-07-20 V1 даёт 'B', а V2
+    (с изменённым составом) дало бы 'NEW', если бы выбор пересчитывался
+    заново после рефетча. Фикс — module-level `_daily_pick_cache`, хранящий
+    сам итог выбора за день (а не только сырой список), поэтому второй вызов
+    в тот же день не должен даже обращаться к HTTP повторно."""
+    _reset_cache(monkeypatch)
+    _set_steam_settings(monkeypatch)
+
+    v1 = {
+        "response": {
+            "items": [
+                {"appid": 10, "name": "A"},
+                {"appid": 20, "name": "B"},
+                {"appid": 30, "name": "C"},
+            ]
+        }
+    }
+    v2 = {
+        "response": {
+            "items": [
+                {"appid": 10, "name": "A"},
+                {"appid": 15, "name": "NEW"},
+                {"appid": 20, "name": "B"},
+            ]
+        }
+    }
+    mock_fetch = AsyncMock(return_value=v1)
+    monkeypatch.setattr(steam_service, "_fetch_wishlist_json", mock_fetch)
+
+    day = date(2026, 7, 20)
+    first = await steam_service.get_random_wishlist_game(day)
+    assert first == "B"
+
+    # Симулируем истечение 6ч TTL-кэша сырого wishlist позже в течение ТОГО
+    # ЖЕ MSK-дня, а также изменение состава живого wishlist за это время.
+    monkeypatch.setattr(
+        steam_service, "_cache_fetched_at", time.monotonic() - steam_service._CACHE_TTL_SEC - 10
+    )
+    mock_fetch.return_value = v2
+
+    second = await steam_service.get_random_wishlist_game(day)
+
+    assert second == first == "B"
+    mock_fetch.assert_awaited_once()  # второй вызов не должен был бить по HTTP вообще
+
+
+@pytest.mark.asyncio
+async def test_appdetails_explicit_success_false_falls_back_to_appid_label(monkeypatch):
+    """Отдельная code-path от test_appdetails_failure_falls_back_to_appid_label
+    (там весь _fetch_appdetails_json бросает исключение целиком, ловится
+    except-блоком _resolve_app_name). Здесь HTTP проходит успешно, JSON
+    валиден, но Steam явно отдаёт success: False (реальный формат ответа
+    appdetails для delisted/возрастных/регион-заблокированных приложений) —
+    БЕЗ исключения. Тернарник `... if entry.get('success') else None` должен
+    сам по себе деградировать в fallback, минуя except-блок."""
+    _reset_cache(monkeypatch)
+    _set_steam_settings(monkeypatch)
+    monkeypatch.setattr(
+        steam_service,
+        "_fetch_wishlist_json",
+        AsyncMock(return_value={"response": {"items": [{"appid": 42}]}}),
+    )
+    mock_appdetails = AsyncMock(return_value={"42": {"success": False}})
+    monkeypatch.setattr(steam_service, "_fetch_appdetails_json", mock_appdetails)
+
+    result = await steam_service.get_random_wishlist_game(date(2026, 7, 19))
+
+    assert result == "Steam App #42"
+    mock_appdetails.assert_awaited_once_with(42)
+
+
+@pytest.mark.asyncio
+async def test_wishlist_ttl_cache_boundary_is_exclusive(monkeypatch):
+    """Строгое '<' в _get_wishlist_items (не '<='): ровно на границе
+    (now - fetched_at) == _CACHE_TTL_SEC кэш должен считаться уже протухшим,
+    а не ещё валидным. time.monotonic() зафиксирован моком на constant, чтобы
+    сравнение было ТОЧНО равно TTL, а не приблизительно (реальные часы не
+    гарантируют такую точность между setup и вызовом)."""
+    _reset_cache(monkeypatch)
+    _set_steam_settings(monkeypatch)
+
+    fixed_now = 1_000_000.0
+    monkeypatch.setattr(steam_service.time, "monotonic", lambda: fixed_now)
+    monkeypatch.setattr(steam_service, "_cache_items", [{"appid": 99, "name": "Stale"}])
+    monkeypatch.setattr(
+        steam_service, "_cache_fetched_at", fixed_now - steam_service._CACHE_TTL_SEC
+    )
+
+    mock_fetch = AsyncMock(return_value={"response": {"items": [{"appid": 1, "name": "Fresh"}]}})
+    monkeypatch.setattr(steam_service, "_fetch_wishlist_json", mock_fetch)
+
+    result = await steam_service.get_random_wishlist_game(date(2026, 7, 19))
+
+    mock_fetch.assert_awaited_once()  # кэш признан протухшим на границе -> рефетч
+    assert result == "Fresh"

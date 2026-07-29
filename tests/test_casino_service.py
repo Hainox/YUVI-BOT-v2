@@ -22,6 +22,7 @@ import pytest
 from sqlalchemy import select
 
 from bot.config import settings
+from bot.services import blackjack_engine
 from bot.services import casino_service
 from bot.services import economy_service
 from common.models.casino_game import CasinoGame
@@ -84,6 +85,22 @@ class _ForcedRng:
         if self._randint_value is not None:
             return self._randint_value
         return a
+
+
+class _FixedDeckRng:
+    """Тестовый RNG-стаб для форсированной колоды блэкджека (та же форма, что
+    `tests/test_blackjack_service.py::_FixedDeckRng`) — `shuffle(deck)`
+    переставляет 52-карточную колоду так, чтобы `deck.pop()` (берёт с КОНЦА)
+    отдавал карты строго в порядке `pop_sequence`."""
+
+    def __init__(self, pop_sequence: list[str]):
+        self._pop_sequence = pop_sequence
+
+    def shuffle(self, deck: list[str]) -> None:
+        remaining = list(deck)
+        for card in self._pop_sequence:
+            remaining.remove(card)
+        deck[:] = remaining + list(reversed(self._pop_sequence))
 
 
 # --- Лимиты ставок (D-04/D-05) -----------------------------------------------
@@ -438,3 +455,251 @@ async def test_slots_spin_allowed_once_interval_elapsed(session, monkeypatch):
 
     second = await casino_service.play_slots(session, chat_id, user_id, 100, "test_throttle_elapsed_2")
     assert second["game"] == "slots"
+
+
+# --- Блэкджек: двойной натурал (push 1.0x) — редкая ветка settle_outcome ----
+
+
+@pytest.mark.asyncio
+async def test_blackjack_double_natural_pushes_refunds_stake(session, monkeypatch):
+    """Аудит-регрессия: если И игрок, И дилер получают натурал (21 на первых
+    двух картах) на раздаче start_blackjack, исход должен быть "push" —
+    ставка просто возвращается (1.0x), НЕ 2.5x (обычная натурал-выплата) и
+    НЕ 0x. Эта ветка (`settle_outcome`'s `if natural: return ("push", 1.0) if
+    dealer_natural else ...`) никогда раньше не форсировалась ни одним
+    тестом репозитория — все существующие натурал-тесты дают дилеру заведомо
+    не-натуральную руку."""
+    chat_id = -100900019
+    user_id = 900019
+    await _ensure_user(session, user_id)
+    balance_before = await _fund(session, chat_id, user_id)
+    await economy_service.credit_bank(
+        session, chat_id, 100_000, kind="test_seed", ref_id="test_bj_double_natural_seed_bank"
+    )
+    await session.commit()
+
+    # p1=A,p2=K (натурал 21), d1=A,d2=Q (тоже натурал 21)
+    monkeypatch.setattr(
+        casino_service, "_rng", _FixedDeckRng(["A♠", "K♠", "A♥", "Q♥"])
+    )
+
+    bet = 100
+    result = await casino_service.start_blackjack(
+        session, chat_id, user_id, bet, "test_bj_double_natural"
+    )
+
+    assert result["status"] == "settled"
+    assert result["outcome"]["result"] == "push"
+    # ровно возврат ставки — НЕ int(bet*2.5) и НЕ 0
+    assert result["payout"] == bet
+    assert await _get_user_balance(session, chat_id, user_id) == balance_before
+
+    game = await _get_casino_game(session, user_id, "test_bj_double_natural")
+    assert game.payout == bet
+    assert blackjack_engine.is_natural(game.state["dealer"]) is True
+
+
+# --- Рулетка: зеро (spin=0) — единственная спецкейс-ветка -------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "bet_type,bet_value",
+    [
+        ("color", "red"),
+        ("color", "black"),
+        ("parity", "even"),
+        ("parity", "odd"),
+        ("half", "low"),
+        ("half", "high"),
+        ("dozen", 1),
+    ],
+)
+async def test_roulette_zero_loses_external_bets(session, monkeypatch, bet_type, bet_value):
+    """Аудит-регрессия: 0 в европейской рулетке проигрывает ВСЕ "внешние"
+    ставки (color/parity/half/dozen), независимо от bet_value. randint=0
+    никогда раньше не форсировался ни одним тестом."""
+    chat_id = -100900020
+    user_id = 900020
+    await _ensure_user(session, user_id)
+    balance_before = await _fund(session, chat_id, user_id)
+    bank_before = await _get_bank_balance(session, chat_id)
+
+    monkeypatch.setattr(casino_service, "_rng", _ForcedRng(randint_value=0))
+
+    bet = 10
+    idem_key = f"test_roulette_zero_loses_{bet_type}_{bet_value}"
+    result = await casino_service.play_roulette(
+        session, chat_id, user_id, bet, bet_type, bet_value, idem_key
+    )
+
+    assert result["payout"] == 0
+    assert result["outcome"]["won"] is False
+    assert result["outcome"]["spin"] == 0
+    assert await _get_user_balance(session, chat_id, user_id) == balance_before - bet
+    assert await _get_bank_balance(session, chat_id) == bank_before + bet
+
+
+@pytest.mark.asyncio
+async def test_roulette_number_zero_wins_on_zero_spin(session, monkeypatch):
+    """Аудит-регрессия: ставка bet_type="number", bet_value=0 ДОЛЖНА
+    выигрывать 36x при spin=0 — эта ветка (`bet_type == "number"` в
+    `_roulette_win`) стоит РАНЬШЕ спецкейса zero и не обходится им. Раньше
+    никогда не форсировалась (bet_value=0 нигде не использовался)."""
+    chat_id = -100900021
+    user_id = 900021
+    await _ensure_user(session, user_id)
+    balance_before = await _fund(session, chat_id, user_id)
+    await economy_service.credit_bank(
+        session, chat_id, 100_000, kind="test_seed", ref_id="test_roulette_number_zero_seed_bank"
+    )
+    await session.commit()
+
+    monkeypatch.setattr(casino_service, "_rng", _ForcedRng(randint_value=0))
+
+    bet = 10
+    result = await casino_service.play_roulette(
+        session, chat_id, user_id, bet, "number", 0, "test_roulette_number_zero_win"
+    )
+
+    expected_payout = int(bet * casino_service.ROULETTE_NUMBER_MULT)
+    assert result["payout"] == expected_payout
+    assert result["outcome"]["won"] is True
+    assert await _get_user_balance(session, chat_id, user_id) == balance_before - bet + expected_payout
+
+
+# --- Дайс: направление direction="over" (D-03) -------------------------------
+
+
+@pytest.mark.asyncio
+async def test_dice_over_direction_multiplier_matches_formula(session, monkeypatch):
+    """Аудит-регрессия: direction="over" использует ОТДЕЛЬНУЮ формулу
+    win_prob=(100-target)/100 (не переиспользует "under"-формулу
+    (target-1)/100) — раньше direction="over" не вызывался ни одним тестом
+    репозитория. Форсируем roll=100 (единственное значение > target=99)."""
+    chat_id = -100900022
+    user_id = 900022
+    await _ensure_user(session, user_id)
+    balance_before = await _fund(session, chat_id, user_id)
+    await economy_service.credit_bank(
+        session, chat_id, 100_000, kind="test_seed", ref_id="test_dice_over_seed_bank"
+    )
+    await session.commit()
+
+    target = 99
+    direction = "over"
+    win_prob = (100 - target) / 100
+    monkeypatch.setattr(casino_service, "_rng", _ForcedRng(randint_value=100))
+
+    bet = 100
+    result = await casino_service.play_dice(
+        session, chat_id, user_id, bet, target, direction, "test_dice_over_win"
+    )
+
+    expected_payout = int(bet * (1 - casino_service.DICE_HOUSE_EDGE) / win_prob)
+    assert result["outcome"]["won"] is True
+    assert result["payout"] == expected_payout
+    assert await _get_user_balance(session, chat_id, user_id) == balance_before - bet + expected_payout
+
+
+@pytest.mark.asyncio
+async def test_dice_over_direction_loses_when_roll_not_greater(session, monkeypatch):
+    """Обратная сторона того же пробела: direction="over" должен ПРОИГРЫВАТЬ,
+    когда roll не больше target (roll == target — граница, тоже проигрыш)."""
+    chat_id = -100900023
+    user_id = 900023
+    await _ensure_user(session, user_id)
+    balance_before = await _fund(session, chat_id, user_id)
+
+    target = 99
+    monkeypatch.setattr(casino_service, "_rng", _ForcedRng(randint_value=target))
+
+    bet = 100
+    result = await casino_service.play_dice(
+        session, chat_id, user_id, bet, target, "over", "test_dice_over_loss"
+    )
+
+    assert result["outcome"]["won"] is False
+    assert result["payout"] == 0
+    assert await _get_user_balance(session, chat_id, user_id) == balance_before - bet
+
+
+# --- Rollback ставки при сбое ПОСЛЕ RNG-ролла, ДО финального commit ---------
+
+
+@pytest.mark.asyncio
+async def test_settle_payout_failure_after_rng_does_not_fabricate_or_double_charge(
+    session, monkeypatch
+):
+    """Аудит-регрессия: если ПОСЛЕ RNG-ролла (`compute()` уже вычислил исход,
+    ставка уже списана `_debit_stake`) `economy_service.pay_from_bank` падает
+    с НЕ-IntegrityError исключением (сбой БД/непредвиденная ошибка), это
+    исключение обязано пробрасываться наружу НЕПОДМЕНЁННЫМ — `_settle` не
+    должен ни проглотить его и вернуть фальшивый "успешный" исход, ни
+    создать строку `CasinoGame` без соответствующей реальной выплаты.
+
+    Прим. про рамки теста: фикстура `session` (tests/conftest.py) кладёт
+    сессию поверх УЖЕ открытой внешней транзакции в `join_transaction_mode=
+    "rollback_only"` (SQLAlchemy 2.0) — `session.commit()` внутри
+    casino_service в этом режиме НЕ делает реальный commit соединения
+    (иначе тест не мог бы полагаться на откат всей транзакции в конце), а
+    `session.rollback()` откатывает ВСЮ транзакцию теста целиком (включая
+    сетап `_ensure_user`/`_fund`), а не только этот раунд — поэтому здесь
+    проверяем финансовый инвариант БЕЗ явного rollback: списание ставки уже
+    произошло (деньги "в подвешенном" состоянии до итога транзакции), раунд
+    НЕ записан как настоящий успех, а наивный повтор с ТЕМ ЖЕ idem_key
+    (то, что реально сделал бы клиент после таймаута) обязан явно
+    провалиться (`DuplicateRound`), а не списать ставку повторно и не выдать
+    молчаливый фальшивый успех."""
+    chat_id = -100900024
+    user_id = 900024
+    await _ensure_user(session, user_id)
+    balance_before = await _fund(session, chat_id, user_id)
+    bank_before = await _get_bank_balance(session, chat_id)
+
+    monkeypatch.setattr(casino_service, "_rng", _ForcedRng(choice_value="heads"))
+
+    original_pay_from_bank = economy_service.pay_from_bank
+
+    async def _boom(*args, **kwargs):
+        raise RuntimeError("симулированный сбой БД после RNG-ролла")
+
+    monkeypatch.setattr(economy_service, "pay_from_bank", _boom)
+
+    bet = 100
+    idem_key = "test_settle_payout_failure_blocks_naive_retry"
+    with pytest.raises(RuntimeError):
+        await casino_service.play_coinflip(session, chat_id, user_id, bet, "heads", idem_key)
+
+    # Ставка уже была списана RNG-роллом/_debit_stake ДО сбоя payout — деньги
+    # реально "в подвешенном" состоянии внутри текущей (пока не завершённой)
+    # транзакции, ждут исхода самого раунда.
+    assert await _get_user_balance(session, chat_id, user_id) == balance_before - bet
+    assert await _get_bank_balance(session, chat_id) == bank_before + bet
+
+    # Раунд НЕ записан как успешный/провальный итог — исключение не было
+    # тихо проглочено.
+    games = (
+        await session.execute(
+            select(CasinoGame).where(CasinoGame.user_id == user_id, CasinoGame.idem_key == idem_key)
+        )
+    ).scalars().all()
+    assert games == []
+
+    # Наивный повтор с тем же idem_key (клиент после сетевого таймаута) не
+    # должен списать ставку повторно и не должен тихо "успешно" завершиться —
+    # ref_id `_debit_stake` уже применён, а строки CasinoGame ещё нет, поэтому
+    # ожидается явный `DuplicateRound`, а не задвоенное списание.
+    monkeypatch.setattr(economy_service, "pay_from_bank", original_pay_from_bank)
+    with pytest.raises(casino_service.DuplicateRound):
+        await casino_service.play_coinflip(session, chat_id, user_id, bet, "heads", idem_key)
+
+    # Баланс/банк не изменились повторно (никакого двойного списания).
+    assert await _get_user_balance(session, chat_id, user_id) == balance_before - bet
+    assert await _get_bank_balance(session, chat_id) == bank_before + bet
+    games = (
+        await session.execute(
+            select(CasinoGame).where(CasinoGame.user_id == user_id, CasinoGame.idem_key == idem_key)
+        )
+    ).scalars().all()
+    assert games == []

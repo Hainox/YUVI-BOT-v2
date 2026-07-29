@@ -24,9 +24,13 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from bot.services import daily_pick_service
 from bot.services import daily_twin_service
 from bot.services import twin_service
+from common.models.daily_pick import DailyPick
 from common.models.user import User
 
 
@@ -69,6 +73,18 @@ def _fake_bot() -> SimpleNamespace:
     )
 
 
+class _ForcedChoiceRng:
+    """Тестовый RNG-стаб, monkeypatched вместо `daily_pick_service._rng`
+    (форма test_victim_service.py). Форсирует детерминированный результат
+    `.choice(seq)`, вместо реального `secrets.SystemRandom()`."""
+
+    def __init__(self, choice_value):
+        self._choice_value = choice_value
+
+    def choice(self, seq):
+        return self._choice_value
+
+
 # --- get_todays_twin: только активные согласия, идемпотентно на MSK-день ----
 
 
@@ -107,6 +123,148 @@ async def test_get_todays_twin_idempotent_same_day(session):
     second = await daily_twin_service.get_todays_twin(session, chat_id)
 
     assert first == second == (user_id, "Один", None)
+
+
+@pytest.mark.asyncio
+async def test_get_todays_twin_idempotent_with_two_real_candidates(session, monkeypatch):
+    """С 2+ РЕАЛЬНО активными кандидатами (не искусственно вырожденным до
+    длины 1 списком, как во всех остальных тестах этого файла) идемпотентность
+    обязана держаться на проверке `existing is not None` внутри
+    `get_or_set_pick`, а НЕ на случайном совпадении RNG. Форсируем ДРУГОГО
+    кандидата на втором вызове в тот же MSK-день (`_ForcedChoiceRng`, форма
+    test_victim_service.py) — победитель обязан остаться прежним, RNG второй
+    раз вообще не должен влиять на результат."""
+    chat_id = -100940020
+    uid_a, uid_b = 940020, 940021
+    await _ensure_user(session, uid_a, "ПерсонаА")
+    await _ensure_user(session, uid_b, "ПерсонаБ")
+    await _set_opt_in(session, chat_id, uid_a, "active")
+    await _set_opt_in(session, chat_id, uid_b, "active")
+    await session.commit()
+
+    monkeypatch.setattr(daily_pick_service, "_rng", _ForcedChoiceRng(uid_a))
+    first = await daily_twin_service.get_todays_twin(session, chat_id)
+    assert first == (uid_a, "ПерсонаА", None)
+
+    # Тот же MSK-день, но RNG теперь форсированно указывает на ДРУГОГО
+    # реального кандидата — повторный вызов обязан вернуть уже выбранного
+    # uid_a, а не "поплыть" на uid_b.
+    monkeypatch.setattr(daily_pick_service, "_rng", _ForcedChoiceRng(uid_b))
+    second = await daily_twin_service.get_todays_twin(session, chat_id)
+    assert second == (uid_a, "ПерсонаА", None)
+
+
+@pytest.mark.asyncio
+async def test_get_todays_twin_reads_concurrent_winner_when_insert_loses_race(session, monkeypatch):
+    """Ветка `if result.rowcount == 0:` в daily_pick_service.get_or_set_pick —
+    проигранная гонка вставки: между "existing is None" и собственным
+    INSERT ON CONFLICT DO NOTHING конкурентный вызов (например, проактивный
+    тик и реактивный хендлер почти одновременно) уже вставил строку на
+    сегодня. Форсируем это, вклиниваясь ПОСЛЕ existing-чтения (2-й
+    `session.execute` внутри get_todays_twin: 1-й — _active_candidates) и
+    ВСТАВЛЯЯ конкурентного победителя напрямую перед тем, как get_or_set_pick
+    выполнит свой собственный ON CONFLICT DO NOTHING insert — Postgres видит
+    более раннюю (пусть и незакоммиченную в этой же транзакции) строку,
+    ON CONFLICT DO NOTHING реально возвращает rowcount=0, и код обязан
+    перечитать и вернуть РЕАЛЬНОГО (конкурентного) победителя, а не локально
+    выбранного через _rng.choice."""
+    chat_id = -100940023
+    local_uid, concurrent_uid = 940023, 940024
+    await _ensure_user(session, local_uid, "Локальный")
+    await _ensure_user(session, concurrent_uid, "Конкурент")
+    await _set_opt_in(session, chat_id, local_uid, "active")
+    await session.commit()
+
+    today = daily_pick_service._today_msk()
+    real_execute = session.execute
+    call_count = {"n": 0}
+
+    async def racing_execute(stmt, *args, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 2:
+            # Это existing-чтение внутри get_or_set_pick (ещё None) — сразу
+            # после него, но ДО его собственного INSERT ON CONFLICT,
+            # вклиниваем конкурентного победителя, симулируя выигранную гонку.
+            result = await real_execute(stmt, *args, **kwargs)
+            await real_execute(
+                pg_insert(DailyPick).values(
+                    chat_id=chat_id,
+                    kind=daily_twin_service._KIND,
+                    day_msk=today,
+                    winner_user_id=concurrent_uid,
+                    expires_at=None,
+                )
+            )
+            return result
+        return await real_execute(stmt, *args, **kwargs)
+
+    monkeypatch.setattr(session, "execute", racing_execute)
+
+    twin = await daily_twin_service.get_todays_twin(session, chat_id)
+
+    assert twin == (concurrent_uid, "Конкурент", None)
+
+
+@pytest.mark.asyncio
+async def test_get_todays_twin_recreates_pick_after_commit_failure(session, monkeypatch):
+    """Между RNG-выбором/INSERT (внутри get_or_set_pick) и фактическим
+    `session.commit()` в get_todays_twin есть окно — сбой commit() должен
+    откатываться так, чтобы (а) "призрачная" незакоммиченная строка пика НЕ
+    оставалась в daily_picks, и (б) повторный вызов после rollback снова
+    создавал пик корректно, не падая на UNIQUE(chat_id, kind, day_msk).
+
+    Примечание про фикстуру `session`: это сессия ВНУТРИ уже открытой снаружи
+    (conftest.py) транзакции теста — явный `session.rollback()` откатывает
+    ЦЕЛИКОМ всю транзакцию теста (проверено экспериментально), а не только
+    незакоммиченный INSERT пика, поэтому сетап (пользователь/согласие)
+    приходится повторить ПОСЛЕ отката. commit() на время "восстановления"
+    тоже приходится оставить no-op-стабом — реальный `session.commit()` здесь
+    вырвался бы из транзакционной изоляции теста (стал бы настоящим COMMIT
+    в общую живую БД, а не частью транзакции теста), а он для доказательства
+    не нужен: SELECT в РАМКАХ той же сессии видит и свои же незакоммиченные
+    изменения — этого достаточно, чтобы доказать и факт корректного отката,
+    и факт успешного повторного создания пика."""
+    chat_id = -100940025
+    user_id = 940025
+    await _ensure_user(session, user_id, "Откат")
+    await _set_opt_in(session, chat_id, user_id, "active")
+    await session.commit()
+
+    async def failing_commit():
+        raise RuntimeError("обрыв соединения при коммите")
+
+    monkeypatch.setattr(session, "commit", failing_commit)
+
+    with pytest.raises(RuntimeError):
+        await daily_twin_service.get_todays_twin(session, chat_id)
+
+    await session.rollback()
+
+    # Пика с сегодняшним днём после отката быть не должно — не осталось
+    # "призрачной" незакоммиченной строки от провалившейся попытки.
+    today = daily_pick_service._today_msk()
+    leftover = (
+        await session.execute(
+            select(DailyPick.winner_user_id).where(
+                DailyPick.chat_id == chat_id,
+                DailyPick.kind == daily_twin_service._KIND,
+                DailyPick.day_msk == today,
+            )
+        )
+    ).scalar_one_or_none()
+    assert leftover is None
+
+    async def noop_commit():
+        return None
+
+    monkeypatch.setattr(session, "commit", noop_commit)
+
+    await _ensure_user(session, user_id, "Откат")
+    await _set_opt_in(session, chat_id, user_id, "active")
+
+    twin = await daily_twin_service.get_todays_twin(session, chat_id)
+
+    assert twin == (user_id, "Откат", None)
 
 
 # --- журнал постов: count/record/find --------------------------------------
