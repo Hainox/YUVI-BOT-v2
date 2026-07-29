@@ -89,7 +89,6 @@ async def run() -> None:
             "edited_message",
             "chat_member",
             "my_chat_member",
-            "pre_checkout_query",
         ],
     )
 

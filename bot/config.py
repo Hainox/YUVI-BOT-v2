@@ -226,8 +226,6 @@ class Settings(BaseSettings):
     # по существующему журналу economy_tx (media_dl_service.count_today) —
     # добавлено при возврате скачивания в группы (было ограничено ЛС).
     mediadl_daily_limit: int = Field(default=5, alias="MEDIADL_DAILY_LIMIT")
-    # Telegram Stars → ювики (D-09).
-    stars_to_juvik_rate: int = Field(default=10, alias="STARS_TO_JUVIK_RATE")
     # Награда автору фидбека при закрытии заявки (D-14); complaint/other — без награды.
     feedback_reward_bug: int = Field(default=500, alias="FEEDBACK_REWARD_BUG")
     feedback_reward_idea: int = Field(default=300, alias="FEEDBACK_REWARD_IDEA")
