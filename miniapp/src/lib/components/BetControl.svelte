@@ -17,12 +17,14 @@
 		bet = $bindable(),
 		disabled = false,
 		step = 1,
-		chips = [10, 50, 100, 500, 1000]
+		chips = [10, 50, 100, 500, 1000],
+		label = 'ставка'
 	}: {
 		bet: number;
 		disabled?: boolean;
 		step?: number;
 		chips?: number[];
+		label?: string;
 	} = $props();
 
 	let customText = $state('');
@@ -58,7 +60,7 @@
 
 <div class="bet-row">
 	<div class="bet-display">
-		<span class="bet-label">ставка</span>
+		<span class="bet-label">{label}</span>
 		<div class="bet-amount">{bet}<small>¥</small></div>
 	</div>
 	<div class="bet-chips">

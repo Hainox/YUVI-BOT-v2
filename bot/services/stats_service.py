@@ -15,6 +15,7 @@ from sqlalchemy import func
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from bot.constants import TELEGRAM_SERVICE_ACCOUNT_ID
 from common.models.daily_stat import DailyStat
 from common.models.user import User
 from common.models.word_frequency import WordFrequency
@@ -98,13 +99,15 @@ async def get_top_participants(
 
     D-06: days=None — за всё время; иначе — за последние N дней.
     Имя резолвится джойном на users — вызывающий код не должен хранить
-    сырой telegram id как отображаемое имя.
+    сырой telegram id как отображаемое имя. Исключает
+    TELEGRAM_SERVICE_ACCOUNT_ID — служебный аккаунт привязанного канала,
+    не участник (см. bot/constants.py).
     """
     total_col = func.sum(DailyStat.message_count).label("total")
     stmt = (
         select(DailyStat.user_id, User.first_name, User.username, total_col)
         .join(User, User.id == DailyStat.user_id)
-        .where(DailyStat.chat_id == chat_id)
+        .where(DailyStat.chat_id == chat_id, DailyStat.user_id != TELEGRAM_SERVICE_ACCOUNT_ID)
         .group_by(DailyStat.user_id, User.first_name, User.username)
         .order_by(total_col.desc())
         .limit(limit)

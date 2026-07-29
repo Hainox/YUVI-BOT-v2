@@ -19,6 +19,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 import bot.handlers.stats as stats_handlers
+from bot.constants import TELEGRAM_SERVICE_ACCOUNT_ID
 from bot.services import stats_service
 from common.models.daily_stat import DailyStat
 from common.models.user import User
@@ -178,6 +179,26 @@ async def test_get_top_participants_orders_descending(session):
     assert [row["message_count"] for row in top] == [20, 10, 5]
     # Имя резолвится из users, не сырой telegram id.
     assert top[0]["first_name"] == "Тест"
+
+
+@pytest.mark.asyncio
+async def test_get_top_participants_excludes_telegram_service_account(session):
+    """daily_stats может содержать строку служебного аккаунта (777000) с
+    заведомо огромным message_count — исторические данные от до-фикса
+    периода, сеем напрямую в модель. get_top_participants не должен его
+    вернуть, даже если он реально лидирует по метрике."""
+    chat_id = -100900000011
+    real_user = 700000023
+    await _seed_daily_stats(session, chat_id, real_user, [(datetime.now(MSK).date(), 5)])
+    await _seed_daily_stats(
+        session, chat_id, TELEGRAM_SERVICE_ACCOUNT_ID, [(datetime.now(MSK).date(), 999_999)]
+    )
+
+    top = await stats_service.get_top_participants(session, chat_id, days=None, limit=10)
+
+    user_ids = [row["user_id"] for row in top]
+    assert TELEGRAM_SERVICE_ACCOUNT_ID not in user_ids
+    assert real_user in user_ids
 
 
 # --- get_streak --------------------------------------------------------

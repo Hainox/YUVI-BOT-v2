@@ -27,6 +27,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from bot.constants import TELEGRAM_SERVICE_ACCOUNT_ID
 from bot.services import daily_pick_service
 from bot.services import daily_twin_service
 from bot.services import twin_service
@@ -109,6 +110,45 @@ async def test_get_todays_twin_picks_only_active_candidate(session):
     twin = await daily_twin_service.get_todays_twin(session, chat_id)
 
     assert twin == (active_id, "Активный", None)
+
+
+@pytest.mark.asyncio
+async def test_active_candidates_excludes_telegram_service_account(session):
+    """Защитный фильтр (согласие /twin даёт реальный пользователь через свой
+    аккаунт, служебный аккаунт технически не может его дать — но проверяем
+    на случай мусорных данных): TwinOptIn-строка status='active' для 777000
+    не должна попасть в кандидатов."""
+    chat_id = -100940030
+    real_id = 940030
+    await _ensure_user(session, real_id, "Реальный")
+    await _set_opt_in(session, chat_id, real_id, "active")
+    await _set_opt_in(session, chat_id, TELEGRAM_SERVICE_ACCOUNT_ID, "active")
+    await session.commit()
+
+    candidates = await daily_twin_service._active_candidates(session, chat_id)
+
+    assert TELEGRAM_SERVICE_ACCOUNT_ID not in candidates
+    assert real_id in candidates
+
+
+@pytest.mark.asyncio
+async def test_get_todays_twin_never_picks_telegram_service_account(session):
+    """Реальный (не форсированный) RNG: единственный легитимный кандидат —
+    real_id, служебный аккаунт с активным TwinOptIn сидится напрямую.
+    Победитель обязан быть real_id, а не 777000."""
+    chat_id = -100940031
+    real_id = 940031
+    await _ensure_user(session, real_id, "Реальный")
+    await _set_opt_in(session, chat_id, real_id, "active")
+    await _set_opt_in(session, chat_id, TELEGRAM_SERVICE_ACCOUNT_ID, "active")
+    await session.commit()
+
+    twin = await daily_twin_service.get_todays_twin(session, chat_id)
+
+    assert twin is not None
+    winner, _name, _username = twin
+    assert winner == real_id
+    assert winner != TELEGRAM_SERVICE_ACCOUNT_ID
 
 
 @pytest.mark.asyncio

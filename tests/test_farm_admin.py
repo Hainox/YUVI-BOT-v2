@@ -55,7 +55,7 @@ async def test_farmwipe_refuses_non_admin(session, monkeypatch):
     await _ensure_user(session, target_id, "Цель")
     await clicker_service.get_farm_state(session, chat_id, target_id)
 
-    reply_to = SimpleNamespace(from_user=SimpleNamespace(id=target_id, first_name="Цель"))
+    reply_to = SimpleNamespace(from_user=SimpleNamespace(id=target_id, is_bot=False, first_name="Цель"))
     message = _fake_message(chat_id, admin_id, "Не Админ", "/farmwipe", reply_to_message=reply_to)
     bot = AsyncMock()
 
@@ -83,7 +83,7 @@ async def test_farmwipe_resets_target_farm_for_admin(session, monkeypatch):
 
     await _set_farm(session, chat_id, target_id, cp=5000, tap_level=9, auto_level=4)
 
-    reply_to = SimpleNamespace(from_user=SimpleNamespace(id=target_id, first_name="Цель"))
+    reply_to = SimpleNamespace(from_user=SimpleNamespace(id=target_id, is_bot=False, first_name="Цель"))
     message = _fake_message(chat_id, admin_id, "Админ", "/farmwipe", reply_to_message=reply_to)
     bot = AsyncMock()
 

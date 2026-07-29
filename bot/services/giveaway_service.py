@@ -28,6 +28,7 @@ import secrets
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from bot.constants import TELEGRAM_SERVICE_ACCOUNT_ID
 from bot.services import economy_service
 from common.models.economy_tx import EconomyTx
 from common.models.user_balance import UserBalance
@@ -39,9 +40,13 @@ GIVEAWAY_KIND = "owner_giveaway"
 
 async def _economy_candidates(session: AsyncSession, chat_id: int) -> list[int]:
     """Кандидаты в розыгрыш — участники экономики чата (та же форма, что
-    credit_all_in_chat/get_leaderboard)."""
+    credit_all_in_chat/get_leaderboard), кроме TELEGRAM_SERVICE_ACCOUNT_ID
+    (служебный аккаунт привязанного канала, не участник)."""
     result = await session.execute(
-        select(UserBalance.user_id).where(UserBalance.chat_id == chat_id)
+        select(UserBalance.user_id).where(
+            UserBalance.chat_id == chat_id,
+            UserBalance.user_id != TELEGRAM_SERVICE_ACCOUNT_ID,
+        )
     )
     return result.scalars().all()
 

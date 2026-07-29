@@ -26,6 +26,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
+from bot.constants import TELEGRAM_SERVICE_ACCOUNT_ID
 from bot.services import daily_pick_service
 from bot.services import economy_service
 from bot.services import tag_service
@@ -45,9 +46,13 @@ VICTIM_TITLE = "Пидор дня"
 async def _active_candidates(session: AsyncSession, chat_id: int) -> list[int]:
     """Кандидаты в жертвы — все участники чата, реально писавшие сообщения
     (distinct daily_stats.user_id), форма stats_service (никаких COUNT(*) по
-    messages — RESEARCH.md Anti-Patterns)."""
+    messages — RESEARCH.md Anti-Patterns). Исключает TELEGRAM_SERVICE_ACCOUNT_ID
+    (служебный аккаунт привязанного канала, не участник) — исторические
+    daily_stats-строки для него могли остаться от до-фикса периода."""
     result = await session.execute(
-        select(DailyStat.user_id).where(DailyStat.chat_id == chat_id).distinct()
+        select(DailyStat.user_id)
+        .where(DailyStat.chat_id == chat_id, DailyStat.user_id != TELEGRAM_SERVICE_ACCOUNT_ID)
+        .distinct()
     )
     return [row[0] for row in result.all()]
 

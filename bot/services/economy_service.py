@@ -30,6 +30,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
+from bot.constants import TELEGRAM_SERVICE_ACCOUNT_ID
 from bot.utils.time import to_utc_iso
 from common.models.chat_bank import ChatBank
 from common.models.economy_tx import EconomyTx
@@ -252,9 +253,16 @@ async def credit_all_in_chat(
     частично (упал посередине). Возвращает (число участников экономики
     чата, user_id тех, кому реально начислено В ЭТОМ вызове — уже
     применённые ref_id в список не попадают). Не коммитит — транзакцию
-    завершает вызывающий (та же дисциплина, что у credit/debit)."""
+    завершает вызывающий (та же дисциплина, что у credit/debit). Исключает
+    TELEGRAM_SERVICE_ACCOUNT_ID (777000, служебный аккаунт привязанного
+    канала) — это не участник экономики, а платформенный аккаунт Telegram."""
     user_ids = (
-        await session.execute(select(UserBalance.user_id).where(UserBalance.chat_id == chat_id))
+        await session.execute(
+            select(UserBalance.user_id).where(
+                UserBalance.chat_id == chat_id,
+                UserBalance.user_id != TELEGRAM_SERVICE_ACCOUNT_ID,
+            )
+        )
     ).scalars().all()
 
     credited: list[int] = []
@@ -361,11 +369,16 @@ async def pay_from_bank(
 
 
 async def get_leaderboard(session: AsyncSession, chat_id: int, limit: int = 10) -> list[dict]:
-    """Топ участников чата по балансу (для /leaderboard)."""
+    """Топ участников чата по балансу (для /leaderboard). Исключает
+    TELEGRAM_SERVICE_ACCOUNT_ID — служебный аккаунт привязанного канала,
+    не участник экономики (см. bot/constants.py)."""
     stmt = (
         select(UserBalance.user_id, User.first_name, User.username, UserBalance.balance)
         .join(User, User.id == UserBalance.user_id)
-        .where(UserBalance.chat_id == chat_id)
+        .where(
+            UserBalance.chat_id == chat_id,
+            UserBalance.user_id != TELEGRAM_SERVICE_ACCOUNT_ID,
+        )
         .order_by(UserBalance.balance.desc())
         .limit(limit)
     )
@@ -415,10 +428,19 @@ async def get_transactions(
 
     `chat_id` — обязательный фильтр; `user_id` — опциональный (None = вся
     лента чата). `HIDDEN_KINDS` служебные банковские зеркала (`user_id IS
-    NULL`) исключаются всегда, независимо от `user_id`-фильтра."""
+    NULL`) исключаются всегда, независимо от `user_id`-фильтра.
+    TELEGRAM_SERVICE_ACCOUNT_ID тоже исключён из чат-ленты (None = вся
+    лента) — служебный аккаунт, не участник; явный запрос его собственной
+    ленты (`user_id=777000`) технически не заблокирован, это чтение чужой
+    истории для всех и так возможно по конструкции роута. `is_distinct_from`
+    (не голый `!=`) — колонка nullable для банковских зеркал-строк, а
+    `NULL != 777000` в SQL даёт NULL (строка молча пропала бы из ЛЮБОЙ
+    чат-ленты, не только скрытых HIDDEN_KINDS)."""
     stmt = select(EconomyTx).where(EconomyTx.chat_id == chat_id)
     if user_id is not None:
         stmt = stmt.where(EconomyTx.user_id == user_id)
+    else:
+        stmt = stmt.where(EconomyTx.user_id.is_distinct_from(TELEGRAM_SERVICE_ACCOUNT_ID))
     stmt = stmt.where(
         ~(EconomyTx.kind.in_(HIDDEN_KINDS) & EconomyTx.user_id.is_(None))
     )

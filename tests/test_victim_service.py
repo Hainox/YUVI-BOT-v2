@@ -32,6 +32,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 import bot.handlers.victim as victim_handlers
+from bot.constants import TELEGRAM_SERVICE_ACCOUNT_ID
 from bot.services import daily_pick_service
 from bot.services import economy_service
 from bot.services import victim_service
@@ -494,3 +495,66 @@ async def test_run_victim_rolls_back_cleanly_on_payout_error(session, monkeypatc
     assert retry["is_new"] is True
     assert retry["prize"] == victim_service.VICTIM_PRIZE
     assert await _get_user_balance(session, chat_id, uid) == balance_before + victim_service.VICTIM_PRIZE
+
+
+# --- TELEGRAM_SERVICE_ACCOUNT_ID (777000) исключён из кандидатов -----------
+
+
+@pytest.mark.asyncio
+async def test_active_candidates_excludes_telegram_service_account(session):
+    """daily_stats может содержать строку служебного аккаунта (777000) —
+    исторические данные от до-фикса периода, сеем напрямую в модель.
+    _active_candidates не должен его вернуть."""
+    chat_id = -1009004014
+    uid = 9004014
+    await _ensure_user(session, uid, "Реальный")
+    await _seed_daily_stat(session, chat_id, uid)
+    session.add(User(id=TELEGRAM_SERVICE_ACCOUNT_ID, first_name="Telegram"))
+    await session.flush()
+    session.add(
+        DailyStat(
+            chat_id=chat_id,
+            user_id=TELEGRAM_SERVICE_ACCOUNT_ID,
+            stat_date=date.today(),
+            message_count=999_999,
+        )
+    )
+    await session.flush()
+    await session.commit()
+
+    candidates = await victim_service._active_candidates(session, chat_id)
+
+    assert TELEGRAM_SERVICE_ACCOUNT_ID not in candidates
+    assert uid in candidates
+
+
+@pytest.mark.asyncio
+async def test_run_victim_never_picks_telegram_service_account(session):
+    """Реальный (не форсированный) RNG: единственный легитимный кандидат —
+    uid, служебный аккаунт с заведомо активной daily_stats-строкой сидится
+    напрямую. Победитель обязан быть uid, а не 777000."""
+    chat_id = -1009004015
+    uid = 9004015
+    await _ensure_user(session, uid, "Жертва")
+    await _fund(session, chat_id, uid)
+    await _seed_daily_stat(session, chat_id, uid)
+    session.add(User(id=TELEGRAM_SERVICE_ACCOUNT_ID, first_name="Telegram"))
+    await session.flush()
+    session.add(
+        DailyStat(
+            chat_id=chat_id,
+            user_id=TELEGRAM_SERVICE_ACCOUNT_ID,
+            stat_date=date.today(),
+            message_count=999_999,
+        )
+    )
+    await session.flush()
+    await economy_service.credit_bank(
+        session, chat_id, 10_000, kind="test_seed", ref_id="test_victim_no_service_account_seed"
+    )
+    await session.commit()
+
+    result = await victim_service.run_victim(session, chat_id)
+
+    assert result["winner"] == uid
+    assert result["winner"] != TELEGRAM_SERVICE_ACCOUNT_ID

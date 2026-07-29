@@ -48,6 +48,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
+from bot.constants import TELEGRAM_SERVICE_ACCOUNT_ID
 from bot.services import daily_pick_service
 from bot.services import settings_service
 from bot.services import twin_service
@@ -110,9 +111,14 @@ def _tick_probability() -> float:
 
 
 async def _active_candidates(session: AsyncSession, chat_id: int) -> list[int]:
+    """Исключает TELEGRAM_SERVICE_ACCOUNT_ID защитно (согласие /twin даёт
+    реальный пользователь через свой аккаунт, служебный аккаунт технически
+    не может его дать — фильтр на случай мусорных данных)."""
     result = await session.execute(
         select(TwinOptIn.user_id).where(
-            TwinOptIn.chat_id == chat_id, TwinOptIn.status == "active"
+            TwinOptIn.chat_id == chat_id,
+            TwinOptIn.status == "active",
+            TwinOptIn.user_id != TELEGRAM_SERVICE_ACCOUNT_ID,
         )
     )
     return [row[0] for row in result.all()]

@@ -26,8 +26,7 @@
 	import { apiFetch, ApiError } from '$lib/api';
 	import { haptic, user } from '$lib/tg';
 	import UserPicker from '$lib/components/UserPicker.svelte';
-
-	const BET_CHIPS = [10, 50, 100, 500, 1000];
+	import BetControl from '$lib/components/BetControl.svelte';
 
 	type Tab = 'challenge' | 'manage' | 'duelbot';
 
@@ -69,7 +68,7 @@
 	// --- Challenge (POST /duel) ------------------------------------------
 
 	let opponentId = $state<number | null>(null);
-	let challengeStake = $state(BET_CHIPS[0]);
+	let challengeStake = $state(10);
 	let challenging = $state(false);
 	let challengeResult = $state<DuelCreateResult | null>(null);
 	let challengeError = $state<string | null>(null);
@@ -149,7 +148,7 @@
 
 	// --- Duelbot (POST /duelbot) ------------------------------------------
 
-	let duelbotStake = $state(BET_CHIPS[0]);
+	let duelbotStake = $state(10);
 	let duelbotting = $state(false);
 	let duelbotResult = $state<DuelResolution | null>(null);
 	let duelbotError = $state<string | null>(null);
@@ -249,24 +248,7 @@
 
 			<UserPicker bind:value={opponentId} label="Соперник" placeholder="@ник, имя или ID" />
 
-			<div class="bet-row">
-				<div class="bet-display">
-					<span class="bet-label">ставка</span>
-					<div class="bet-amount">{challengeStake}<small>¥</small></div>
-				</div>
-				<div class="bet-chips">
-					{#each BET_CHIPS as v (v)}
-						<button
-							type="button"
-							class={`chip ${challengeStake === v ? 'chip-on' : ''}`}
-							disabled={challenging}
-							onclick={() => (challengeStake = v)}
-						>
-							{v}
-						</button>
-					{/each}
-				</div>
-			</div>
+			<BetControl bind:bet={challengeStake} disabled={challenging} />
 
 			{#if challengeError}
 				<div class="duel-error">{challengeError}</div>
@@ -354,24 +336,7 @@
 				Дуэль против банка чата — тот же коинфлип, но соперник не нужен. Автопринятие.
 			</div>
 
-			<div class="bet-row">
-				<div class="bet-display">
-					<span class="bet-label">ставка</span>
-					<div class="bet-amount">{duelbotStake}<small>¥</small></div>
-				</div>
-				<div class="bet-chips">
-					{#each BET_CHIPS as v (v)}
-						<button
-							type="button"
-							class={`chip ${duelbotStake === v ? 'chip-on' : ''}`}
-							disabled={duelbotting}
-							onclick={() => (duelbotStake = v)}
-						>
-							{v}
-						</button>
-					{/each}
-				</div>
-			</div>
+			<BetControl bind:bet={duelbotStake} disabled={duelbotting} />
 
 			{#if duelbotError}
 				<div class="duel-error">{duelbotError}</div>
@@ -543,39 +508,6 @@
 	}
 	.duel-action {
 		text-align: center;
-	}
-
-	.bet-row {
-		display: flex;
-		align-items: center;
-		gap: var(--space-md);
-	}
-	.bet-display {
-		display: flex;
-		flex-direction: column;
-	}
-	.bet-label {
-		font-size: var(--font-label-size);
-		text-transform: uppercase;
-		letter-spacing: 0.08em;
-		color: var(--text-muted);
-	}
-	.bet-amount {
-		font-family: var(--font-numeric);
-		font-size: var(--font-display-size);
-		font-weight: 900;
-		color: var(--text-primary);
-	}
-	.bet-amount small {
-		font-size: 12px;
-		color: var(--accent-pink);
-		margin-left: 1px;
-	}
-	.bet-chips {
-		display: grid;
-		grid-template-columns: repeat(5, 1fr);
-		gap: var(--space-xs);
-		flex: 1;
 	}
 
 	.duel-cta {

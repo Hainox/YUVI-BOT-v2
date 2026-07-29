@@ -743,7 +743,7 @@ async def test_unmute_admin_lifts_mute_and_sticker(session, bot, monkeypatch):
         duel_handlers.admin_service, "is_chat_admin", AsyncMock(return_value=True)
     )
 
-    reply_to = SimpleNamespace(from_user=SimpleNamespace(id=target_id, first_name="Проигравший"))
+    reply_to = SimpleNamespace(from_user=SimpleNamespace(id=target_id, is_bot=False, first_name="Проигравший"))
     message = _fake_message(
         chat_id, admin_id, "Админ", "/unmute", message_id=1, reply_to_message=reply_to
     )
@@ -761,6 +761,36 @@ async def test_unmute_admin_lifts_mute_and_sticker(session, bot, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_unmute_survives_sticker_failure(session, bot, monkeypatch):
+    """Регрессия: MUTE_STICKER_ID/UNMUTE_STICKER_ID — плейсхолдеры
+    (bot/services/duel_constants.py), `bot.send_sticker` на них реально падает
+    в проде (TelegramBadRequest: неверный file_id). Раньше это исключение
+    пробрасывалось из _lift_mute необработанным и съедало ответ "Мут снят" —
+    хотя restrict_chat_member (реальное снятие мута) уже успешно отработал.
+    Теперь send_sticker-неудача должна тихо логироваться, не мешая ни
+    restrict_chat_member, ни финальному подтверждению пользователю."""
+    chat_id = -100910023
+    admin_id, target_id = 910023, 910024
+    await _ensure_user(session, target_id, "Проигравший")
+
+    monkeypatch.setattr(
+        duel_handlers.admin_service, "is_chat_admin", AsyncMock(return_value=True)
+    )
+    bot.send_sticker.side_effect = Exception("wrong file identifier/HTTP URL specified")
+
+    reply_to = SimpleNamespace(from_user=SimpleNamespace(id=target_id, is_bot=False, first_name="Проигравший"))
+    message = _fake_message(
+        chat_id, admin_id, "Админ", "/unmute", message_id=1, reply_to_message=reply_to
+    )
+
+    await duel_handlers.unmute_command(message, session, bot)
+
+    bot.restrict_chat_member.assert_awaited_once()
+    message.answer.assert_awaited_once()
+    assert "Мут снят" in message.answer.await_args.args[0]
+
+
+@pytest.mark.asyncio
 async def test_unmute_non_admin_refused_no_restrict(session, bot, monkeypatch):
     chat_id = -100910021
     non_admin_id, target_id = 910021, 910022
@@ -770,7 +800,7 @@ async def test_unmute_non_admin_refused_no_restrict(session, bot, monkeypatch):
         duel_handlers.admin_service, "is_chat_admin", AsyncMock(return_value=False)
     )
 
-    reply_to = SimpleNamespace(from_user=SimpleNamespace(id=target_id, first_name="Проигравший"))
+    reply_to = SimpleNamespace(from_user=SimpleNamespace(id=target_id, is_bot=False, first_name="Проигравший"))
     message = _fake_message(
         chat_id, non_admin_id, "НеАдмин", "/unmute", message_id=1, reply_to_message=reply_to
     )
