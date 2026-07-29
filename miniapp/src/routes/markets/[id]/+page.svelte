@@ -1,7 +1,7 @@
 <script lang="ts">
 	// Market Detail — option list with pool-share bars (AMM inline-graphic
 	// visual language, 04.2-UI-SPEC.md §Component Inventory "Market Detail"),
-	// BET_CHIPS amount picker, "ПОСТАВИТЬ" CTA (Copywriting Contract). No
+	// shared BetControl amount picker, "ПОСТАВИТЬ" CTA (Copywriting Contract). No
 	// confirm dialog per the Copywriting Contract ("Placing a market bet is a
 	// financial commitment but NOT gated behind a confirm dialog"). On
 	// resolution, the winning option gets a Hero-tier reveal banner (pink

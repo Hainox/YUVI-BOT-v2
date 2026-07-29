@@ -234,6 +234,12 @@ async def test_run_lottery_never_picks_telegram_service_account(session):
     await _seed_daily_stat(session, chat_id, TELEGRAM_SERVICE_ACCOUNT_ID, yesterday)
     await session.commit()
 
+    # Детерминированная проверка ДО реального (не форсированного) RNG-розыгрыша
+    # — та же причина, что test_run_victim_never_picks_telegram_service_account:
+    # без неё winner==uid ниже был бы верен лишь у ~50% прогонов.
+    candidates = await lottery_service._yesterday_candidates(session, chat_id)
+    assert candidates == [uid]
+
     result = await lottery_service.run_lottery(session, chat_id)
 
     assert result["winner"] == uid

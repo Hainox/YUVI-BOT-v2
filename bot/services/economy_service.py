@@ -463,7 +463,11 @@ async def get_transactions(
 
 async def get_chat_summary(session: AsyncSession, chat_id: int) -> dict:
     """Сводка по экономике чата (D-06, для /economy): банк, сумма в обороте,
-    число открытых рынков. НЕ дублирует /leaderboard и /rules."""
+    число открытых рынков. НЕ дублирует /leaderboard и /rules. Исключает
+    TELEGRAM_SERVICE_ACCOUNT_ID из total_in_circulation — та же причина, что
+    у get_leaderboard/credit_all_in_chat (см. bot/constants.py): иначе
+    фантомный баланс служебного аккаунта раздувает знаменатель bank_share_pct
+    (GET /api/v1/stats) и цифру "В обороте у участников" (/economy)."""
     bank_balance = (
         await session.execute(select(ChatBank.balance).where(ChatBank.chat_id == chat_id))
     ).scalar_one_or_none() or 0
@@ -471,7 +475,8 @@ async def get_chat_summary(session: AsyncSession, chat_id: int) -> dict:
     total_in_circulation = (
         await session.execute(
             select(func.coalesce(func.sum(UserBalance.balance), 0)).where(
-                UserBalance.chat_id == chat_id
+                UserBalance.chat_id == chat_id,
+                UserBalance.user_id != TELEGRAM_SERVICE_ACCOUNT_ID,
             )
         )
     ).scalar_one()

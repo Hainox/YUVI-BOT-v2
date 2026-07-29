@@ -143,6 +143,12 @@ async def test_get_todays_twin_never_picks_telegram_service_account(session):
     await _set_opt_in(session, chat_id, TELEGRAM_SERVICE_ACCOUNT_ID, "active")
     await session.commit()
 
+    # Детерминированная проверка ДО реального (не форсированного) RNG-розыгрыша
+    # — та же причина, что test_run_victim_never_picks_telegram_service_account:
+    # без неё winner==real_id ниже был бы верен лишь у ~50% прогонов.
+    candidates = await daily_twin_service._active_candidates(session, chat_id)
+    assert candidates == [real_id]
+
     twin = await daily_twin_service.get_todays_twin(session, chat_id)
 
     assert twin is not None

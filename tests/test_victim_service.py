@@ -554,6 +554,13 @@ async def test_run_victim_never_picks_telegram_service_account(session):
     )
     await session.commit()
 
+    # Детерминированная проверка ДО реального (не форсированного) RNG-розыгрыша:
+    # без неё winner==uid ниже был бы верен лишь у ~50% прогонов (реальный
+    # _rng.choice над [uid, 777000], если бы фильтр в _active_candidates
+    # сломали) — сам факт "кандидат один" не должен зависеть от удачи RNG.
+    candidates = await victim_service._active_candidates(session, chat_id)
+    assert candidates == [uid]
+
     result = await victim_service.run_victim(session, chat_id)
 
     assert result["winner"] == uid

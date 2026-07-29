@@ -444,5 +444,17 @@ async def unmute_command(message: Message, session: AsyncSession, bot: Bot) -> N
         return
 
     target_id, target_name = target
-    await _lift_mute(bot, message.chat.id, target_id)
+    try:
+        await _lift_mute(bot, message.chat.id, target_id)
+    except Exception:
+        # Та же защита, что WR-05 у _apply_mute (duel_accept_command/callback):
+        # restrict_chat_member может упасть (напр. цель — админ чата), и без
+        # этого try/except админ получил бы полное молчание вместо понятной
+        # ошибки — единственный мут-путь в файле без явного ответа на отказ.
+        logger.exception("unmute_command: не удалось снять мут target_id=%s", target_id)
+        await message.answer(
+            f"Не удалось снять мут для {html.escape(target_name)} — "
+            "Telegram отклонил запрос (возможно, у бота больше нет прав на ограничение участников)."
+        )
+        return
     await message.answer(f"Мут снят для {html.escape(target_name)}.", parse_mode="HTML")

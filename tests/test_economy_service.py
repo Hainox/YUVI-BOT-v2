@@ -493,3 +493,24 @@ async def test_get_transactions_excludes_telegram_service_account_in_chatwide_fe
     user_ids = {row["user_id"] for row in rows}
     assert TELEGRAM_SERVICE_ACCOUNT_ID not in user_ids
     assert u1 in user_ids
+
+
+@pytest.mark.asyncio
+async def test_get_transactions_null_user_id_row_stays_visible_with_non_hidden_kind(session):
+    """Регрессия на is_distinct_from vs `!=` (см. docstring get_transactions):
+    строка с user_id IS NULL и kind ВНЕ HIDDEN_KINDS (напр. как у duel_service/
+    markets_service/gacha_service, чей banking-leg тоже user_id=None) обязана
+    остаться видимой в чат-ленте. Наивный `EconomyTx.user_id != 777000` дал бы
+    здесь NULL (не TRUE) и молча выкинул бы эту строку — ровно та ошибка,
+    которую is_distinct_from и предотвращает."""
+    chat_id = -100700033
+    u1 = 800230
+    await _ensure_user(session, u1, "Реальный")
+    await economy_service.get_balance(session, chat_id, u1)  # start_bonus tx
+    await _seed_tx_row(session, chat_id, None, 100, "duel_stake", "test_tx_null_user_visible")
+    await session.commit()
+
+    rows = await economy_service.get_transactions(session, chat_id, user_id=None, limit=100)
+
+    kinds = [row["kind"] for row in rows]
+    assert "duel_stake" in kinds
