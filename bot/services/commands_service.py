@@ -90,6 +90,8 @@ _ADMIN_ONLY_COMMANDS: list[BotCommand] = [
     BotCommand(command="prompt_show", description="[Админ] Текущий промпт"),
     BotCommand(command="prompt_set", description="[Админ] Задать промпт"),
     BotCommand(command="prompt_reset", description="[Админ] Сбросить промпт"),
+    BotCommand(command="daily_twin_off", description="[Админ] Выключить двойника дня целиком"),
+    BotCommand(command="daily_twin_on", description="[Админ] Включить двойника дня обратно"),
 ]
 
 

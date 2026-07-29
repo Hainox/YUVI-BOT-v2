@@ -299,6 +299,40 @@ async def test_reacts_to_plain_username_mention_of_todays_twin(session, monkeypa
 
 
 @pytest.mark.asyncio
+async def test_reaction_skips_at_max_posts_cap(session):
+    """Тот же суточный потолок `settings.daily_twin_max_posts`, что и у
+    проактивного тика (`daily_twin_service.maybe_post_proactively`) — до
+    этого теста реактивная ветка не имела потолка вообще и отвечала на
+    КАЖДЫЙ матчащий апдейт без остановки (живой инцидент 2026-07-29,
+    воспринималось как спам, когда сегодняшняя персона оказалась активным
+    участником треда). `count_todays_posts` считает посты обоих путей
+    (одна таблица `daily_twin_posts`), поэтому проверка не требует
+    отдельного счётчика — переиспользует уже занятый сегодня бюджет.
+    Гейт срабатывает ДО любого AI-вызова — ai_client.stream не патчится."""
+    from bot.config import settings
+
+    chat_id = -100941024
+    target_id = 941024
+    await _ensure_user(session, target_id, "Дима")
+    await _set_opt_in(session, chat_id, target_id, "active")
+    for i in range(settings.daily_twin_max_posts):
+        await daily_twin_service.record_post(session, chat_id, 800_500 + i, target_id)
+    await session.commit()
+
+    message = _fake_message(
+        chat_id,
+        941025,
+        "го ещё раз",
+        reply_to_message_id=800_500,
+        sent_message_id=800_600,
+    )
+
+    await daily_twin_handlers.daily_twin_reaction(message, session)
+
+    message.answer.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_does_not_react_to_self_mention(session, monkeypatch):
     """Сегодняшняя персона сама упоминает/комментирует себя — не отвечает
     своим же голосом самой себе."""
