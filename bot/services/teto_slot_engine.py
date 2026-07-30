@@ -17,6 +17,8 @@ dict`, без скрытого состояния: rng — ВСЕГДА явны
 
 from __future__ import annotations
 
+import dataclasses
+
 from bot.services.teto_drillhunt import DrillHuntOutcome
 from bot.services.teto_drillhunt import LadderState
 from bot.services.teto_drillhunt import apply_drill_hunt
@@ -25,9 +27,18 @@ from bot.services.teto_megablock import ALL_CELLS
 from bot.services.teto_megablock import MegaBlock
 from bot.services.teto_megablock import assert_valid_partition
 from bot.services.teto_megablock import form_blocks
+from bot.services.teto_tumble import TETO_PAYLINES
 from bot.services.teto_tumble import count_scatter_blocks
 from bot.services.teto_tumble import evaluate_paylines
 from bot.services.teto_tumble import resolve_tumble
+
+# Число линий этого слота — тот же паттерн, что `slot_engine.TOTAL_LINES =
+# len(slot_data.PAYLINES)`: единственный источник истины — фактическая длина
+# `TETO_PAYLINES` (сейчас 3, MVP-подмножество будущих 50, см. докстринг
+# `teto_tumble.py`), а не захардкоженное число, которое рассинхронизировалось
+# бы при правке набора линий. Используется `casino_service.play_teto_slots`
+# для валидации `bet % TOTAL_LINES == 0` (по образцу `play_slots`).
+TOTAL_LINES = len(TETO_PAYLINES)
 
 # Хардкап на число тумбл-шагов ЗА ОДИН РАУНД (базовый или один фриспин-раунд)
 # — аналог `slot_engine.FREESPINS_HARD_CAP`, но на цепочку каскадов, а не на
@@ -221,4 +232,62 @@ def play_one_spin(rng, bet_per_line, *, trace: list | None = None) -> dict:
         "ladder_final_state": ladder,
         "total_payout": base_result["raw_round_payout"] + total_fs_final_payout,
         "final_blocks": final_blocks,
+    }
+
+
+def _serialize_blocks(blocks: list[MegaBlock]) -> list[dict]:
+    """Конвертирует список `MegaBlock` в список plain-dict через
+    `dataclasses.asdict` — берёт РОВНО 6 настоящих dataclass-полей
+    (`block_id`/`symbol_id`/`row`/`col`/`height`/`width`); `cells`/`area` —
+    вычисляемые `@property`, не поля датакласса, поэтому `asdict` их
+    автоматически НЕ включает (не нужно вручную вырезать) — итоговый dict уже
+    JSON-совместим как есть."""
+    return [dataclasses.asdict(b) for b in blocks]
+
+
+def serialize_spin_result(result: dict) -> dict:
+    """Приводит "сырой" (как из `play_one_spin`) результат к форме, которую
+    можно безопасно положить в `CasinoGame.outcome` (колонка JSONB) —
+    `casino_service.play_teto_slots` кладёт СЮДА возвращаемое значение этой
+    функции, а не сырой `result`.
+
+    Зачем это вообще нужно: `play_one_spin` возвращает dict, но НЕ каждое
+    значение внутри него — примитив. Три места содержат объекты, которые
+    `json.dumps`/asyncpg-JSONB-кодек не умеют сериализовать напрямую:
+      1. Списки `MegaBlock` (frozen-датакласс) — на ВЕРХНЕМ уровне
+         (`initial_blocks`/`final_blocks`), внутри `base_round["blocks"]` и
+         внутри КАЖДОЙ записи `fs_round_records[i]["blocks"]`. Пропуск хотя бы
+         одного из этих вложенных мест — не абстрактный риск: `fs_round_records`
+         непустой в любом спине, где выпало >=5 скаттер-блоков (обычный игровой
+         путь, не экзотика), так что забытая конверсия там уронит commit
+         РЕАЛЬНОГО пользовательского спина с ошибкой сериализации, а не только
+         синтетический тест.
+      2. `ladder_final_state` (`LadderState`) — датакласс с полем
+         `crossed_thresholds: set`, а JSON/JSONB множеств не знает вообще;
+         конвертируем в отсортированный список int (детерминированный порядок
+         для стабильного diff'а при отладке через `psql`).
+
+    Всё остальное (`scatter_count`/`freespins_awarded`/`freespins_played`/
+    `freespins_hard_cap_hit`/`total_payout`, скалярные поля внутри
+    `base_round`/`fs_round_records`) уже int/bool/str — переносится как есть
+    через `**result`, без ручного перечисления каждого поля (при добавлении
+    нового скалярного поля в `play_one_spin` в будущем не нужно будет
+    вспоминать про эту функцию)."""
+    base_round = result["base_round"]
+    fs_round_records = result["fs_round_records"]
+    ladder = result["ladder_final_state"]
+
+    return {
+        **result,
+        "initial_blocks": _serialize_blocks(result["initial_blocks"]),
+        "base_round": {**base_round, "blocks": _serialize_blocks(base_round["blocks"])},
+        "fs_round_records": [
+            {**rec, "blocks": _serialize_blocks(rec["blocks"])} for rec in fs_round_records
+        ],
+        "ladder_final_state": {
+            "score": ladder.score,
+            "multiplier": ladder.multiplier,
+            "crossed_thresholds": sorted(ladder.crossed_thresholds),
+        },
+        "final_blocks": _serialize_blocks(result["final_blocks"]),
     }

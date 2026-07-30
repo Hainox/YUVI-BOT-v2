@@ -18,6 +18,8 @@ SQLAlchemy 2.0 (тот же паттерн уже проверен в test_marke
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from sqlalchemy import select
 
@@ -25,6 +27,7 @@ from bot.config import settings
 from bot.services import blackjack_engine
 from bot.services import casino_service
 from bot.services import economy_service
+from bot.services import teto_slot_engine
 from common.models.casino_game import CasinoGame
 from common.models.chat_bank import ChatBank
 from common.models.user import User
@@ -63,6 +66,17 @@ async def _get_casino_game(session, user_id: int, idem_key: str) -> CasinoGame:
             )
         )
     ).scalar_one()
+
+
+def _min_valid_teto_bet() -> int:
+    """Наименьшая ставка тето-слота, одновременно кратная
+    `teto_slot_engine.TOTAL_LINES` и не меньше `settings.casino_min_bet` — не
+    хардкодим конкретное число (напр. "30"), чтобы тесты не рассинхронизировались
+    молча, если один из двух параметров (число линий MVP-набора или минимальная
+    ставка казино) когда-нибудь изменится."""
+    lines = teto_slot_engine.TOTAL_LINES
+    bet_per_line = -(-settings.casino_min_bet // lines)  # ceil division без float
+    return bet_per_line * lines
 
 
 class _ForcedRng:
@@ -455,6 +469,248 @@ async def test_slots_spin_allowed_once_interval_elapsed(session, monkeypatch):
 
     second = await casino_service.play_slots(session, chat_id, user_id, 100, "test_throttle_elapsed_2")
     assert second["game"] == "slots"
+
+
+# --- Тето Брейнрот: Дрель-Хант (money-интеграция play_teto_slots) -----------
+#
+# Движок (`teto_slot_engine.play_one_spin`) уже полностью протестирован своими
+# собственными тестами (`tests/test_teto_slot_engine.py`) — мегаблоки/тумбл/
+# Дрель-Хант/лестница/хардкапы там НЕ переповторяются. Здесь — ТОЛЬКО слой
+# money/DB/settle-плюмбинга, тот же принцип, что у остальных тестов этого
+# файла для play_slots.
+
+
+@pytest.mark.asyncio
+async def test_teto_slots_idempotent_replay_same_idem_key(session, monkeypatch):
+    """Повторный вызов с ТЕМ ЖЕ idem_key не должен списывать ставку дважды и
+    обязан вернуть строго ОДНУ строку CasinoGame (форма
+    `test_idempotent_replay_same_idem_key` выше, только для teto-слота)."""
+    chat_id = -100900040
+    user_id = 900040
+    await _ensure_user(session, user_id)
+    balance_before = await _fund(session, chat_id, user_id)
+    await economy_service.credit_bank(
+        session, chat_id, 100_000, kind="test_seed", ref_id="test_teto_idempotent_seed_bank"
+    )
+    await session.commit()
+    monkeypatch.setattr(casino_service, "_last_slots_spin_at", {})
+
+    idem_key = "test_teto_idempotent_replay"
+    bet = _min_valid_teto_bet()
+    first = await casino_service.play_teto_slots(session, chat_id, user_id, bet, idem_key)
+    balance_after_first = await _get_user_balance(session, chat_id, user_id)
+
+    # Явная проверка дельты баланса (не только "второй вызов вернул то же
+    # самое"): ровно один дебет ставки + один кредит выплаты первого вызова.
+    assert balance_after_first == balance_before - bet + first["payout"]
+
+    second = await casino_service.play_teto_slots(session, chat_id, user_id, bet, idem_key)
+
+    assert second["payout"] == first["payout"]
+    assert second["outcome"] == first["outcome"]
+    assert second["game"] == "teto_slots"
+
+    # деньги не двинулись повторно — баланс идентичен состоянию ПОСЛЕ первого
+    # (не-replay) вызова, а не balance_before (та ставка реально списывается)
+    assert await _get_user_balance(session, chat_id, user_id) == balance_after_first
+
+    games = (
+        await session.execute(
+            select(CasinoGame).where(CasinoGame.user_id == user_id, CasinoGame.idem_key == idem_key)
+        )
+    ).scalars().all()
+    assert len(games) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "user_id,bad_bet",
+    [(900041, 0), (900042, -10)],
+)
+async def test_teto_slots_non_positive_bet_rejected(session, monkeypatch, user_id, bad_bet):
+    """bet=0/отрицательный — InvalidBet ДО любого движения денег, деньги не
+    двигаются, строка CasinoGame не создаётся (форма `test_bet_below_min_rejected`)."""
+    chat_id = -100900041
+    await _ensure_user(session, user_id)
+    balance_before = await _fund(session, chat_id, user_id)
+    monkeypatch.setattr(casino_service, "_last_slots_spin_at", {})
+
+    with pytest.raises(casino_service.InvalidBet):
+        await casino_service.play_teto_slots(
+            session, chat_id, user_id, bad_bet, f"test_teto_bad_bet_{user_id}"
+        )
+
+    assert await _get_user_balance(session, chat_id, user_id) == balance_before
+    games = (
+        await session.execute(select(CasinoGame).where(CasinoGame.user_id == user_id))
+    ).scalars().all()
+    assert games == []
+
+
+@pytest.mark.asyncio
+async def test_teto_slots_bet_not_multiple_of_lines_rejected(session, monkeypatch):
+    """Положительная ставка, НЕ кратная `teto_slot_engine.TOTAL_LINES` —
+    та же валидация, что и у Azumanga `play_slots`, только на другом
+    делителе (число линий MVP-набора `TETO_PAYLINES`, см. `teto_tumble.py`)."""
+    chat_id = -100900043
+    user_id = 900043
+    await _ensure_user(session, user_id)
+    balance_before = await _fund(session, chat_id, user_id)
+    monkeypatch.setattr(casino_service, "_last_slots_spin_at", {})
+
+    bet = _min_valid_teto_bet() + 1
+    assert bet % teto_slot_engine.TOTAL_LINES != 0
+
+    with pytest.raises(casino_service.InvalidBet):
+        await casino_service.play_teto_slots(session, chat_id, user_id, bet, "test_teto_bad_bet_not_multiple")
+
+    assert await _get_user_balance(session, chat_id, user_id) == balance_before
+    games = (
+        await session.execute(select(CasinoGame).where(CasinoGame.user_id == user_id))
+    ).scalars().all()
+    assert games == []
+
+
+@pytest.mark.asyncio
+async def test_teto_slots_second_spin_too_soon_raises_rate_limited(session, monkeypatch):
+    """Троттлинг-дикт/функция ОБЩИЕ с Azumanga `play_slots` (см. обновлённый
+    докстринг `_check_slots_throttle`) — та же форма, что
+    `test_slots_second_spin_too_soon_raises_rate_limited`, только для
+    teto-слота, доказывает, что переиспользование работает и на новой игре."""
+    chat_id = -100900044
+    user_id = 900044
+    await _ensure_user(session, user_id)
+    await _fund(session, chat_id, user_id)
+    monkeypatch.setattr(casino_service, "_last_slots_spin_at", {})
+
+    bet = _min_valid_teto_bet()
+    first = await casino_service.play_teto_slots(session, chat_id, user_id, bet, "test_teto_throttle_1")
+    balance_after_first = await _get_user_balance(session, chat_id, user_id)
+
+    with pytest.raises(casino_service.RateLimited):
+        await casino_service.play_teto_slots(session, chat_id, user_id, bet, "test_teto_throttle_2")
+
+    assert await _get_user_balance(session, chat_id, user_id) == balance_after_first
+    games = (
+        await session.execute(
+            select(CasinoGame).where(
+                CasinoGame.user_id == user_id, CasinoGame.idem_key == "test_teto_throttle_2"
+            )
+        )
+    ).scalars().all()
+    assert games == []
+    assert first["game"] == "teto_slots"
+
+
+@pytest.mark.asyncio
+async def test_teto_slots_throttle_shared_across_slot_game_types(session, monkeypatch):
+    """Демонстрирует буквальное переиспользование ОДНОГО И ТОГО ЖЕ
+    троттлинг-дикта между Azumanga и Тето: спин `play_slots`, сразу за ним
+    (без паузы) спин `play_teto_slots` ТЕМ ЖЕ user_id — второй обязан
+    словить RateLimited, хотя это ДРУГАЯ игра, потому что троттлинг-ключ —
+    ТОЛЬКО user_id, не (game, user_id) — см. тех-задание про переиспользование
+    `_check_slots_throttle`/`_last_slots_spin_at` без форка второго дикта."""
+    chat_id = -100900045
+    user_id = 900045
+    await _ensure_user(session, user_id)
+    await _fund(session, chat_id, user_id)
+    monkeypatch.setattr(casino_service, "_last_slots_spin_at", {})
+
+    await casino_service.play_slots(session, chat_id, user_id, 100, "test_teto_cross_throttle_azumanga")
+
+    bet = _min_valid_teto_bet()
+    with pytest.raises(casino_service.RateLimited):
+        await casino_service.play_teto_slots(session, chat_id, user_id, bet, "test_teto_cross_throttle_teto")
+
+
+@pytest.mark.asyncio
+async def test_teto_slots_replay_of_settled_idem_key_not_throttled(session, monkeypatch):
+    """Гард `is_new_spin` (см. докстринг `_check_slots_throttle`): replay уже
+    settled idem_key НЕ должен ловить RateLimited, даже если вызван сразу же
+    после первого спина — троттлинг применяется ТОЛЬКО к подтверждённо новым
+    раундам, не к повтору уже обработанного idem_key."""
+    chat_id = -100900046
+    user_id = 900046
+    await _ensure_user(session, user_id)
+    await _fund(session, chat_id, user_id)
+    monkeypatch.setattr(casino_service, "_last_slots_spin_at", {})
+
+    idem_key = "test_teto_replay_not_throttled"
+    bet = _min_valid_teto_bet()
+    first = await casino_service.play_teto_slots(session, chat_id, user_id, bet, idem_key)
+
+    # Мгновенный повтор ТЕМ ЖЕ idem_key сразу следом — не новый спин
+    # (_find_existing находит уже settled строку), поэтому не должен словить
+    # RateLimited, несмотря на то, что реальный интервал между вызовами
+    # заведомо меньше casino_spin_min_interval_ms.
+    second = await casino_service.play_teto_slots(session, chat_id, user_id, bet, idem_key)
+
+    assert second == first
+
+
+@pytest.mark.asyncio
+async def test_teto_slots_real_spin_outcome_round_trips_through_json(session, monkeypatch):
+    """Task 2 (`teto_slot_engine.serialize_spin_result`) доказывается ЗДЕСЬ
+    end-to-end: реальный (не форсированный) `_rng` — та же философия, что и
+    структурные тесты `test_api_games.py` для Azumanga-слота (форсировать
+    детерминированный исход через весь мегаблок+тумбл+Дрель-Хант+лестница
+    RNG-chain было бы хрупко и не нужно; идемпотентность/bank-capping уже
+    доказаны generic-тестами казино выше и не переповторяются здесь через
+    форсированный тето-выигрыш).
+
+    Троттлинг здесь намеренно отключён (`_check_slots_throttle` — no-op):
+    этот тест — не про троттлинг (тот покрыт отдельными тестами выше), а
+    про сериализацию, для которой нужно прогнать НЕСКОЛЬКО настоящих спинов
+    подряд без искусственных задержек, пытаясь застать (не гарантированно)
+    ветку с фриспинами — именно она добавляет ЕЩЁ один уровень вложенных
+    MegaBlock-списков (`fs_round_records[i]["blocks"]`), самый ценный кейс
+    регрессии для этой функции."""
+    chat_id = -100900047
+    user_id = 900047
+    await _ensure_user(session, user_id)
+    await _fund(session, chat_id, user_id)
+    await economy_service.credit_bank(
+        session, chat_id, 1_000_000, kind="test_seed", ref_id="test_teto_real_spin_seed_bank"
+    )
+    await session.commit()
+    monkeypatch.setattr(casino_service, "_check_slots_throttle", lambda user_id: None)
+
+    bet = _min_valid_teto_bet()
+
+    first_idem = "test_teto_real_spin_0"
+    result = await casino_service.play_teto_slots(session, chat_id, user_id, bet, first_idem)
+
+    assert result["game"] == "teto_slots"
+    assert isinstance(result["payout"], int)
+    assert result["payout"] >= 0
+
+    # Сама суть проверки: play_one_spin возвращает dataclass-инстансы
+    # (MegaBlock/LadderState с полем-set), которые json.dumps НЕ умеет
+    # сериализовать напрямую — если serialize_spin_result пропустила хотя бы
+    # одно вложенное место (см. её докстринг), этот dumps упал бы с TypeError
+    # на РЕАЛЬНОМ спине, не только в теории.
+    round_tripped = json.loads(json.dumps(result["outcome"]))
+    assert round_tripped == result["outcome"]
+
+    game = await _get_casino_game(session, user_id, first_idem)
+    assert game.game == "teto_slots"
+
+    # Ещё несколько настоящих спинов подряд, пытаясь застать ветку с
+    # фриспинами хотя бы раз — не гарантируем успех (реальный RNG), round-trip
+    # выше уже безусловно доказал корректность сериализации на КАКОМ-ТО
+    # реальном спине, это — просто повышение уверенности покрытия.
+    hit_freespins = result["outcome"]["freespins_played"] > 0
+    for i in range(1, 40):
+        idem_key = f"test_teto_real_spin_{i}"
+        result = await casino_service.play_teto_slots(session, chat_id, user_id, bet, idem_key)
+        json.loads(json.dumps(result["outcome"]))  # тот же safety-net на каждой попытке
+        if result["outcome"]["freespins_played"] > 0:
+            hit_freespins = True
+            break
+
+    if not hit_freespins:
+        logger_msg = "не удалось застать ветку с фриспинами за 40 реальных спинов — не блокирующе"
+        print(f"\n[test_teto_slots_real_spin_outcome_round_trips_through_json] {logger_msg}")
 
 
 # --- Блэкджек: двойной натурал (push 1.0x) — редкая ветка settle_outcome ----
