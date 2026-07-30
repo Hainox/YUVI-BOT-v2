@@ -231,8 +231,9 @@ def describe_winning_lines(blocks: list[MegaBlock]) -> list[dict]:
     бы её до конца прогона.
 
     `cells` — `[[row, col], ...]` для столбцов `0..length-1` этой линии, т.е.
-    самодостаточная геометрия: фронту НЕ нужна копия `TETO_PAYLINES`, и
-    запланированное расширение 3 -> 50 линий не потребует правок на клиенте."""
+    самодостаточная геометрия: фронту НЕ нужна копия `TETO_PAYLINES` — ровно
+    поэтому состоявшееся расширение 3 -> 50 линий правок на клиенте не
+    потребовало (и смены `TRACE_SCHEMA_VERSION` тоже)."""
     cell_to_block: dict[tuple[int, int], MegaBlock] = {}
     for b in blocks:
         for cell in b.cells:

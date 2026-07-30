@@ -17,10 +17,14 @@ from __future__ import annotations
 from bot.services.teto_megablock import ALL_CELLS
 from bot.services.teto_megablock import ALL_SYMBOLS
 from bot.services.teto_megablock import GRID_SIZE
+from bot.services.teto_megablock import HIGH_SYMBOLS
+from bot.services.teto_megablock import LOW_SYMBOLS
 from bot.services.teto_megablock import SCATTER_ID
 from bot.services.teto_megablock import WILD_ID
 from bot.services.teto_megablock import MegaBlock
 from bot.services.teto_megablock import assert_valid_partition
+from bot.services.teto_tumble import TETO_PAYLINES
+from bot.services.teto_tumble import TETO_PAYTABLE
 from bot.services.teto_tumble import count_scatter_blocks
 from bot.services.teto_tumble import evaluate_paylines
 from bot.services.teto_tumble import resolve_tumble
@@ -52,18 +56,36 @@ class _ForcedRng:
         return v
 
 
-def _build_board(overrides: dict, default_symbol: str = "baguette_crumb") -> list[MegaBlock]:
-    """Полная доска 36 одиночных 1x1 блоков; `overrides` задаёт символ для
-    конкретных клеток, остальное — `default_symbol`. ВНИМАНИЕ: `TETO_PAYLINES`
-    (3 линии) пересекаются друг с другом — тесты обязаны явно задавать КАЖДУЮ
-    payline-клетку, иначе однородный fill может случайно "выиграть" сам по
-    себе на непроверяемой линии (этот класс бага уже ловился на прототипе,
-    см. roadmap.md/отчёт по Тето)."""
+# Три РАЗНЫХ не-wild/не-scatter символа «тихой» полосной базы — см. _build_board.
+_STRIPE_SYMBOLS = ("baguette_crumb", "drill_lollipop", "utau_note")
+
+
+def _build_board(overrides: dict) -> list[MegaBlock]:
+    """Полная доска 36 одиночных 1x1 блоков: базовый символ клетки зависит
+    ТОЛЬКО от столбца — `_STRIPE_SYMBOLS[col % 3]` («столбцовые полосы с
+    периодом 3»), `overrides` поверх врезает проверяемую фигуру.
+
+    Почему полосы — универсальная «тихая» база под ЛЮБОЙ набор линий: каждая
+    payline продвигается ровно на один столбец за позицию, поэтому читает
+    S0,S1,S2,S0,S1,S2 из трёх РАЗНЫХ символов — три подряд равных не
+    собираются ни на одной линии никакой формы, а leftmost-тройка всегда
+    различна (прогон обрывается на второй позиции). Прежний подход
+    «однородный fill + явно задать клетки каждой линии» работал на
+    3-линейном MVP и НЕ масштабируется на полные 50 (`TETO_PAYLINES`): теперь
+    КАЖДАЯ клетка доски лежит хотя бы на горизонтали своей строки, и
+    однородная база выигрывает сама по себе на непроверяемой линии (этот
+    класс бага уже ловился на прототипе, см. roadmap.md/отчёт по Тето).
+
+    Символ врезки ОБЯЗАН отличаться от всех трёх полосных — иначе врезка
+    может продлить прогон линии, ныряющей через её клетки; линейных символов
+    8 (LOW + HIGH), полосы занимают 3, так что места достаточно. Точность
+    каждой врезки (выигрыш ровно там, где задуман) проверяется самим
+    `evaluate_paylines` в каждом тесте, а не постулируется."""
     blocks = []
     bid = 0
     for r in range(GRID_SIZE):
         for c in range(GRID_SIZE):
-            sym = overrides.get((r, c), default_symbol)
+            sym = overrides.get((r, c), _STRIPE_SYMBOLS[c % 3])
             blocks.append(MegaBlock(bid, sym, r, c, 1, 1))
             bid += 1
     return blocks
@@ -75,14 +97,14 @@ def _build_board(overrides: dict, default_symbol: str = "baguette_crumb") -> lis
 
 
 def test_evaluate_paylines_detects_win_on_middle_line():
-    overrides = {
-        (2, 0): "teto_chimera", (2, 1): "teto_chimera",
-        (2, 2): "teto_chimera", (2, 3): "teto_chimera",
-        (2, 4): "utau_note", (2, 5): "utau_note",
-        (0, 0): "drill_lollipop", (1, 1): "skull_cringe",
-        (5, 0): "baguette_crumb", (4, 1): "utau_note",
-    }
-    blocks = _build_board(overrides)
+    """Средняя горизонталь — `TETO_PAYLINES[2] == [2,2,2,2,2,2]` (в полном
+    наборе 50 линий шесть горизонталей идут первыми, по строкам 0..5; на
+    3-линейном MVP она была индексом 0). Врезка teto_chimera в (2,0)..(2,3)
+    даёт прогон РОВНО 4 на ней и ни на какой другой: (2,4) — полосный
+    drill_lollipop — обрывает прогон, а остальные 49 линий глушит полосная
+    база (см. `_build_board`)."""
+    assert TETO_PAYLINES[2] == [2, 2, 2, 2, 2, 2], "тест целится в среднюю горизонталь"
+    blocks = _build_board({(2, c): "teto_chimera" for c in range(4)})
     has_win, winning_ids = evaluate_paylines(blocks)
     assert has_win is True
     by_cell = {b.cells[0]: b.block_id for b in blocks}
@@ -90,24 +112,26 @@ def test_evaluate_paylines_detects_win_on_middle_line():
 
 
 def test_evaluate_paylines_no_win_when_run_too_short():
-    overrides = {
-        (2, 0): "teto_chimera", (2, 1): "utau_note", (2, 2): "skull_cringe",
-        (2, 3): "teto_0401", (2, 4): "drill_lollipop", (2, 5): "baguette_crumb",
-        (0, 0): "drill_lollipop", (1, 1): "skull_cringe",
-        (5, 0): "baguette_crumb", (4, 1): "utau_note",
-    }
-    blocks = _build_board(overrides)
+    """Прогон из 2 (минимум для выплаты — 3) не платит: врезка из двух
+    teto_chimera в (2,0),(2,1). Все линии, начинающиеся этой парой
+    ([2,2,...]-семейство: горизонталь, лесенки, бугорок), на третьей позиции
+    читают полосный символ и обрываются на длине 2; остальное — чистая
+    полосная база без единого прогона."""
+    blocks = _build_board({(2, 0): "teto_chimera", (2, 1): "teto_chimera"})
     has_win, winning_ids = evaluate_paylines(blocks)
     assert has_win is False
     assert winning_ids == set()
 
 
 def test_evaluate_paylines_wild_substitutes_for_any_symbol_except_scatter():
+    """WILD на (2,0) + прогон teto_chimera в (2,1)..(2,3): target — leftmost
+    НЕ-wild символ (teto_chimera), wild засчитывается за него — прогон 4 на
+    средней горизонтали. Wild пробивает полосную защиту только в своём
+    столбце: любая другая линия, начинающаяся с (2,0), после wild читает два
+    РАЗНЫХ полосных/врезанных символа и обрывается на длине 2."""
     blocks = _build_board({
-        (2, 0): WILD_ID, (2, 1): "drill_lollipop", (2, 2): "drill_lollipop",
-        (2, 3): "drill_lollipop", (2, 4): "teto_chimera", (2, 5): "teto_0401",
-        (0, 0): "skull_cringe", (1, 1): "teto_0401",
-        (5, 0): "skull_cringe", (4, 1): "utau_note",
+        (2, 0): WILD_ID,
+        (2, 1): "teto_chimera", (2, 2): "teto_chimera", (2, 3): "teto_chimera",
     })
     has_win, winning_ids = evaluate_paylines(blocks)
     assert has_win is True
@@ -118,16 +142,56 @@ def test_evaluate_paylines_wild_substitutes_for_any_symbol_except_scatter():
 def test_evaluate_paylines_scatter_as_leftmost_symbol_never_pays_by_line():
     # Скаттер как САМЫЙ ЛЕВЫЙ (target-определяющий) символ на линии
     # пропускается целиком — платит по количеству блоков на экране
-    # (count_scatter_blocks), не по payline.
-    blocks = _build_board({
-        (2, 0): SCATTER_ID, (2, 1): SCATTER_ID, (2, 2): SCATTER_ID,
-        (2, 3): SCATTER_ID, (2, 4): SCATTER_ID, (2, 5): SCATTER_ID,
-        (0, 0): "skull_cringe", (1, 1): "teto_0401",
-        (5, 0): "skull_cringe", (4, 1): "utau_note",
-    })
+    # (count_scatter_blocks), не по payline. Вся строка 2 из скаттеров:
+    # линии, начинающиеся с (2,0), скипаются по target == SCATTER_ID, а
+    # линии, ныряющие в строку 2 позже, ломаются о скаттер-клетку внутри
+    # прогона (wild за скаттер не считается, обычный символ — тем более).
+    blocks = _build_board({(2, c): SCATTER_ID for c in range(GRID_SIZE)})
     has_win, winning_ids = evaluate_paylines(blocks)
     assert has_win is False
     assert winning_ids == set()
+
+
+def test_teto_paylines_full_set_is_valid():
+    """Структурный пин полного набора линий (roadmap.md: перенос геометрии
+    оригинала 1:1 — РОВНО 50, как в Hades Gigablox). Каждая линия — по одной
+    строке на каждый из 6 столбцов в границах сетки: линия неполной длины
+    уронила бы `evaluate_paylines` на чтении `line[col]`, строка вне 0..5 —
+    на несуществующей клетке. Дубликат линии — тихая двойная оплата одной и
+    той же геометрии, поэтому уникальность здесь не эстетика, а деньги."""
+    assert len(TETO_PAYLINES) == 50
+    for line in TETO_PAYLINES:
+        assert len(line) == GRID_SIZE
+        assert all(0 <= row < GRID_SIZE for row in line)
+    assert len({tuple(line) for line in TETO_PAYLINES}) == len(TETO_PAYLINES), (
+        "дубликат payline платил бы одну геометрию дважды"
+    )
+
+
+def test_teto_paytable_covers_line_symbols_and_orders_tiers():
+    """Пин состава и тир-порядка `TETO_PAYTABLE`. Ключи — РОВНО линейные
+    символы: LOW + HIGH + WILD. Скаттера в таблице НЕТ сознательно: скаттер
+    структурно не может войти в линейный выигрыш (target == SCATTER_ID
+    скипается, wild за скаттер не считается — см. `evaluate_paylines`),
+    поэтому запись для него была бы мёртвой строкой, маскирующей этот
+    инвариант. Порядок тиров: любой LOW строго дешевле любого HIGH (иначе
+    деление на 4 low / 4 high существовало бы только на бумаге — ровно то,
+    что паутейбл и чинил), топ среди не-wild — teto_0401, wild платит как
+    топ-символ (он приходит ТОЛЬКО через Дрель-Хант, и его цена — часть
+    механики момента). Все значения — положительные int: дробные множители
+    сломали бы точный инвариант «сумма evaluate.payout по раунду ==
+    round_end.raw_round_payout» (см. комментарий к TETO_PAYTABLE)."""
+    assert set(TETO_PAYTABLE) == set(LOW_SYMBOLS + HIGH_SYMBOLS + [WILD_ID])
+    assert all(type(v) is int and v > 0 for v in TETO_PAYTABLE.values())
+    assert max(TETO_PAYTABLE[s] for s in LOW_SYMBOLS) < min(
+        TETO_PAYTABLE[s] for s in HIGH_SYMBOLS
+    ), "каждый LOW обязан быть строго дешевле каждого HIGH"
+    assert TETO_PAYTABLE["teto_0401"] == max(
+        TETO_PAYTABLE[s] for s in LOW_SYMBOLS + HIGH_SYMBOLS
+    ), "топ среди не-wild символов — teto_0401"
+    assert TETO_PAYTABLE[WILD_ID] == TETO_PAYTABLE["teto_0401"], (
+        "wild платит как топ-символ — ценность момента Дрель-Ханта"
+    )
 
 
 def test_count_scatter_blocks_counts_blocks_not_cells():

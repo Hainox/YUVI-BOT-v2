@@ -227,12 +227,17 @@ def test_wild_symbol_never_appears_except_via_drill_hunt():
 
 
 def test_forced_end_to_end_nontrivial_spin_matches_expected_shape():
-    """ОДИН полностью детерминированный сценарий (форс-сид 76972, найден
-    перебором на прототипе), где заведомо происходит: мегаблок в первичном
+    """ОДИН полностью детерминированный сценарий (форс-сид 98182, найден
+    перебором сидов 0..100k УЖЕ ПОСЛЕ калибровки: 50 линий + взвешенное
+    заполнение со скаттером 1/27 сделали совпадение всех шести условий
+    заметно более редким, и прототипный сид 76972 перестал давать фриспины —
+    новый сид обязан переподбираться после КАЖДОЙ правки
+    WEIGHTS/SHAPE_POOL/TETO_PAYLINES, потому что любая из них сдвигает
+    потребление RNG), где заведомо происходит: мегаблок в первичном
     заполнении + хотя бы один тумбл-шаг + Дрель-Хант в базовой игре +
     начисление фриспинов + Дрель-Хант с волной хотя бы в одном фриспин-раунде
     + пересечение хотя бы одного порога лестницы."""
-    seed = 76972
+    seed = 98182
     rng = random.Random(seed)
     result = play_one_spin(rng, bet_per_line=1)
 
@@ -389,17 +394,26 @@ def _group_rounds(trace: list) -> list[list[dict]]:
     return groups
 
 
-def _make_grid(overrides: dict, default_symbol: str = "utau_note") -> list:
+# Три РАЗНЫХ линейных символа «тихой» полосной базы фикстур (см. _make_grid);
+# на этот же кортеж опирается цикл добора в _WildOnBlock12Rng ниже.
+_STRIPE_SYMBOLS = ("baguette_crumb", "drill_lollipop", "utau_note")
+
+
+def _make_grid(overrides: dict) -> list:
     """Локальная копия `tests/test_teto_drillhunt.py::_make_grid` (конвенция
     этого набора — стабы/фикстуры дублируются в каждом тестовом модуле):
-    доска 6x6 из одиночных 1x1 блоков, `block_id = row*6 + col`."""
+    доска 6x6 из одиночных 1x1 блоков, `block_id = row*6 + col`. База —
+    столбцовые полосы `_STRIPE_SYMBOLS[col % 3]`: на полных 50 линиях каждая
+    payline читает S0,S1,S2,S0,S1,S2 и не собирает трёх подряд ни на одной
+    форме линии (подробный разбор — `tests/test_teto_tumble.py::_build_board`);
+    символ врезки обязан отличаться от всех трёх полосных."""
     from bot.services.teto_megablock import GRID_SIZE
     from bot.services.teto_megablock import MegaBlock
 
     return [
         MegaBlock(
             block_id=r * GRID_SIZE + c,
-            symbol_id=overrides.get((r, c), default_symbol),
+            symbol_id=overrides.get((r, c), _STRIPE_SYMBOLS[c % 3]),
             row=r, col=c, height=1, width=1,
         )
         for r in range(GRID_SIZE)
@@ -409,15 +423,15 @@ def _make_grid(overrides: dict, default_symbol: str = "utau_note") -> list:
 
 def _make_win_after_injection_grid() -> list:
     """Копия `tests/test_teto_drillhunt.py::_make_win_after_injection_grid`:
-    ДО инъекции ни одна из 3 линий не выигрывает; после конверсии блока 12
-    (клетка (2,0)) в WILD линия 0 выигрывает длиной 4 (ids 12,13,14,15)."""
+    ДО инъекции ни одна из 50 линий не выигрывает; после конверсии блока 12
+    (клетка (2,0), skull_cringe) в WILD средняя горизонталь `TETO_PAYLINES[2]`
+    выигрывает длиной 4 (ids 12,13,14,15: WILD + три teto_chimera; (2,4) —
+    полосный drill_lollipop — обрывает прогон). Точность врезки («выигрыш
+    ровно этот и только он») пинует
+    `tests/test_teto_drillhunt.py::test_fixture_grids_have_no_pre_existing_win_sanity_check`."""
     return _make_grid({
-        (2, 0): "skull_cringe", (2, 1): "drill_lollipop", (2, 2): "drill_lollipop",
-        (2, 3): "drill_lollipop", (2, 4): "baguette_crumb", (2, 5): "teto_chimera",
-        (0, 0): "utau_note", (1, 1): "baguette_crumb", (3, 3): "skull_cringe",
-        (4, 4): "utau_note", (5, 5): "teto_0401",
-        (5, 0): "teto_chimera", (4, 1): "teto_drill_rage", (3, 2): "teto_baguette_knight",
-        (1, 4): "teto_0401", (0, 5): "skull_cringe",
+        (2, 0): "skull_cringe", (2, 1): "teto_chimera",
+        (2, 2): "teto_chimera", (2, 3): "teto_chimera",
     })
 
 
@@ -425,8 +439,9 @@ class _WildOnBlock12Rng:
     """RNG-стаб, различающий call site'ы ПО ТИПУ элементов последовательности,
     а не по порядку вызовов: `choice` над списком int'ов — это всегда
     `eligible_ids` внутри `apply_drill_hunt` (возвращаем 12, т.е. клетку
-    (2,0)), над любым другим списком (символы/формы) — первый элемент;
-    `randint(a, b)` — всегда `b`.
+    (2,0)), над списком символов (единственный такой call site здесь —
+    `FILL_POOL` при доборе) — цикл по `_STRIPE_SYMBOLS`; `randint(a, b)` —
+    всегда `b`.
 
     Почему не общий `_ForcedRng(choices=[12, ...])`: тот циклит ОДНУ
     последовательность по всем call site'ам, поэтому после выбора блока начал
@@ -434,14 +449,28 @@ class _WildOnBlock12Rng:
     класс несовпадения типов между call site'ами, о котором предупреждает
     докстринг `_ForcedRng` выше. Дифференциация по типу делает путь исполнения
     фиксированным независимо от того, сколько раз каскад вызовет добор.
-    `randint -> b` попутно означает `randint(1, 10) == 10 != 1`, т.е. в базовом
-    раунде Дрель-Хант НЕ срабатывает (нужно для чистоты сценария) и добор
-    никогда не пытается положить мегаблок."""
+
+    Почему добор — ЦИКЛ по `_STRIPE_SYMBOLS`, а не константный `seq[0]` (как
+    делает `_ForcedRng`): волна снимает клетки (2,0)..(2,3), добор кладёт 4
+    новые одиночки в (0,0)..(0,3) (`form_blocks` идёт по sorted-клеткам), и
+    константный символ собрал бы прогон 4 на ВЕРХНЕЙ горизонтали — на полном
+    наборе 50 линий это незатухающий каскад до самого `TUMBLE_HARD_CAP`
+    вместо сценария «ровно одна волна». Цикл периода 3, стартующий на столбце
+    0, кладёт в столбцы 0..3 ровно `_STRIPE_SYMBOLS[col % 3]`, т.е. буквально
+    ВОССТАНАВЛИВАЕТ полосную защиту фикстуры — каскад после волны затухает
+    немедленно. `randint -> b` попутно означает `randint(1, 10) == 10 != 1`,
+    т.е. в базовом раунде Дрель-Хант НЕ срабатывает (нужно для чистоты
+    сценария) и добор никогда не пытается положить мегаблок."""
+
+    def __init__(self):
+        self._fill_i = 0
 
     def choice(self, seq):
         if seq and isinstance(seq[0], int):
             return 12
-        return seq[0]
+        v = _STRIPE_SYMBOLS[self._fill_i % len(_STRIPE_SYMBOLS)]
+        self._fill_i += 1
+        return v
 
     def randint(self, a, b):
         return b
@@ -907,30 +936,24 @@ def test_trace_winning_lines_length_counts_columns_not_distinct_blocks():
     `len(block_ids) < length`. Фронт, рисующий полилинию по числу id, не
     дотянул бы её до конца прогона.
 
-    Форсированная доска: блок 1x2 (ширина 2) на средней линии в столбцах 0-1 +
+    Форсированная доска: полосная «тихая» база (см. `_make_grid`) + блок 1x2
+    (ширина 2) на средней горизонтали `TETO_PAYLINES[2]` в столбцах 0-1 +
     одиночные того же символа в столбцах 2-3 => прогон длиной 4 столбца, но
-    всего 3 различных блока."""
+    всего 3 различных блока. Полосы глушат остальные 49 линий — что выиграла
+    РОВНО одна линия, пиновано `len(lines) == 1` (на однородной базе прежнего
+    образца это было бы неправдой: каждая клетка лежит хотя бы на горизонтали
+    своей строки)."""
     from bot.services.teto_megablock import GRID_SIZE
     from bot.services.teto_megablock import MegaBlock
     from bot.services.teto_tumble import describe_winning_lines
 
     wide = MegaBlock(block_id=100, symbol_id="teto_chimera", row=2, col=0, height=1, width=2)
     covered = set(wide.cells)
-    overrides = {
-        (2, 2): "teto_chimera", (2, 3): "teto_chimera",
-        (2, 4): "utau_note", (2, 5): "utau_note",
-        # Линии 1 и 2 обязаны НЕ выигрывать: доска однородна, поэтому каждую
-        # их клетку задаём явно (тот же приём, что `test_teto_tumble.py::
-        # _build_board` — иначе однородный fill "выиграет" сам по себе).
-        (0, 0): "utau_note", (1, 1): "baguette_crumb", (3, 3): "skull_cringe",
-        (4, 4): "utau_note", (5, 5): "teto_0401",
-        (5, 0): "teto_chimera", (4, 1): "teto_drill_rage", (3, 2): "teto_baguette_knight",
-        (1, 4): "teto_0401", (0, 5): "skull_cringe",
-    }
+    overrides = {(2, 2): "teto_chimera", (2, 3): "teto_chimera"}
     blocks = [wide] + [
         MegaBlock(
             block_id=r * GRID_SIZE + c,
-            symbol_id=overrides.get((r, c), "drill_lollipop"),
+            symbol_id=overrides.get((r, c), _STRIPE_SYMBOLS[c % 3]),
             row=r, col=c, height=1, width=1,
         )
         for r in range(GRID_SIZE)
@@ -940,9 +963,9 @@ def test_trace_winning_lines_length_counts_columns_not_distinct_blocks():
     assert_valid_partition(blocks)
 
     lines = describe_winning_lines(blocks)
-    middle = [line for line in lines if line["line_index"] == 0]
-    assert len(middle) == 1, f"ожидалась ровно одна выигравшая линия (средняя), получено {lines}"
-    line = middle[0]
+    assert len(lines) == 1, f"ожидалась ровно одна выигравшая линия (средняя горизонталь), получено {lines}"
+    line = lines[0]
+    assert line["line_index"] == 2, "средняя горизонталь [2,2,2,2,2,2] — индекс 2 в полном наборе 50"
 
     assert line["symbol_id"] == "teto_chimera"
     assert line["length"] == 4, "прогон — 4 СТОЛБЦА (широкий блок закрывает два)"
@@ -1101,14 +1124,18 @@ def test_serialize_animation_round_cap_truncates_by_time_budget_not_only_by_ops(
     потому что единственный существовавший тест усечения форсирует ДОРОГИЕ
     раунды и всегда упирается в op_cap первым.
 
-    Сид 0 даёт 8 раундов на настоящем RNG; `max_ops` поднят заведомо выше
-    всего трейса, чтобы причиной усечения гарантированно был именно предел
+    Сид 177 даёт 10 раундов на настоящем RNG (прежний сид 0 подбирался до
+    взвешенного заполнения: со скаттером 1/27 фриспины стали событием ~1 к
+    100 спинов, и сид 0 их больше не видит — новый найден программным
+    перебором сидов по `freespins_played >= 4`, первый с максимальным числом
+    раундов среди первых двух сотен); `max_ops` поднят заведомо выше всего
+    трейса, чтобы причиной усечения гарантированно был именно предел
     раундов, а не совпадение с байтовым."""
     trace: list = []
-    result = play_one_spin(random.Random(0), bet_per_line=3, trace=trace)
+    result = play_one_spin(random.Random(177), bet_per_line=3, trace=trace)
 
     rounds_played = 1 + result["freespins_played"]
-    assert rounds_played == 8, "сид 0 подобран как многораундовый — если это изменилось, подобрать новый"
+    assert rounds_played == 10, "сид 177 подобран как многораундовый — если это изменилось, подобрать новый"
 
     envelope = eng.serialize_animation(
         trace, paid_total=result["total_payout"], max_rounds=3, max_ops=10**6
@@ -1153,3 +1180,35 @@ def test_serialize_animation_does_not_truncate_ordinary_spins():
         assert envelope["complete_through_round"] == result["freespins_played"]
         assert envelope["ops"][0]["op"] == "fill"
         assert envelope["ops"][-1]["op"] == "round_end"
+
+
+# ---------------------------------------------------------------------------
+# 9. Sampled RTP — грубая CI-полоса (зеркало прецедента Azumanga)
+# ---------------------------------------------------------------------------
+
+
+def test_sampled_rtp_in_band():
+    """Грубая CI-полоса RTP — зеркало `tests/test_slot_engine.py::
+    test_sampled_rtp_in_band` (Azumanga). Полоса НАМЕРЕННО широкая
+    (0.80..1.05 при откалиброванной цели 0.96): этот тест существует, чтобы
+    поймать катастрофу класса D-06 (сломанный RTP ~38% на непроверенных
+    черновых цифрах паутейбла — прецедент уже был), а НЕ чтобы перепроверять
+    калибровку; точная верификация (100k+ спинов, полная статистика: hit
+    rate, частота фриспинов, вклад базы/бонуса, хвосты) живёт в
+    `scripts/calibrate_teto_rtp.py` и гоняется руками при каждой правке
+    `TETO_PAYTABLE`/`WEIGHTS`/`SHAPE_POOL`/`TETO_PAYLINES`. 8 000 спинов —
+    ~5 с CI-времени (~1.6k спин/с) и достаточно, чтобы 38% не пролез никогда,
+    а честные 96% не флапали: разброс на 8k у этого движка укладывается в
+    полосу с большим запасом (замерено на нескольких сидах: 0.95..0.98)."""
+    rng = random.Random(12345)
+    n_spins = 8_000
+    bet_per_line = 10
+    total_bet = 0
+    total_payout = 0
+    for _ in range(n_spins):
+        result = play_one_spin(rng, bet_per_line=bet_per_line)
+        total_bet += bet_per_line * eng.TOTAL_LINES
+        total_payout += result["total_payout"]
+
+    rtp = total_payout / total_bet
+    assert 0.80 <= rtp <= 1.05, f"RTP {rtp} вне полосы — калибровка сломана (класс D-06)"
