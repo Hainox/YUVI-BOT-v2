@@ -1,0 +1,225 @@
+"""Тесты payline-оценки и тумбл-каскада слота "Тето Брейнрот"
+(`bot/services/teto_tumble.py`). Plain pytest, чистые функции.
+
+Доказывают:
+- `evaluate_paylines`: leftmost non-wild как target, wild подставляется вместо
+  любого символа кроме scatter, минимум 3 подряд слева направо, scatter как
+  target пропускается (платит блоками через `count_scatter_blocks`, не по линии).
+- `resolve_tumble`: выигравший блок убирается ЦЕЛИКОМ; многоклеточный блок
+  падает RIGID BODY (единым целым — не разрывается на части, даже если под
+  разными его столбцами разная "высота падения"); партиция держится после
+  гравитации + добора.
+- `count_scatter_blocks` считает БЛОКИ, а не клетки (зафиксировано владельцем
+  бота 2026-07-30 — см. `bot/services/teto_tumble.py`)."""
+
+from __future__ import annotations
+
+from bot.services.teto_megablock import ALL_CELLS
+from bot.services.teto_megablock import ALL_SYMBOLS
+from bot.services.teto_megablock import GRID_SIZE
+from bot.services.teto_megablock import SCATTER_ID
+from bot.services.teto_megablock import WILD_ID
+from bot.services.teto_megablock import MegaBlock
+from bot.services.teto_tumble import count_scatter_blocks
+from bot.services.teto_tumble import evaluate_paylines
+from bot.services.teto_tumble import resolve_tumble
+
+
+class _ForcedRng:
+    """См. `tests/test_teto_megablock.py::_ForcedRng` — тот же стаб,
+    продублирован здесь по конвенции файла (аналог `_ForcedGridRng` в
+    `tests/test_slot_engine.py`, локальный на каждый тестовый модуль)."""
+
+    def __init__(self, choices=(), randints=()):
+        self._choices = list(choices)
+        self._randints = list(randints)
+        self._ci = 0
+        self._ri = 0
+
+    def choice(self, seq):
+        if not self._choices:
+            return seq[0]
+        v = self._choices[self._ci % len(self._choices)]
+        self._ci += 1
+        return v
+
+    def randint(self, a, b):
+        if not self._randints:
+            return b
+        v = self._randints[self._ri % len(self._randints)]
+        self._ri += 1
+        return v
+
+
+def _build_board(overrides: dict, default_symbol: str = "baguette_crumb") -> list[MegaBlock]:
+    """Полная доска 36 одиночных 1x1 блоков; `overrides` задаёт символ для
+    конкретных клеток, остальное — `default_symbol`. ВНИМАНИЕ: `TETO_PAYLINES`
+    (3 линии) пересекаются друг с другом — тесты обязаны явно задавать КАЖДУЮ
+    payline-клетку, иначе однородный fill может случайно "выиграть" сам по
+    себе на непроверяемой линии (этот класс бага уже ловился на прототипе,
+    см. roadmap.md/отчёт по Тето)."""
+    blocks = []
+    bid = 0
+    for r in range(GRID_SIZE):
+        for c in range(GRID_SIZE):
+            sym = overrides.get((r, c), default_symbol)
+            blocks.append(MegaBlock(bid, sym, r, c, 1, 1))
+            bid += 1
+    return blocks
+
+
+# ---------------------------------------------------------------------------
+# evaluate_paylines
+# ---------------------------------------------------------------------------
+
+
+def test_evaluate_paylines_detects_win_on_middle_line():
+    overrides = {
+        (2, 0): "teto_chimera", (2, 1): "teto_chimera",
+        (2, 2): "teto_chimera", (2, 3): "teto_chimera",
+        (2, 4): "utau_note", (2, 5): "utau_note",
+        (0, 0): "drill_lollipop", (1, 1): "skull_cringe",
+        (5, 0): "baguette_crumb", (4, 1): "utau_note",
+    }
+    blocks = _build_board(overrides)
+    has_win, winning_ids = evaluate_paylines(blocks)
+    assert has_win is True
+    by_cell = {b.cells[0]: b.block_id for b in blocks}
+    assert winning_ids == {by_cell[(2, c)] for c in range(4)}
+
+
+def test_evaluate_paylines_no_win_when_run_too_short():
+    overrides = {
+        (2, 0): "teto_chimera", (2, 1): "utau_note", (2, 2): "skull_cringe",
+        (2, 3): "teto_0401", (2, 4): "drill_lollipop", (2, 5): "baguette_crumb",
+        (0, 0): "drill_lollipop", (1, 1): "skull_cringe",
+        (5, 0): "baguette_crumb", (4, 1): "utau_note",
+    }
+    blocks = _build_board(overrides)
+    has_win, winning_ids = evaluate_paylines(blocks)
+    assert has_win is False
+    assert winning_ids == set()
+
+
+def test_evaluate_paylines_wild_substitutes_for_any_symbol_except_scatter():
+    blocks = _build_board({
+        (2, 0): WILD_ID, (2, 1): "drill_lollipop", (2, 2): "drill_lollipop",
+        (2, 3): "drill_lollipop", (2, 4): "teto_chimera", (2, 5): "teto_0401",
+        (0, 0): "skull_cringe", (1, 1): "teto_0401",
+        (5, 0): "skull_cringe", (4, 1): "utau_note",
+    })
+    has_win, winning_ids = evaluate_paylines(blocks)
+    assert has_win is True
+    by_cell = {b.cells[0]: b.block_id for b in blocks}
+    assert winning_ids == {by_cell[(2, c)] for c in range(4)}
+
+
+def test_evaluate_paylines_scatter_as_leftmost_symbol_never_pays_by_line():
+    # Скаттер как САМЫЙ ЛЕВЫЙ (target-определяющий) символ на линии
+    # пропускается целиком — платит по количеству блоков на экране
+    # (count_scatter_blocks), не по payline.
+    blocks = _build_board({
+        (2, 0): SCATTER_ID, (2, 1): SCATTER_ID, (2, 2): SCATTER_ID,
+        (2, 3): SCATTER_ID, (2, 4): SCATTER_ID, (2, 5): SCATTER_ID,
+        (0, 0): "skull_cringe", (1, 1): "teto_0401",
+        (5, 0): "skull_cringe", (4, 1): "utau_note",
+    })
+    has_win, winning_ids = evaluate_paylines(blocks)
+    assert has_win is False
+    assert winning_ids == set()
+
+
+def test_count_scatter_blocks_counts_blocks_not_cells():
+    """ЗАФИКСИРОВАНО владельцем бота 2026-07-30: один крупный скаттер-мегаблок
+    (растянутый на много клеток) считается за ОДИН скаттер, не за N."""
+    big_scatter = MegaBlock(block_id=0, symbol_id=SCATTER_ID, row=0, col=0, height=4, width=4)  # area=16
+    filler_ids = list(range(1, 21))
+    other_cells = sorted(ALL_CELLS - set(big_scatter.cells))
+    fillers = [MegaBlock(bid, "utau_note", r, c, 1, 1) for bid, (r, c) in zip(filler_ids, other_cells)]
+    assert count_scatter_blocks([big_scatter] + fillers) == 1
+
+
+# ---------------------------------------------------------------------------
+# resolve_tumble
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_tumble_multi_column_block_falls_as_one_rigid_unit_not_torn_apart():
+    """Блок A: 1x3 горизонтальный на row=2, cols 0-2. Блок B: 1x1 на row=5,
+    col=1 (прямо под средним столбцом A). Наивная per-column гравитация
+    уронила бы col0/col2 до row=5, пока col1 блокирован B — разорвав A на
+    части. Rigid-body гравитация обязана сдвинуть A вниз ровно настолько,
+    насколько позволяют ВСЕ 3 столбца сразу (останавливается на row=4, на
+    строку выше B), сохранив A целым 1x3 блоком."""
+    a = MegaBlock(block_id=0, symbol_id="teto_chimera", row=2, col=0, height=1, width=3)
+    b = MegaBlock(block_id=1, symbol_id="drill_lollipop", row=5, col=1, height=1, width=1)
+
+    rng = _ForcedRng(choices=ALL_SYMBOLS, randints=[9])  # без попытки мегаблока на доборе
+    result = resolve_tumble(rng, [a, b], winning_block_ids=set())
+
+    by_id = {blk.block_id: blk for blk in result}
+    assert 0 in by_id and 1 in by_id
+
+    settled_a = by_id[0]
+    settled_b = by_id[1]
+    assert (settled_a.height, settled_a.width) == (1, 3), "блок A не должен развалиться на части"
+    assert settled_a.symbol_id == "teto_chimera"
+    assert settled_a.row == 4, f"ожидалась остановка rigid-body на row=4, получено row={settled_a.row}"
+    assert (settled_b.row, settled_b.col) == (5, 1)  # B уже стоял на полу, не двигается
+
+
+def test_resolve_tumble_removes_winning_block_entirely_even_if_multi_cell():
+    """2x2 мегаблок, где выигравшими считаются ВСЕ его клетки (весь block_id)
+    — обязан быть убран ЦЕЛИКОМ, не частично."""
+    mega = MegaBlock(block_id=0, symbol_id="teto_0401", row=0, col=0, height=2, width=2)
+    filler_ids = list(range(1, 33))
+    other_cells = sorted(ALL_CELLS - set(mega.cells))
+    fillers = [MegaBlock(bid, "utau_note", r, c, 1, 1) for bid, (r, c) in zip(filler_ids, other_cells)]
+
+    rng = _ForcedRng(choices=ALL_SYMBOLS, randints=[9])
+    result = resolve_tumble(rng, [mega] + fillers, winning_block_ids={0})
+
+    assert 0 not in {b.block_id for b in result}
+
+
+def test_resolve_tumble_result_respects_partition_invariant():
+    from bot.services.teto_megablock import assert_valid_partition
+
+    mega = MegaBlock(block_id=0, symbol_id="teto_0401", row=0, col=0, height=2, width=2)
+    filler_ids = list(range(1, 33))
+    other_cells = sorted(ALL_CELLS - set(mega.cells))
+    fillers = [MegaBlock(bid, "utau_note", r, c, 1, 1) for bid, (r, c) in zip(filler_ids, other_cells)]
+
+    rng = _ForcedRng(choices=ALL_SYMBOLS, randints=[9])
+    result = resolve_tumble(rng, [mega] + fillers, winning_block_ids={0})
+    assert_valid_partition(result)
+
+
+def test_resolve_tumble_new_block_ids_never_collide_with_removed_winning_ids():
+    """`resolve_tumble` считает следующий свободный `block_id` от максимума
+    среди ВСЕХ переданных блоков (включая уже удалённые выигравшие), а не
+    только среди выживших — иначе новый блок на освободившейся клетке мог бы
+    получить тот же id, что и только что удалённый выигравший блок этого же
+    шага (найдено и отсеяно на прототипе, см. roadmap.md/отчёт по Тето).
+
+    Доска — 36 одиночных 1x1 блоков id=0..35 (row-major). Убираем block_id=35
+    (row=5,col=5): гравитация сдвигает весь столбец col=5 вниз на одну
+    клетку (выжившие блоки (0,5)..(4,5) оседают на (1,5)..(5,5)), поэтому
+    РОВНО ОДИН генуинно НОВЫЙ блок от `form_blocks` появляется на (0,5) —
+    верхушке освободившегося столбца, а не на месте самого удалённого блока."""
+    blocks = [
+        MegaBlock(block_id=i, symbol_id="utau_note", row=r, col=c, height=1, width=1)
+        for i, (r, c) in enumerate(sorted(ALL_CELLS))
+    ]
+    winning_ids = {35}  # последний по порядку id (row=5, col=5)
+
+    rng = _ForcedRng(choices=ALL_SYMBOLS, randints=[9])
+    result = resolve_tumble(rng, blocks, winning_ids)
+
+    all_ids = [b.block_id for b in result]
+    assert len(all_ids) == len(set(all_ids)), "block_id обязаны быть уникальны после тумбла"
+
+    new_blocks = [b for b in result if b.block_id not in range(35)]
+    assert len(new_blocks) == 1, "ожидался ровно один генуинно новый блок от form_blocks"
+    assert new_blocks[0].block_id == 36, "новый id обязан продолжаться ПОСЛЕ максимума среди ВСЕХ исходных блоков"
+    assert (new_blocks[0].row, new_blocks[0].col) == (0, 5)
