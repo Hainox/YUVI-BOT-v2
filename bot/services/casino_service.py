@@ -46,6 +46,7 @@ from bot.services import blackjack_engine
 from bot.services import economy_service
 from bot.services import jackpot_service
 from bot.services import slot_engine
+from bot.services import teto_slot_engine
 from common.db.session import SessionLocal
 from common.models.casino_game import CasinoGame
 
@@ -361,7 +362,11 @@ def _check_slots_throttle(user_id: int) -> None:
     уже settled-раунда по тому же `idem_key`: иначе легитимный повторный
     вызов с тем же idem_key (обычная идемпотентность, напр.
     `test_play_slots_settles_and_is_idempotent`) ошибочно ловил бы
-    RateLimited вместо честного replay-ответа."""
+    RateLimited вместо честного replay-ответа. Ключ (dict) и сама функция
+    общие для ВСЕХ слот-игр казино (Azumanga `play_slots` и Тето
+    `play_teto_slots`) — это один и тот же анти-абьюз-концерн (авто-спин
+    конкретного игрока) независимо от того, в какой слот он крутит, поэтому
+    троттлинг-дикт не форкается по игре."""
     now = time.monotonic()
     last = _last_slots_spin_at.get(user_id)
     _last_slots_spin_at[user_id] = now
@@ -440,6 +445,63 @@ async def play_slots(
         await session.commit()
 
     return {**result, "jackpot": jackpot}
+
+
+# --- teto_slots (Тето Брейнрот: Дрель-Хант — 04.1-XX, money-интеграция) ------
+
+
+async def play_teto_slots(
+    session: AsyncSession, chat_id: int, user_id: int, bet: int, idem_key: str
+) -> dict:
+    """Слот "Тето Брейнрот: Дрель-Хант" — money/DB-обвязка ПОВЕРХ уже готового
+    и полностью протестированного чистого движка `teto_slot_engine.play_one_spin`
+    (мегаблоки + тумбл-каскад + Дрель-Хант + лестница множителя, см. его
+    докстринг). Построена буквально "по образцу `play_slots`" (см. докстринг
+    `teto_slot_engine.py` — это прямо сформулированный там следующий шаг):
+    те же `is_new_spin`/`_check_slots_throttle`/`bet % TOTAL_LINES`/
+    `bet_per_line`/`compute()`-замыкание/`_settle`, тот же общий RNG-seam
+    `_rng` (server-authoritative, D-03/T-04.1-01), тот же общий троттлинг-дикт
+    `_last_slots_spin_at` (см. обновлённый докстринг `_check_slots_throttle`
+    выше — тот же анти-абьюз-концерн авто-спина, что и у Azumanga, ключ по
+    `user_id`, не форкается на второй dict под конкретную игру).
+
+    Что ГЕНУИННО отличается от `play_slots`:
+      - `TOTAL_LINES`/`bet_per_line` берутся из `teto_slot_engine` (3 линии
+        сейчас — MVP-подмножество, см. `teto_tumble.TETO_PAYLINES`), а не из
+        `slot_engine`.
+      - `compute()` вызывает `teto_slot_engine.play_one_spin(_rng,
+        bet_per_line)`, а не `slot_engine.spin_grid`/`evaluate_grid`, и
+        ОБЯЗАН прогнать сырой результат через
+        `teto_slot_engine.serialize_spin_result` ПЕРЕД тем, как отдать его
+        `_settle` как `outcome` — сырой `play_one_spin`-dict содержит
+        dataclass-инстансы (`MegaBlock`/`LadderState`), которые `CasinoGame.
+        outcome` (JSONB) не проглотит как есть (см. докстринг
+        `serialize_spin_result` — там же разбор конкретного риска: спин с
+        фриспинами, обычный игровой путь, уронил бы commit ошибкой
+        сериализации без этого шага).
+
+    Намеренно БЕЗ джекпот-слоя (в отличие от `play_slots`, где после
+    `_settle` идёт `jackpot_service.contribute_and_maybe_award`): прогрессивный
+    джекпот (CASINO-06) по дизайну — фича конкретно слота Azumanga, а не
+    общий слой поверх ЛЮБОГО слота казино; включать в его пул спины Тето —
+    отдельное продуктовое решение, явно вне рамок этой задачи (см. roadmap.md),
+    поэтому `jackpot_service` здесь не импортируется и не вызывается вовсе."""
+    is_new_spin = await _find_existing(session, user_id, idem_key) is None
+    if is_new_spin:
+        _check_slots_throttle(user_id)
+
+    if bet <= 0 or bet % teto_slot_engine.TOTAL_LINES != 0:
+        raise InvalidBet(
+            f"Ставка должна быть положительным кратным {teto_slot_engine.TOTAL_LINES} "
+            "(по числу линий слота)"
+        )
+    bet_per_line = bet // teto_slot_engine.TOTAL_LINES
+
+    def compute() -> tuple[int, dict]:
+        result = teto_slot_engine.play_one_spin(_rng, bet_per_line)
+        return result["total_payout"], teto_slot_engine.serialize_spin_result(result)
+
+    return await _settle(session, chat_id, user_id, "teto_slots", bet, idem_key, compute)
 
 
 # --- blackjack (D-03/D-07/D-08: стейтфул-раздача, деck/руки в state JSONB) ---
