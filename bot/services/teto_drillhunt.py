@@ -37,6 +37,7 @@ from typing import NamedTuple
 from bot.services.teto_megablock import SCATTER_ID
 from bot.services.teto_megablock import WILD_ID
 from bot.services.teto_megablock import MegaBlock
+from bot.services.teto_tumble import describe_winning_lines
 from bot.services.teto_tumble import evaluate_paylines
 from bot.services.teto_tumble import resolve_tumble
 
@@ -51,13 +52,50 @@ class DrillHuntOutcome(NamedTuple):
     дополнительная волна тумбла из-за нового выигрыша, порождённого инъекцией.
     `wave_winning_block_ids`/`wave_cells_won` — id и суммарная площадь блоков,
     вошедших в выигрыш ИМЕННО этой волны (до их удаления гравитацией) —
-    отдельно атрибутируемый payout волны."""
+    отдельно атрибутируемый payout волны.
+
+    --- Три хвостовых поля НИЖЕ существуют только ради анимации ---
+
+    `wild_block_id` — id блока, ставшего Wild (`None`, если Дрель-Хант не
+    сработал). `blocks_after_injection` — доска СРАЗУ ПОСЛЕ инъекции Wild и ДО
+    волны. `wave_winning_lines` — `describe_winning_lines` на этой же доске,
+    т.е. геометрия линий, которые выиграла ИМЕННО волна.
+
+    Почему эта информация едет НА ВЫХОДЕ, а не через новые параметры
+    `apply_drill_hunt`: два существующих теста подменяют её шпионами РОВНО
+    той же арности — `test_teto_slot_engine.py::spy_drill` и
+    `test_base_round_drill_hunt_cells_never_feed_the_ladder_score::
+    spy_apply_drill_hunt`, оба `(rng, blocks, *, guaranteed,
+    tumble_hard_cap_remaining)`. Любой лишний аргумент (в т.ч. `trace=`) на
+    call site движка — `TypeError` внутри шпиона; подпись `apply_drill_hunt`
+    поэтому НЕПРИКОСНОВЕННА, а вся новая информация уезжает в возврате.
+
+    Почему поля ДОПИСАНЫ в хвост с дефолтами: ни один тест не конструирует
+    `DrillHuntOutcome` вручную, все 5 мест конструирования — внутри этого
+    модуля (и все 5 заполняют поля реальными значениями), чтение по имени
+    атрибута не затрагивается, а `outcome._replace(cells_converted=30)` в
+    `test_base_round_drill_hunt_cells_never_feed_the_ladder_score` продолжает
+    работать поверх дописанных полей. Дефолты — страховка на случай
+    гипотетической позиционной конструкции извне, полагаться на них НЕ следует:
+    `blocks_after_injection` фактически заполняется ВСЕГДА (равен `blocks`,
+    когда волна не сработала; равен копии входной доски, когда Дрель-Хант вообще
+    не сработал).
+
+    Конкретный баг, который эти поля закрывают: старый трейс отдавал в op
+    `drill_hunt` доску ПОСЛЕ волны, поэтому кадр "дрель приземлилась на блок X,
+    он стал золотой дрелью" был из трейса невосстановим В ПРИНЦИПЕ — фронт не
+    мог ни показать посадку дрели, ни подсветить то, что волна потом снесла
+    (блоки уже отсутствовали на единственном доступном кадре)."""
 
     blocks: list[MegaBlock]
     cells_converted: int
     triggered_new_tumble: bool
     wave_winning_block_ids: frozenset[int]
     wave_cells_won: int
+    # --- добавлено для анимации, только хвостом и с дефолтами (см. докстринг) ---
+    wild_block_id: int | None = None
+    blocks_after_injection: list[MegaBlock] | None = None
+    wave_winning_lines: tuple[dict, ...] = ()
 
 
 def apply_drill_hunt(
@@ -80,21 +118,35 @@ def apply_drill_hunt(
     (`teto_slot_engine.run_tumble_cascade`), не этой функции. Если
     `tumble_hard_cap_remaining <= 0` — волна не производится (Wild остаётся
     на доске "непроверенным") — осознанное усечение, аналогичное
-    `FREESPINS_HARD_CAP`."""
+    `FREESPINS_HARD_CAP`.
+
+    ПОДПИСЬ НЕПРИКОСНОВЕННА (её патчат шпионы точной арности в двух тестах —
+    см. докстринг `DrillHuntOutcome`), поэтому кадры/id, нужные анимации,
+    возвращаются в хвостовых полях `DrillHuntOutcome`
+    (`wild_block_id`/`blocks_after_injection`/`wave_winning_lines`), а не
+    записываются функцией куда-то самостоятельно: этот модуль вообще не знает
+    ни про трейс, ни про сериализацию — их собирает исключительно
+    `teto_slot_engine`."""
     if guaranteed:
         triggered = True
     else:
         triggered = rng.randint(1, DRILL_HUNT_BASE_TRIGGER_DENOM) == 1
 
     if not triggered:
-        return DrillHuntOutcome(list(blocks), 0, False, frozenset(), 0)
+        return DrillHuntOutcome(
+            list(blocks), 0, False, frozenset(), 0,
+            wild_block_id=None, blocks_after_injection=list(blocks), wave_winning_lines=(),
+        )
 
     eligible = [b for b in blocks if b.symbol_id not in (WILD_ID, SCATTER_ID)]
     if not eligible:
         # Структурно недостижимо на нормальной доске (WILD никогда не в пуле
         # заполнения; полностью-scatter/wild борд не встретился ни разу на
         # 20000+ случайных партиций на прототипе), но держим defensive no-op.
-        return DrillHuntOutcome(list(blocks), 0, False, frozenset(), 0)
+        return DrillHuntOutcome(
+            list(blocks), 0, False, frozenset(), 0,
+            wild_block_id=None, blocks_after_injection=list(blocks), wave_winning_lines=(),
+        )
 
     eligible_ids = [b.block_id for b in eligible]
     picked_id = rng.choice(eligible_ids)
@@ -111,14 +163,30 @@ def apply_drill_hunt(
 
     has_win, winning_ids = evaluate_paylines(new_blocks)
     if not has_win:
-        return DrillHuntOutcome(new_blocks, cells_converted, False, frozenset(), 0)
+        return DrillHuntOutcome(
+            new_blocks, cells_converted, False, frozenset(), 0,
+            wild_block_id=picked.block_id, blocks_after_injection=new_blocks, wave_winning_lines=(),
+        )
 
     if tumble_hard_cap_remaining <= 0:
-        return DrillHuntOutcome(new_blocks, cells_converted, False, frozenset(), 0)
+        return DrillHuntOutcome(
+            new_blocks, cells_converted, False, frozenset(), 0,
+            wild_block_id=picked.block_id, blocks_after_injection=new_blocks, wave_winning_lines=(),
+        )
 
     wave_cells_won = sum(b.area for b in new_blocks if b.block_id in winning_ids)
+    # `describe_winning_lines` считается ТОЛЬКО в этой ветке (волна реально
+    # состоялась) — не безусловно: на путях выше её результат был бы либо
+    # пустым, либо описывал бы линии, которые никто не убирал, а лишний проход
+    # по paylines на каждом вызове Дрель-Ханта не нужен ни деньгам, ни фронту.
+    wave_winning_lines = tuple(describe_winning_lines(new_blocks))
     final_blocks = resolve_tumble(rng, new_blocks, winning_ids)
-    return DrillHuntOutcome(final_blocks, cells_converted, True, frozenset(winning_ids), wave_cells_won)
+    return DrillHuntOutcome(
+        final_blocks, cells_converted, True, frozenset(winning_ids), wave_cells_won,
+        wild_block_id=picked.block_id,
+        blocks_after_injection=new_blocks,
+        wave_winning_lines=wave_winning_lines,
+    )
 
 
 # Пороги лестницы (score -> multiplier), перенесены 1:1 из roadmap.md — НЕ

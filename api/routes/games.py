@@ -72,6 +72,46 @@ Azumanga, см. докстринг `play_teto_slots`), поэтому роут �
 более явно ввиду каскадно-фриспин-лестничной сложности Тето: "честная"
 выплата известна только внутри `play_teto_slots.compute()` до капа банком.
 
+`animation` (`dict | null`, ТОЛЬКО у teto_slots) — покадровый сценарий спина
+для анимированного игрового экрана миниаппа: доска 6x6 на каждом кадре,
+подсветка выигравших мегаблоков ДО их удаления, каскадная гравитация,
+посадка дрели Дрель-Ханта, HUD лестницы множителя. Полная схема (5 op'ов,
+сегментация по раундам, пределы размера) — в докстринге
+`teto_slot_engine.serialize_animation`. Роут сам ничего не считает: заводит
+пустой dict-sink, отдаёт его `casino_service.play_teto_slots` как
+out-параметр и публикует под ключом `animation`.
+
+Три вещи, которые ОБЯЗАН знать клиент этого эндпоинта:
+  1. `animation: null` — НОРМАЛЬНЫЙ ответ, не ошибка. Так выглядит любой
+     раунд, который не считался в ЭТОМ запросе: идемпотентный replay уже
+     рассчитанного `idem_key` (`_settle` возвращает сохранённый исход, не
+     вызывая `compute()`) и ретрай по `DuplicateRound`, попавший на строку
+     конкурентного запроса. Синтезировать анимацию там нельзя: повторный
+     прокрут съел бы свежий RNG и показал бы игроку спин, которого не было,
+     с выигрышем, не совпадающим с изменением баланса. Клиент в этом случае
+     рисует финальную доску из `outcome.final_blocks`, лестницу из
+     `outcome.ladder_final_state`, деньги из `payout`/`user_balance_after` —
+     и это же правильное продуктовое поведение: replay это сетевой ретрай, а
+     не новый раунд, игрок этот спин уже посмотрел. Отсутствие этого абзаца
+     в документации кончилось бы фронтом, который считает отсутствие
+     анимации ошибкой и показывает пустую доску после ретрая запроса.
+  2. `animation.truncated == true` — трейс обрезан ЦЕЛЫМИ раундами по
+     пределам размера/времени (`TRACE_MAX_OPS`/`TRACE_MAX_ROUNDS`):
+     проигрываем раунды `0..complete_through_round`, затем прыгаем в финал по
+     `outcome` и честно показываем, что `rounds_total - rounds_recorded`
+     раундов пропущено. ⚠ Базовый раунд — это `round: 0`, а `0` в JS ложен:
+     проверять `complete_through_round !== null`, никогда не по truthiness.
+  3. Деньги НИКОГДА не берутся из анимации: `payout`/`outcome` — запись
+     факта, `animation` — сценарий показа, который может отсутствовать или
+     быть усечён.
+
+Прецедент, из которого выросло требование: Azumanga
+(`slot_engine.SlotResult.freespin_rounds`) — фронт раньше получал только
+ИТОГОВОЕ ЧИСЛО фриспинов и просто бампал счётчик, что читалось игроками как
+«авторасчёт, а не полный прокрут»; починка состояла в отдаче данных на
+КАЖДЫЙ бонусный раунд. Здесь тот же урок применён на уровень глубже — к
+каскадам ВНУТРИ раунда, которые до этого вообще не покидали движок.
+
 `casino_service.RateLimited -> 429` — у slots И teto_slots (авто-спин в
 miniapp: клиентский цикл повторных ставок без ручного тапа на каждый раунд,
 см. `casino_service._check_slots_throttle`) — троттлинг-дикт `_last_slots_
@@ -390,13 +430,31 @@ async def post_teto_slots(
     только прокидывает `bet`/`idem_key`, маппит исключения на HTTP и
     публикует баланс. Без jackpot-ветки (`play_teto_slots` не возвращает
     ключ "jackpot") и без `bank_capped` — намеренно, см. модульный
-    докстринг."""
+    докстринг.
+
+    ЕДИНСТВЕННОЕ, что роут делает сверх этого — прокидывает dict-sink под
+    покадровый сценарий анимации и публикует его как top-level ключ
+    `animation` (`dict | null`). Почему именно так:
+      - sink, а не новый ключ в возврате `play_teto_slots`: её возвращаемое
+        значение обязано остаться идентичным между свежим спином и replay,
+        см. её докстринг;
+      - `animation.clear()` перед КАЖДОЙ попыткой, включая ретрай по
+        `DuplicateRound`: иначе на ретрае, попавшем на строку конкурентного
+        запроса, наружу уехал бы трейс ПЕРВОЙ (выброшенной) попытки при
+        `outcome` от чужого спина — анимация одного спина с деньгами другого;
+      - `animation or None`: пустой dict (replay — `compute()` не вызывался
+        вовсе) отдаётся как честный `null`, а не как `{}`, чтобы клиенту не
+        приходилось различать "анимации нет" и "анимация пустая". Полный
+        контракт для клиента — в модульном докстринге выше."""
+    animation: dict = {}
     async with SessionLocal() as session:
         try:
-            result = await _play_teto_slots(session, auth, body)
+            animation.clear()
+            result = await _play_teto_slots(session, auth, body, animation)
         except casino_service.DuplicateRound:
             try:
-                result = await _play_teto_slots(session, auth, body)
+                animation.clear()
+                result = await _play_teto_slots(session, auth, body, animation)
             except casino_service.DuplicateRound as exc:
                 raise HTTPException(status_code=409, detail="round in progress, retry") from exc
         except casino_service.GameNotActive as exc:
@@ -411,13 +469,17 @@ async def post_teto_slots(
             request.app.state.redis, auth.chat_id, auth.user_id, balance
         )
         result["user_balance_after"] = balance
+        result["animation"] = animation or None
 
         return result
 
 
-async def _play_teto_slots(session, auth: AuthContext, body: SlotsBet) -> dict:
+async def _play_teto_slots(
+    session, auth: AuthContext, body: SlotsBet, animation_sink: dict | None = None
+) -> dict:
     return await casino_service.play_teto_slots(
-        session, auth.chat_id, auth.user_id, body.bet, body.idem_key
+        session, auth.chat_id, auth.user_id, body.bet, body.idem_key,
+        animation_sink=animation_sink,
     )
 
 

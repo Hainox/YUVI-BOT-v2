@@ -451,7 +451,13 @@ async def play_slots(
 
 
 async def play_teto_slots(
-    session: AsyncSession, chat_id: int, user_id: int, bet: int, idem_key: str
+    session: AsyncSession,
+    chat_id: int,
+    user_id: int,
+    bet: int,
+    idem_key: str,
+    *,
+    animation_sink: dict | None = None,
 ) -> dict:
     """Слот "Тето Брейнрот: Дрель-Хант" — money/DB-обвязка ПОВЕРХ уже готового
     и полностью протестированного чистого движка `teto_slot_engine.play_one_spin`
@@ -485,7 +491,52 @@ async def play_teto_slots(
     джекпот (CASINO-06) по дизайну — фича конкретно слота Azumanga, а не
     общий слой поверх ЛЮБОГО слота казино; включать в его пул спины Тето —
     отдельное продуктовое решение, явно вне рамок этой задачи (см. roadmap.md),
-    поэтому `jackpot_service` здесь не импортируется и не вызывается вовсе."""
+    поэтому `jackpot_service` здесь не импортируется и не вызывается вовсе.
+
+    `animation_sink` (keyword-only, по умолчанию `None`) — OUT-ПАРАМЕТР для
+    покадрового сценария анимации (`teto_slot_engine.serialize_animation`).
+    Если передан (любой dict, обычно пустой), он заполняется ЧЕРЕЗ `.update()`
+    (владелец dict'а — вызывающий, мы его никогда не ребиндим). Если НЕ передан —
+    `trace=None`, и поведение со стоимостью побайтово те же, что были до
+    появления анимации: ни один существующий вызывающий (например будущая
+    бот-команда `/teto`) ничего не платит за фичу, которой не пользуется.
+
+    ПОЧЕМУ OUT-ПАРАМЕТР, А НЕ НОВЫЙ КЛЮЧ В ВОЗВРАЩАЕМОМ dict'е. Возвращаемое
+    значение обязано остаться РОВНО `{"game","bet","payout","outcome"}`:
+    `tests/test_casino_service.py::
+    test_teto_slots_replay_of_settled_idem_key_not_throttled` проверяет
+    `second == first` для двух вызовов с ОДНИМ `idem_key`, а ключ `animation`
+    был бы dict'ом на свежем спине и `None` на replay — то есть добавление его
+    в возврат сломало бы именно то свойство (идентичность ответа при повторе),
+    которое эта игра обязана держать. Out-параметр кладёт "существует только
+    для свежего спина" в побочный канал, где это и должно жить.
+
+    ПОЧЕМУ ТРЕЙС НЕ КЛАДЁТСЯ В `outcome` (и, следовательно, не переживает
+    запрос): подробный разбор — в докстринге `serialize_animation`, коротко —
+    +160% к размеру КАЖДОЙ строки `CasinoGame` данными без аудиторской
+    ценности, а патологический спин добавил бы ~21 МБ JSON в тот самый INSERT,
+    который выполняется ВНУТРИ транзакции `_settle`, держащей row-lock на
+    `chat_bank` (`economy_service.pay_from_bank`) — удлинение блокировки
+    горячей строки чата, а не просто потраченные байты. `_settle` при этом не
+    трогается вовсе (его же правило: не менять общее ядро казино ради
+    UI-фичи одной игры, та же дисциплина, что с `bank_capped`).
+
+    КОНТРАКТ REPLAY: на идемпотентном повторе уже рассчитанного `idem_key`
+    `_settle` возвращает сохранённый исход, НЕ вызывая `compute()` вовсе —
+    значит трейса нет и `animation_sink` остаётся ПУСТЫМ (роут превратит это в
+    `animation: null`). Синтезировать анимацию на replay нельзя
+    принципиально: повторный `play_one_spin` съел бы свежий `_rng` и дал бы
+    ДРУГОЙ спин, чем сохранённый `outcome` — игрок увидел бы анимацию спина,
+    которого не было, с выигрышем, не совпадающим с изменением его баланса.
+    Для денежного UI это худший возможный отказ; пустой sink — честный ответ.
+    Тот же случай — узкая гонка, в которой `compute()` УЖЕ отработал, но
+    `_settle` поймал `IntegrityError` на flush'е и вернул строку, записанную
+    конкурентным запросом: тогда посчитанный нами спин выброшен, и sink обязан
+    быть очищен, иначе наружу уехала бы анимация выброшенного спина при
+    `outcome` от другого. Ловим это сверкой ИДЕНТИЧНОСТИ объекта `outcome`
+    (см. ниже) — `_settle` отдаёт на свежем пути ровно тот объект, который
+    вернул наш `compute()`, и любой другой объект означает "раунд посчитан не
+    в этом запросе"."""
     is_new_spin = await _find_existing(session, user_id, idem_key) is None
     if is_new_spin:
         _check_slots_throttle(user_id)
@@ -497,11 +548,27 @@ async def play_teto_slots(
         )
     bet_per_line = bet // teto_slot_engine.TOTAL_LINES
 
-    def compute() -> tuple[int, dict]:
-        result = teto_slot_engine.play_one_spin(_rng, bet_per_line)
-        return result["total_payout"], teto_slot_engine.serialize_spin_result(result)
+    computed: dict = {}
 
-    return await _settle(session, chat_id, user_id, "teto_slots", bet, idem_key, compute)
+    def compute() -> tuple[int, dict]:
+        trace: list | None = [] if animation_sink is not None else None
+        result = teto_slot_engine.play_one_spin(_rng, bet_per_line, trace=trace)
+        outcome = teto_slot_engine.serialize_spin_result(result)
+        computed["outcome"] = outcome
+        if animation_sink is not None:
+            animation_sink.update(teto_slot_engine.serialize_animation(trace))
+        return result["total_payout"], outcome
+
+    result = await _settle(session, chat_id, user_id, "teto_slots", bet, idem_key, compute)
+
+    if animation_sink is not None and result["outcome"] is not computed.get("outcome"):
+        # Раунд пришёл НЕ из нашего `compute()` (обычный replay — там compute
+        # даже не звался, либо гонка с IntegrityError-откатом внутри `_settle`).
+        # Анимация обязана относиться к тому же спину, что `outcome`, поэтому
+        # чистим sink на месте (`.clear()`, не ребиндим — dict чужой).
+        animation_sink.clear()
+
+    return result
 
 
 # --- blackjack (D-03/D-07/D-08: стейтфул-раздача, деck/руки в state JSONB) ---

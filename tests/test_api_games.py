@@ -981,6 +981,73 @@ async def test_teto_slots_rapid_second_spin_returns_429(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_teto_slots_response_carries_animation_and_null_on_replay(monkeypatch):
+    """Контракт ключа `animation` на уровне HTTP (см. модульный докстринг
+    `api/routes/games.py`): на свежем спине — конверт с `version`/`ops`/
+    `truncated`, первый кадр `fill`; на POST с ТЕМ ЖЕ `idem_key` (сетевой
+    ретрай/replay) — `null`, и это НОРМАЛЬНЫЙ 200-й ответ, а не ошибка.
+
+    Почему это стоит проверять именно здесь, а не только на уровне сервиса:
+    роут — единственное место, где пустой sink превращается в `null`, где
+    стоит `animation.clear()` перед каждой попыткой, и единственное место, где
+    весь пейлоад реально проходит JSON-сериализацию FastAPI. Фронт, который
+    трактует отсутствие анимации как ошибку, покажет игроку пустую доску после
+    ретрая запроса — ровно этот сценарий тест и фиксирует как штатный."""
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    monkeypatch.setattr(casino_service, "_last_slots_spin_at", {})
+    user_id = 300426
+    await _ensure_user(user_id)
+    await _topup(TETO_SLOTS_CHAT_ID, user_id)
+    init_data = _build_init_data(user_id=user_id)
+    bet = 10 * teto_slot_engine.TOTAL_LINES
+    idem_key = str(uuid.uuid4())
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        first = await client.post(
+            "/api/v1/games/teto_slots",
+            params={"chat_id": TETO_SLOTS_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={"bet": bet, "idem_key": idem_key},
+        )
+        # ТОТ ЖЕ idem_key: replay уже settled раунда — не троттлится (гард
+        # `is_new_spin`), деньги не двигаются повторно, анимации нет.
+        replay = await client.post(
+            "/api/v1/games/teto_slots",
+            params={"chat_id": TETO_SLOTS_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={"bet": bet, "idem_key": idem_key},
+        )
+
+    assert first.status_code == 200
+    body = first.json()
+    animation = body["animation"]
+    assert animation is not None, "на свежем спине анимация обязана быть"
+    assert animation["version"] == teto_slot_engine.TRACE_SCHEMA_VERSION
+    assert animation["truncated"] is False
+    assert animation["truncated_reason"] is None
+    assert animation["ops_recorded"] == animation["ops_total"] == len(animation["ops"])
+    assert animation["rounds_recorded"] == animation["rounds_total"] >= 1
+    # Базовый раунд — round 0 (ЛОЖЕН в JS: сверять с null, не по truthiness).
+    assert animation["complete_through_round"] == animation["rounds_recorded"] - 1
+    assert animation["ops"][0]["op"] == "fill"
+    assert animation["ops"][0]["round"] == 0
+    assert animation["ops"][0]["phase"] == "base"
+    assert animation["ops"][-1]["op"] == "round_end"
+    # Кадры трейса — та же кодировка доски, что и outcome.final_blocks.
+    assert animation["ops"][0]["blocks"] == body["outcome"]["initial_blocks"]
+    for op in animation["ops"]:
+        assert op["op"] in ("fill", "evaluate", "tumble", "drill_hunt", "round_end")
+        assert len(op["blocks"]) >= 1
+
+    assert replay.status_code == 200
+    replay_body = replay.json()
+    assert replay_body["animation"] is None, "replay обязан отдавать animation: null, а не {}"
+    assert replay_body["payout"] == body["payout"]
+    assert replay_body["outcome"] == body["outcome"]
+
+
+@pytest.mark.asyncio
 async def test_teto_slots_ignores_foreign_user_id_in_body_idor(monkeypatch):
     """T-04.2-02: та же IDOR-защита, что и у остальных игр этого файла."""
     monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))

@@ -7,7 +7,13 @@ RIGID BODY (блок падает ЕДИНЫМ целым — соседние �
 должны быть свободны по ВСЕЙ его ширине, наивная per-column гравитация
 разорвала бы блок на части), затем `teto_megablock.form_blocks` добирает
 освободившиеся клетки. Повторяется, пока есть выигрыш — хардкап на число
-повторов см. `teto_slot_engine.TUMBLE_HARD_CAP`, не в этом модуле."""
+повторов см. `teto_slot_engine.TUMBLE_HARD_CAP`, не в этом модуле.
+
+`evaluate_paylines` отвечает на вопрос "есть ли выигрыш и какие блоки убрать"
+(этого достаточно деньгам); `describe_winning_lines` — чистый сиблинг, который
+отвечает "как именно нарисовать каждую выигравшую линию" (этого требует
+анимация миниаппа, см. `teto_slot_engine.serialize_animation`). Разделение
+намеренное и завязано на арность call site'а в движке — см. её докстринг."""
 
 from __future__ import annotations
 
@@ -65,6 +71,102 @@ def evaluate_paylines(blocks: list[MegaBlock]) -> tuple[bool, set[int]]:
             winning_ids.update(matched_ids)
 
     return any_win, winning_ids
+
+
+def describe_winning_lines(blocks: list[MegaBlock]) -> list[dict]:
+    """Разбор КАЖДОЙ выигравшей payline на геометрию + состав — данные
+    ИСКЛЮЧИТЕЛЬНО для анимации (op `evaluate` трейса, см.
+    `teto_slot_engine.serialize_animation`), НЕ для денег: выплата считается по
+    площади выигравших блоков (`b.area`, см. `_run_tumble_cascade`), а не по
+    этому описанию, поэтому расхождение здесь физически не может испортить
+    payout — худшее, что оно даст, это криво нарисованная линия.
+
+    Почему это ОТДЕЛЬНАЯ чистая функция-сиблинг, а не изменение
+    `evaluate_paylines`. Все три альтернативы разбиваются об уже существующие
+    тесты, причём НЕ об "лишний тест, который можно переписать", а об
+    осмысленную структурную проверку порядка вызовов:
+      1. Третий элемент в возврате (`bool, set, list`) — ломает 8 мест
+         распаковки `has_win, winning_ids = evaluate_paylines(...)`
+         (`test_teto_tumble.py` x4, `test_teto_drillhunt.py` x3 + шпион в
+         `test_teto_slot_engine.py`).
+      2. Опциональный out-параметр (`evaluate_paylines(blocks, lines_out=[])`)
+         — ломает `test_teto_slot_engine.py::
+         test_drill_hunt_never_fires_before_tumble_cascade_exhausted`: он
+         monkeypatch'ит `eng.evaluate_paylines` шпионом РОВНО ОДНОГО аргумента
+         (`def spy_evaluate(blocks)`). Связывающее ограничение — арность
+         ВЫЗОВА в движке, а не подпись самой функции: любой лишний аргумент на
+         этом call site — `TypeError` внутри шпиона.
+      3. Переключить движок на новое имя (`evaluate_paylines_detailed`) — тот
+         же тест патчит именно ИМЯ `eng.evaluate_paylines`; если движок
+         перестанет его звать, `call_log` не увидит ни одного evaluate,
+         `last_eval_has_win` останется `None` и `assert last_eval_has_win is
+         False` упадёт на первом же вызове Дрель-Ханта.
+    Цена выбранного варианта — трассируемый спин проходит по линиям ДВАЖДЫ
+    (сначала `evaluate_paylines`, потом эта функция). Функция ЧИСТАЯ и без
+    `rng` — порядок потребления RNG побайтово не меняется, поэтому
+    форсированные/сидированные тесты (`test_full_spin_runs_deterministically_
+    with_forced_rng`, end-to-end на сиде 76972) не затрагиваются вовсе.
+
+    ТОНКОСТЬ, на которой ошибается любой наивный оверлей paylines: `length` —
+    это число подряд совпавших СТОЛБЦОВ слева (3..6, длина "прогона", который
+    подсвечивает анимация), а `block_ids` — РАЗЛИЧНЫЕ id блоков на этих
+    столбцах в порядке слева направо, поэтому `len(block_ids) <= length`.
+    Расхождение возникает из-за мегаблоков: `evaluate_paylines` кладёт id блока
+    в `matched_ids` ОДИН РАЗ НА КАЖДЫЙ совпавший столбец и дедуплицирует только
+    потом (через `set`), так что блок шириной 2 занимает на линии ДВА
+    позиционных места. Отдавать наружу только дедуплицированный список было бы
+    ловушкой: фронт, рисующий полилинию по `len(block_ids)` точкам, не дотянул
+    бы её до конца прогона.
+
+    `cells` — `[[row, col], ...]` для столбцов `0..length-1` этой линии, т.е.
+    самодостаточная геометрия: фронту НЕ нужна копия `TETO_PAYLINES`, и
+    запланированное расширение 3 -> 50 линий не потребует правок на клиенте."""
+    cell_to_block: dict[tuple[int, int], MegaBlock] = {}
+    for b in blocks:
+        for cell in b.cells:
+            cell_to_block[cell] = b
+
+    described: list[dict] = []
+
+    # Тело цикла намеренно повторяет `evaluate_paylines` 1:1 (та же выборка
+    # клеток, тот же target, тот же break) — сознательный дубль ~10 строк
+    # вместо вынесения общего хелпера: любой общий хелпер пришлось бы вызывать
+    # ИЗ `evaluate_paylines`, а её тело — то самое место, которое тест выше
+    # патчит шпионом; лишний уровень косвенности там же превратил бы
+    # структурную проверку порядка вызовов в проверку деталей реализации.
+    for line_index, line in enumerate(TETO_PAYLINES):
+        line_blocks = [cell_to_block[(line[col], col)] for col in range(GRID_SIZE)]
+        symbols = [blk.symbol_id for blk in line_blocks]
+        target = next((s for s in symbols if s != WILD_ID), WILD_ID)
+
+        if target == SCATTER_ID:
+            continue
+
+        matched_ids: list[int] = []
+        for blk, sym in zip(line_blocks, symbols):
+            if sym == target or sym == WILD_ID:
+                matched_ids.append(blk.block_id)
+            else:
+                break
+
+        if len(matched_ids) < 3:
+            continue
+
+        length = len(matched_ids)
+        distinct_ids: list[int] = []
+        for block_id in matched_ids:
+            if block_id not in distinct_ids:
+                distinct_ids.append(block_id)
+
+        described.append({
+            "line_index": line_index,
+            "symbol_id": target,
+            "length": length,
+            "block_ids": distinct_ids,
+            "cells": [[line[col], col] for col in range(length)],
+        })
+
+    return described
 
 
 def count_scatter_blocks(blocks: list[MegaBlock]) -> int:
