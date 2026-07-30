@@ -42,6 +42,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
+from bot.services import settings_service
 from common.models.economy_tx import EconomyTx
 
 logger = logging.getLogger(__name__)
@@ -79,6 +80,26 @@ MEDIA_GROUP_LIMIT = 10
 _RESOLVE_TIMEOUT_SEC = 30
 _DOWNLOAD_TIMEOUT_SEC = 120
 _DOWNLOAD_CHUNK_SIZE = 65536
+
+# Глобальный админ-рубильник фичи целиком (по просьбе владельца бота,
+# 2026-07-30 — временно выключить скачивание медиа, не трогая остальной
+# функционал). Та же форма, что daily_twin_service.KEY_DAILY_TWIN_ENABLED:
+# persistent через bot_settings/settings_service, переживает рестарт бота.
+KEY_MEDIA_DL_ENABLED = "media_dl_enabled"
+
+
+async def is_enabled(session: AsyncSession, chat_id: int) -> bool:
+    """Отсутствие строки в bot_settings = включено (обратная совместимость
+    с поведением до этого рубильника)."""
+    value = await settings_service.get_setting(session, chat_id, KEY_MEDIA_DL_ENABLED, "1")
+    return value != "0"
+
+
+async def set_enabled(session: AsyncSession, chat_id: int, enabled: bool, updated_by_tg_id: int) -> None:
+    """Не коммитит — вызывающий (bot/handlers/media_dl_admin.py) коммитит сам."""
+    await settings_service.set_setting(
+        session, chat_id, KEY_MEDIA_DL_ENABLED, "1" if enabled else "0", updated_by_tg_id
+    )
 
 
 def extract_url(text: str) -> str | None:
