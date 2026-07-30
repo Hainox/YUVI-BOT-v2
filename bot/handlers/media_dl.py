@@ -122,6 +122,14 @@ async def on_media_url(message: Message, session: AsyncSession, bot: Bot) -> Non
     chat_id = message.chat.id
     user_id = message.from_user.id
 
+    # Глобальный админ-рубильник (/media_dl_off, bot/handlers/media_dl_admin.py)
+    # — фича выключена целиком для этого чата. Простой return (не SkipHandler):
+    # в отличие от daily_twin.py, ни один хендлер после media_dl.py в
+    # алфавитном порядке (_discover_routers) не матчит F.text по URL — этот
+    # апдейт больше никому не адресован.
+    if not await media_dl_service.is_enabled(session, chat_id):
+        return
+
     used_today = await media_dl_service.count_today(session, chat_id, user_id)
     if used_today >= settings.mediadl_daily_limit:
         await message.reply(_daily_limit_error())
