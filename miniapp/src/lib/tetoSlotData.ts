@@ -27,9 +27,27 @@ export type TetoSymbolMeta = {
 	src: string;
 	/**
 	 * Hex tint for the board cell behind the symbol — same role as `tint` in
-	 * slotData.ts. Derived from the token palette (styles/tokens.css) so the
-	 * board stays on-system: --accent-yellow for the wild, --accent-pink for
-	 * the scatter, the cyan/violet family for high, desaturated for low.
+	 * slotData.ts.
+	 *
+	 * ВАЖНО ПРО НАСЫЩЕННОСТЬ: ячейка рисуется как
+	 * `color-mix(in srgb, var(--tint) 25%, var(--bg-secondary-2))`
+	 * (см. games/slots/azumanga/+page.svelte) — то есть тинт РАЗБАВЛЯЕТСЯ
+	 * вчетверо, и расстояние между двумя ячейками в sRGB равно четверти
+	 * расстояния между сырыми хексами. Первый набор тинтов был подобран «на
+	 * глаз» по сырым цветам и после разбавления схлопнулся: четыре LOW дали
+	 * #474240 / #473843 / #393c4b / #3e394b — расстояние
+	 * utau_note↔skull_cringe было 5.8, baguette_crumb↔drill_lollipop 10.4,
+	 * то есть все четыре читались одним коричнево-лиловым; teto_0401 и
+	 * teto_baguette_knight отличались на 14.2 и топ-символ выглядел как
+	 * «ещё один HIGH». Поэтому тинты теперь насыщенные и разведены по тону:
+	 * ЛЮБАЯ пара LOW и пара HIGH расходятся минимум на 30 ПОСЛЕ смешивания
+	 * (проверено расчётом смешанных значений, а не сырых хексов).
+	 *
+	 * Палитра остаётся системной: три акцента из tokens.css достаются
+	 * вайлду/скаттеру/топ-символу, ещё три взяты из семейств --positive,
+	 * --destructive и --balance-gradient, остальные — промежуточные тона
+	 * между ними (разбавленный вчетверо тинт это подложка ячейки, а не
+	 * акцент хрома, поэтому правило «ровно три акцента» тут не нарушается).
 	 */
 	tint: string;
 };
@@ -42,7 +60,8 @@ export const TETO_SYMBOLS: Record<string, TetoSymbolMeta> = {
 		name: 'Золотая Дрель',
 		tier: 'wild',
 		src: '/slots/teto/golden_drill.webp',
-		// --accent-yellow: единственный золотой в наборе, самый заметный тинт
+		// --accent-yellow. Золото принадлежит ТОЛЬКО вайлду: у него же
+		// единственное золотое кольцо в наборе (build_teto_symbols.py)
 		tint: '#ffd84a'
 	},
 
@@ -60,29 +79,35 @@ export const TETO_SYMBOLS: Record<string, TetoSymbolMeta> = {
 		name: 'Тето 0401',
 		tier: 'high',
 		src: '/slots/teto/teto_0401.webp',
-		// --accent-cyan: чистый акцент достаётся топ-символу
+		// --accent-cyan: чистый акцент достаётся топ-символу, и его же
+		// холодное кольцо на ассете — ячейка и рант больше не спорят
 		tint: '#7be6ff'
 	},
 	teto_baguette_knight: {
 		name: 'Тето Багет-Рыцарь',
 		tier: 'high',
 		src: '/slots/teto/teto_baguette_knight.webp',
-		// синий из --balance-gradient (#5fb8f3) — глубже, чем accent-cyan
-		tint: '#5fb8f3'
+		// индиго. Прежний #5fb8f3 из --balance-gradient после разбавления
+		// отходил от teto_0401 всего на 14.2 — второй HIGH выглядел как
+		// топ-символ; индиго даёт 40.7
+		tint: '#7a45e8'
 	},
 	teto_drill_rage: {
 		name: 'Тето Дрель-Рейдж',
 		tier: 'high',
 		src: '/slots/teto/teto_drill_rage.webp',
-		// светлый розово-лиловый: заметно бледнее скаттерного --accent-pink
-		tint: '#ffa8c6'
+		// пурпурно-розовый: ярче прежнего #ffa8c6, но по тону уведён от
+		// скаттерного --accent-pink
+		tint: '#ff8fd8'
 	},
 	teto_chimera: {
 		name: 'Тето-Химера',
 		tier: 'high',
 		src: '/slots/teto/teto_chimera.webp',
-		// фиолетовый (тот же, что у high в slotData.ts)
-		tint: '#c4a8ff'
+		// ядовито-зелёный из семейства --positive (#2ee06a): фиолетовый
+		// сектор занят рыцарем и черепом, а «уродливая собака» с зелёной
+		// подложкой читается ровно так, как задумано
+		tint: '#4ef58c'
 	},
 
 	// ─── LOW — те же семейства, но обесцвеченные: борд не сливается в один
@@ -91,29 +116,31 @@ export const TETO_SYMBOLS: Record<string, TetoSymbolMeta> = {
 		name: 'Багет-Крошка',
 		tier: 'low',
 		src: '/slots/teto/baguette_crumb.webp',
-		// приглушённая жёлтая ветка (грушевый хаки)
-		tint: '#c9c08a'
+		// лайм между --accent-yellow и --positive (груша жёлто-зелёная);
+		// чистое золото занято вайлдом
+		tint: '#a8ee3c'
 	},
 	drill_lollipop: {
 		name: 'Дрель-Леденец',
 		tier: 'low',
 		src: '/slots/teto/drill_lollipop.webp',
-		// приглушённая розовая ветка (яблочная терракота)
-		tint: '#c99a97'
+		// терракота из семейства --destructive (#ff3838) — яблоко красное
+		tint: '#f0503a'
 	},
 	utau_note: {
 		name: 'УТАУ-Нотка',
 		tier: 'low',
 		src: '/slots/teto/utau_note.webp',
-		// приглушённая циановая ветка
-		tint: '#8fa8b8'
+		// лазурь из --balance-gradient (#5fb8f3/#4990d8) — бирюзовое платье
+		tint: '#3d8cf5'
 	},
 	skull_cringe: {
 		name: 'Скулл-Кринж',
 		tier: 'low',
 		src: '/slots/teto/skull_cringe.webp',
-		// приглушённая лиловая ветка (скетч сам по себе серый)
-		tint: '#a29cb8'
+		// орхидея: сам скетч серый, но его бумага перекрашена в лиловый
+		// #d8d2e4, так что фиолетовая ветка — «свой» тон символа
+		tint: '#d84af0'
 	}
 };
 
