@@ -37,6 +37,19 @@ server {
     proxy_cache off;
     proxy_read_timeout 3600s;
     chunked_transfer_encoding off;
+
+    # Compress API JSON — copied verbatim from miniapp/nginx.conf's /api/
+    # block (this whole location is a copy of it, see the comment above), so
+    # the https edge and the plain-http edge stay byte-for-byte equivalent.
+    # Full rationale (why gzip_proxied is required, why text/event-stream is
+    # deliberately NOT in gzip_types, why not Starlette's GZipMiddleware) is
+    # in that file — do not fork the reasoning, keep the two blocks identical.
+    gzip on;
+    gzip_proxied any;
+    gzip_types application/json;
+    gzip_min_length 1024;
+    gzip_comp_level 5;
+    gzip_vary on;
   }
 
   # Long-lived immutable cache for hashed SvelteKit build assets.

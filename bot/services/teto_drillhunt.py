@@ -213,6 +213,35 @@ class LadderState:
             self.crossed_thresholds = set()
 
 
+def ladder_gauge(ladder: LadderState) -> dict:
+    """Чистое описание "куда лестница едет дальше" — данные, БЕЗ которых
+    шкала-вал дрели (единственный уникальный визуальный приём этого экрана,
+    см. `docs/teto-slot-design-direction.md` §4) не рисуется в принципе.
+
+    Конкретный пробел, который это закрывает: op `round_end` отдавал наружу
+    только `score_after`/`multiplier_after`/`crossed_thresholds`, т.е. ТОЛЬКО
+    пройденное. Прогресс-шкала обязана знать ещё и цель — до какого счёта и до
+    какого множителя тянуться, — а `LADDER` живёт здесь, в Python. Фронт мог
+    бы захардкодить копию порогов, но это ровно тот класс дубля, который
+    молча расходится при первой же перекалибровке паутейбла (пороги
+    перенесены из roadmap.md 1:1 и переживут её не обязательно).
+
+    Возвращает "следующий ЕЩЁ НЕ пройденный порог" (`None` во всех трёх полях,
+    когда пройдены все — шкала в этот момент заполнена до конца и цели больше
+    нет; `None`, а не `0`/последний порог: "цели нет" и "цель — 0 очков" на
+    экране выглядят по-разному). `score_to_next` клампится нулём: между
+    пересечением порога и перерасчётом состояния score может оказаться >=
+    порога, а отрицательный остаток шкала нарисовала бы задом наперёд."""
+    for threshold, mult in LADDER:
+        if threshold not in ladder.crossed_thresholds:
+            return {
+                "next_threshold": threshold,
+                "next_multiplier": mult,
+                "score_to_next": max(0, threshold - ladder.score),
+            }
+    return {"next_threshold": None, "next_multiplier": None, "score_to_next": None}
+
+
 def apply_ladder(
     ladder: LadderState, cells_converted: int, raw_round_payout: int
 ) -> tuple[LadderState, int, int]:

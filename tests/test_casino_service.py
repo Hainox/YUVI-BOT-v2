@@ -766,6 +766,17 @@ async def test_teto_slots_animation_sink_filled_on_fresh_spin_and_empty_on_repla
     assert sink["truncated"] is False, "обычный спин не должен усекаться (см. TRACE_MAX_OPS)"
     assert sink["rounds_recorded"] == sink["rounds_total"] == 1 + first["outcome"]["freespins_played"]
 
+    # Деньги в конверте — то, ради чего `serialize_animation` вызывается ПОСЛЕ
+    # `_settle`, а не внутри `compute()`: до капа банком (D-06) фактическая
+    # выплата попросту неизвестна. `payout_paid` обязан быть тем же числом,
+    # что и `payout` возврата (== изменение баланса игрока), иначе счётчик на
+    # экране досчитает до суммы, которой игрок не получил.
+    assert sink["payout_paid"] == first["payout"]
+    assert sink["payout_engine_total"] == first["outcome"]["total_payout"]
+    # Банк здесь заведомо богатый (1 000 000 выше) — капа быть не может.
+    assert sink["bank_capped"] is False
+    assert first["payout"] == first["outcome"]["total_payout"]
+
     # Возврат — РОВНО те же четыре ключа, что и до появления анимации.
     assert set(first) == {"game", "bet", "payout", "outcome"}
 
@@ -792,9 +803,16 @@ async def test_teto_slots_animation_trace_never_lands_in_persisted_outcome(sessi
 
     Проверяем на РЕАЛЬНО ЗАПИСАННОЙ В POSTGRES строке (сырой SELECT, а не
     объект из identity map сессии — иначе тест сравнивал бы dict сам с собой и
-    ничего не доказывал про то, что реально легло в колонку): набор ключей
-    `outcome` в точности прежний, и ни на одном уровне вложенности нет ни
-    одного ключа из конверта анимации.
+    ничего не доказывал про то, что реально легло в колонку) ТРЕМЯ
+    независимыми гардами, каждый из которых закрывает дыру предыдущего:
+      1. набор ключей верхнего уровня — в точности прежний;
+      2. НИ НА ОДНОМ уровне вложенности нет ни ключа-имени из конверта, ни —
+         главное — dict'а ФОРМЫ КАДРА (`op`+`seq`+`blocks`), под каким бы
+         именем контейнера он ни лежал;
+      3. абсолютный потолок на размер строки в байтах.
+    Почему трёх мало по отдельности, и почему именно так — в комментариях у
+    каждого гарда ниже. Коротко: гард (1) слеп ко вложенности, (2) слеп к
+    размеру, (3) слеп к медианной протечке.
 
     Конкретный риск, который это стережёт (см. докстринг
     `teto_slot_engine.serialize_animation`): медианный трейс ~17 КБ против ~10.6
@@ -841,6 +859,8 @@ async def test_teto_slots_animation_trace_never_lands_in_persisted_outcome(sessi
     envelope_keys = {
         "ops", "ops_recorded", "ops_total", "rounds_recorded", "rounds_total",
         "complete_through_round", "truncated", "truncated_reason", "version",
+        "payout_paid", "payout_engine_total", "bank_capped",
+        "ladder_thresholds", "ladder_max_score",
         "animation", "trace",
     }
 
@@ -848,7 +868,11 @@ async def test_teto_slots_animation_trace_never_lands_in_persisted_outcome(sessi
         """Рекурсивный обход всего JSONB: маркерный ключ конверта анимации не
         должен встретиться НИ НА ОДНОМ уровне (например внутри
         `fs_round_records[i]`, если кто-то однажды решит "приложить трейс
-        раунда к записи раунда")."""
+        раунда к записи раунда").
+
+        ВСПОМОГАТЕЛЬНАЯ проверка, НЕ основная: она ловит только протечку,
+        сохранившую ИМЯ контейнера. Основная — `_assert_no_animation_frame`
+        ниже (по форме кадра) плюс байтовый потолок."""
         if isinstance(node, dict):
             leaked = envelope_keys & set(node)
             assert not leaked, f"ключи анимации {sorted(leaked)} утекли в outcome по пути {path}"
@@ -860,14 +884,81 @@ async def test_teto_slots_animation_trace_never_lands_in_persisted_outcome(sessi
 
     _assert_no_envelope_key(persisted, "outcome")
 
+    # Опознаём КАДР ПО ФОРМЕ, а не по имени контейнера. Ровно эту дыру
+    # оставляла проверка выше: ОДНА строка в `play_teto_slots.compute()` —
+    # `outcome["base_round"]["frames"] = serialize_animation(trace)["ops"]` —
+    # проходила мимо всего набора, потому что (а) проверка набора ключей
+    # смотрит только ВЕРХНИЙ уровень, (б) чёрный список перечисляет имена
+    # КОНВЕРТА, а не кадра, и правдоподобное имя контейнера
+    # (`frames`/`steps`/`replay`/`_debug`) в нём отсутствует по определению —
+    # угадать все имена нельзя в принципе. Форма же кадра фиксирована схемой:
+    # `op` + `seq` + `blocks` в одном dict'е — это трейс, как бы ни назывался
+    # список, в котором он лежит. Легитимный `outcome` эту тройку не даёт
+    # нигде: доски раундов лежат рядом с `raw_round_payout`/`round_index` и
+    # ключей `op`/`seq` не имеют вовсе.
+    frame_marker_keys = {"op", "seq", "blocks"}
+
+    def _assert_no_animation_frame(node, path: str) -> None:
+        if isinstance(node, dict):
+            assert not frame_marker_keys <= set(node), (
+                f"по пути {path} лежит КАДР анимации (op+seq+blocks) — трейс утёк в "
+                f"outcome под именем контейнера, которого нет ни в одном чёрном списке"
+            )
+            for key, value in node.items():
+                _assert_no_animation_frame(value, f"{path}.{key}")
+        elif isinstance(node, list):
+            for i, value in enumerate(node):
+                _assert_no_animation_frame(value, f"{path}[{i}]")
+
+    _assert_no_animation_frame(persisted, "outcome")
+
     # Размерная сторона того же инварианта: строка в БД осталась "маленькой",
     # хотя трейс того же спина заведомо крупнее — прямое численное
     # доказательство, что раздувание строки не состоялось.
     outcome_bytes = len(json.dumps(persisted).encode())
     animation_bytes = len(json.dumps(sink).encode())
-    assert animation_bytes > 0
+
+    # Трейс обязан быть содержательным — иначе всё выше зелено тривиально и на
+    # реализации, которая просто ничего не собирает (минимум раунда — 4 op'а:
+    # fill/evaluate/drill_hunt/round_end, каждый с полной доской 6x6).
+    assert sink["ops_total"] >= 4, "трейс подозрительно пуст — проверять было бы нечего"
+    assert animation_bytes > outcome_bytes // 4, (
+        f"анимация ({animation_bytes} Б) неправдоподобно мала против outcome "
+        f"({outcome_bytes} Б) — похоже, кадры не собрались"
+    )
+
+    # АБСОЛЮТНЫЙ ПОТОЛОК СТРОКИ — единственный гард, который не обходится
+    # переименованием ключа. 131 072 Б (128 КиБ) выбраны не «на глаз», а по
+    # замеру `outcome` на 20 000 настоящих спинов (`random.Random(0..19999)`,
+    # ставка на линию 10): медиана 10 580 Б, p95 36 210, p99 43 552,
+    # p99.9 61 236, МАКСИМУМ 76 382. Потолок = ~1.7x измеренного максимума и
+    # ~12x медианы — запас, которого хватает и на естественный рост схемы
+    # `outcome`, и на хвост длиннее наблюдённого (максимум за 20 000 спинов —
+    # 19 раундов; структурный предел раундов выше, но такие спины требуют
+    # почти полностью скаттерной доски).
+    # Честно про границы этого гарда — измерено на той же протечке
+    # (`outcome["base_round"]["frames"] = serialize_animation(trace)["ops"]`,
+    # 3 000 спинов): она растит медиану 10 580 -> 28 341 Б (+168%), p95
+    # 36 499 -> 187 498, p99 43 911 -> 232 060, максимум 76 649 -> 427 280.
+    # Потолок 128 КиБ ловит 1 046 таких строк из 3 000 (35% — все спины с
+    # фриспинами) и НЕ ловит остальные 65%, которые остаются под ним. Тихую
+    # медианную протечку ловит проверка ФОРМЫ выше (100% случаев), байтовый
+    # потолок берёт на себя катастрофический хвост (теоретически +490 КиБ в
+    # одной строке, ~57 ГБ таблицы+TOAST на 10^6 спинов) и любой будущий
+    # неограниченный блоб под любым именем. Оба гарда нужны: ни один не
+    # покрывает случай другого. Ложных срабатываний на честных строках нет —
+    # 0 из 3 000 (и 0 из 20 000 в основном замере).
+    # Если этот assert когда-нибудь упадёт на ЧЕСТНОЙ строке — перемерить
+    # распределение и двигать потолок осознанно, а не «чуть выше факта».
+    max_outcome_bytes = 128 * 1024
+    assert outcome_bytes <= max_outcome_bytes, (
+        f"строка casino_games.outcome раздулась до {outcome_bytes} Б при потолке "
+        f"{max_outcome_bytes} Б — в JSONB поехало что-то, чего там быть не должно "
+        f"(INSERT идёт ВНУТРИ транзакции `_settle`, держащей row-lock на chat_bank)"
+    )
+
     print(
-        f"\n[teto animation] outcome в БД: {outcome_bytes} Б, "
+        f"\n[teto animation] outcome в БД: {outcome_bytes} Б (потолок {max_outcome_bytes} Б), "
         f"анимация в ответе: {animation_bytes} Б (в БД не попала)"
     )
 

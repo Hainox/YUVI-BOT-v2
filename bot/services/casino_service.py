@@ -511,6 +511,35 @@ async def play_teto_slots(
     которое эта игра обязана держать. Out-параметр кладёт "существует только
     для свежего спина" в побочный канал, где это и должно жить.
 
+    ПОЧЕМУ `serialize_animation` ВЫЗЫВАЕТСЯ ПОСЛЕ `_settle`, А НЕ ВНУТРИ
+    `compute()`. Две независимые причины, обе появились вместе с денежной
+    тройкой конверта:
+      1. Она физически не может быть заполнена внутри `compute()`: капнутая
+         банком выплата (`economy_service.pay_from_bank`, D-06) становится
+         известна ТОЛЬКО после `_settle` (`result["payout"]`), а без неё конверт
+         несёт лишь неурезанный движковый итог — ровно тот дефект, из-за
+         которого экран досчитывал бы счётчик до суммы, которой игрок не
+         получил (разбор — в докстринге `serialize_animation`). Поэтому
+         `paid_total` — обязательный аргумент, а не опция: конверт нельзя
+         собрать, не назвав фактическую выплату.
+      2. `compute()` выполняется ВНУТРИ единственной транзакции `_settle` —
+         той, что держит row-lock на `chat_bank` (взят `pay_from_bank`).
+         Сериализация трейса — до 120 op'ов x 36 блоков = ~4.3 тыс.
+         `dataclasses.asdict`, сотни килобайт мусора — чистая
+         презентационная работа, которой нечего делать под локом горячей
+         строки чата. Внутри транзакции остался только сам прокрут (`compute`
+         набивает СЫРОЙ трейс в `computed["trace"]` — список ссылок на уже
+         существующие объекты, стоимость близка к нулю).
+    Идемпотентность при этом не ослаблена: сериализуем ровно тогда же, когда
+    и раньше заполняли sink — на подтверждённо СВЕЖЕМ спине, по той же сверке
+    идентичности объекта `outcome` (см. ниже). Плата за перенос — если
+    сериализация упадёт, она упадёт уже ПОСЛЕ commit'а раунда: игрок получит
+    500 на спине, который на самом деле состоялся. Приемлемо, потому что (а)
+    `serialize_animation` — чистая функция над уже провалидированными
+    JSON-совместимыми данными (реалистичный отказ — только OOM), и (б) ретрай
+    того же `idem_key` вернёт сохранённый исход с `animation: null` — штатный,
+    уже задокументированный путь деградации, а не потерянные деньги.
+
     ПОЧЕМУ ТРЕЙС НЕ КЛАДЁТСЯ В `outcome` (и, следовательно, не переживает
     запрос): подробный разбор — в докстринге `serialize_animation`, коротко —
     +160% к размеру КАЖДОЙ строки `CasinoGame` данными без аудиторской
@@ -555,18 +584,30 @@ async def play_teto_slots(
         result = teto_slot_engine.play_one_spin(_rng, bet_per_line, trace=trace)
         outcome = teto_slot_engine.serialize_spin_result(result)
         computed["outcome"] = outcome
-        if animation_sink is not None:
-            animation_sink.update(teto_slot_engine.serialize_animation(trace))
+        computed["trace"] = trace
         return result["total_payout"], outcome
 
     result = await _settle(session, chat_id, user_id, "teto_slots", bet, idem_key, compute)
 
-    if animation_sink is not None and result["outcome"] is not computed.get("outcome"):
-        # Раунд пришёл НЕ из нашего `compute()` (обычный replay — там compute
-        # даже не звался, либо гонка с IntegrityError-откатом внутри `_settle`).
-        # Анимация обязана относиться к тому же спину, что `outcome`, поэтому
-        # чистим sink на месте (`.clear()`, не ребиндим — dict чужой).
-        animation_sink.clear()
+    if animation_sink is not None:
+        # `"outcome" in computed` ПЕРВЫМ, а не `computed.get("outcome")`:
+        # `.get` вернул бы `None` и на "compute не звался", и на "исход
+        # сохранён с NULL-outcome", а `None is None` — истина, т.е. replay
+        # такой строки полез бы за несуществующим `computed["trace"]`. У Тето
+        # NULL-outcome сегодня недостижим, но сверка "наш ли это раунд" не
+        # должна зависеть от значения поля — только от факта вызова compute.
+        if "outcome" in computed and result["outcome"] is computed["outcome"]:
+            animation_sink.update(
+                teto_slot_engine.serialize_animation(
+                    computed["trace"], paid_total=result["payout"]
+                )
+            )
+        else:
+            # Раунд пришёл НЕ из нашего `compute()` (обычный replay — там compute
+            # даже не звался, либо гонка с IntegrityError-откатом внутри `_settle`).
+            # Анимация обязана относиться к тому же спину, что `outcome`, поэтому
+            # чистим sink на месте (`.clear()`, не ребиндим — dict чужой).
+            animation_sink.clear()
 
     return result
 

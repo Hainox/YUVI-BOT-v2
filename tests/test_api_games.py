@@ -35,6 +35,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import random
 import time
 import uuid
 from unittest.mock import AsyncMock
@@ -57,6 +58,7 @@ from bot.services import teto_slot_engine
 from common.db.session import engine
 from common.db.session import SessionLocal
 from common.models.casino_game import CasinoGame
+from common.models.chat_bank import ChatBank
 from common.models.user import User
 
 CHAT_ID = -900301
@@ -94,6 +96,12 @@ JACKPOT_EMPTY_BANK_CHAT_ID = -900310
 # используются отдельные user_id (см. ниже), чтобы не делить троттлинг-
 # состояние с конкретными slots-тестами.
 TETO_SLOTS_CHAT_ID = -900311
+# Отдельный chat_id ТОЛЬКО под регрессию "выигрыш Тето на выеденном банке"
+# (bank_capped) — та же изоляция, что FRESH_BANK_CHAT_ID у coinflip: банк
+# этого чата тест обнуляет явно перед спином и не делит ни с одним другим
+# тестом файла (иначе накопленные ставки соседей случайно покрыли бы выигрыш
+# и кап просто не наступил бы).
+TETO_DRAINED_BANK_CHAT_ID = -900312
 
 
 class _ForcedWinRng:
@@ -884,6 +892,10 @@ async def test_teto_slots_valid_bet_returns_200_with_settled_result(monkeypatch)
     # casino_service.py) — доказываем, что роут не унаследовал jackpot-ветку
     # post_slots по ошибке.
     assert "jackpot" not in body
+    # `bank_capped` — БЕЗУСЛОВНО, включая проигрышный спин (у Тето нет
+    # отдельного признака победы, см. модульный докстринг api/routes/games.py):
+    # отсутствие ключа клиенту пришлось бы отличать от `false`.
+    assert body["bank_capped"] in (True, False)
 
 
 @pytest.mark.asyncio
@@ -1040,11 +1052,174 @@ async def test_teto_slots_response_carries_animation_and_null_on_replay(monkeypa
         assert op["op"] in ("fill", "evaluate", "tumble", "drill_hunt", "round_end")
         assert len(op["blocks"]) >= 1
 
+    # Лестница для шкалы-вала: статика в конверте, цель — в round_end.
+    assert animation["ladder_max_score"] == 36
+    assert [t["multiplier"] for t in animation["ladder_thresholds"]] == [2, 3, 5, 10]
+    for op in animation["ops"]:
+        if op["op"] == "round_end" and op["ladder"] is not None:
+            assert {"next_threshold", "next_multiplier", "score_to_next"} <= set(op["ladder"])
+
     assert replay.status_code == 200
     replay_body = replay.json()
     assert replay_body["animation"] is None, "replay обязан отдавать animation: null, а не {}"
     assert replay_body["payout"] == body["payout"]
     assert replay_body["outcome"] == body["outcome"]
+    # `bank_capped` считается из `payout`/`outcome.total_payout`, поэтому есть
+    # и на replay, где анимации нет вовсе — клиенту не нужно различать эти
+    # случаи, чтобы честно подписать урезанный выигрыш.
+    assert replay_body["bank_capped"] == body["bank_capped"]
+
+
+async def _drain_bank(chat_id: int) -> None:
+    """Обнуляет `chat_bank.balance` конкретного чата ПЕРЕД спином.
+
+    Нужен, потому что Postgres тестов долгоживущий (см. `_topup`): банк
+    "свежего" chat_id перестаёт быть свежим после первого же прогона файла, а
+    вся суть теста ниже — в том, что банку НЕЧЕМ платить. Пишем напрямую в
+    таблицу, а не через `economy_service`: это сетап окружения, а не денежная
+    операция, и `economy_service` намеренно не имеет примитива "обнулить банк".
+    """
+    async with SessionLocal() as db_session:
+        await db_session.execute(
+            update(ChatBank).where(ChatBank.chat_id == chat_id).values(balance=0)
+        )
+        await db_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_teto_slots_win_on_drained_bank_reports_bank_capped_and_animation_agrees(monkeypatch):
+    """ГЛАВНАЯ регрессия анимации: экран НЕ ДОЛЖЕН досчитывать счётчик до
+    суммы, которой игрок не получил.
+
+    Тот же инцидент, что уже был на Azumanga (см. `bank_capped` в модульном
+    докстринге `api/routes/games.py`: "/me до и после раунда — 1000 и 1000,
+    банк чата был 0"), но у Тето он громче: там фронт просто бампал число, а
+    здесь он ТИКАЕТ счётчик по раундам из `animation` и грейдит большой
+    выигрыш. Сценарий не экзотический — 10.8% реальных спинов платят больше
+    ставки (замер на 20 000 спинов, максимум 126x ставки), а банк свежего или
+    выеденного чата этого не тянет.
+
+    Форс полностью детерминирован: `casino_service._rng` подменён на
+    `random.Random(12945)` — движок берёт RNG ТОЛЬКО оттуда (D-03/T-04.1-01,
+    джекпот-слоя у Тето нет вовсе), поэтому спин воспроизводится побайтово и
+    честно платит 3 790 при ставке 30. Банк чата обнулён, в него попадает
+    ровно ставка -> `pay_from_bank` (D-06) платит 30 из 3 790.
+
+    Что именно фиксируем как клиентский контракт:
+      - `payout` == 30, а `outcome.total_payout` == 3 790: аудиторская запись
+        НЕ фальсифицируется под выплату (иначе мы бы соврали в другую сторону);
+      - `bank_capped: true` на верхнем уровне — клиенту не нужно ничего
+        вычитать самому, чтобы понять, что произошло;
+      - `animation.payout_paid` == `payout` и `animation.bank_capped` == true —
+        компоненту счётчика не нужно ходить за числом в соседнюю ветку ответа;
+      - сумма `final_round_payout` по раундам трейса РАВНА неурезанному итогу
+        (движок не знает про банк) и БОЛЬШЕ выплаты — то есть наивный
+        счётчик действительно соврал бы, и формула `min(префикс, payout_paid)`
+        нужна не теоретически;
+      - баланс игрока не изменился вовсе (`-30` ставки `+30` выплаты) — та
+        самая подпись инцидента, которую игрок читает как "экран соврал"."""
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    monkeypatch.setattr(casino_service, "_last_slots_spin_at", {})
+    monkeypatch.setattr(casino_service, "_rng", random.Random(12945))
+    user_id = 300427
+    await _ensure_user(user_id)
+    await _topup(TETO_DRAINED_BANK_CHAT_ID, user_id)
+    await _drain_bank(TETO_DRAINED_BANK_CHAT_ID)
+    init_data = _build_init_data(user_id=user_id)
+    bet = 10 * teto_slot_engine.TOTAL_LINES
+
+    balance_before = await _get_balance(TETO_DRAINED_BANK_CHAT_ID, user_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/games/teto_slots",
+            params={"chat_id": TETO_DRAINED_BANK_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={"bet": bet, "idem_key": str(uuid.uuid4())},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+
+    engine_total = body["outcome"]["total_payout"]
+    assert engine_total > bet, (
+        f"форсированный сид обязан выиграть больше ставки, чтобы кап наступил "
+        f"(получено {engine_total} при ставке {bet}) — если движок изменился, подобрать новый сид"
+    )
+    assert body["payout"] == bet, "банк содержал ровно ставку этого же спина — больше платить нечем"
+    assert body["bank_capped"] is True
+    assert body["user_balance_after"] == balance_before, (
+        "подпись инцидента: игрок выиграл, а баланс не изменился вовсе"
+    )
+
+    animation = body["animation"]
+    assert animation is not None
+    assert animation["payout_paid"] == body["payout"]
+    assert animation["payout_engine_total"] == engine_total
+    assert animation["bank_capped"] is True
+
+    # Наивный счётчик (сумма раундов) действительно уехал бы выше выплаты...
+    naive_total = sum(op["final_round_payout"] for op in animation["ops"] if op["op"] == "round_end")
+    assert naive_total == engine_total > animation["payout_paid"]
+
+    # ...а предписанная контрактом формула `min(префикс, payout_paid)` — нет:
+    # монотонна, не превышает выплату и заканчивается ровно на ней.
+    running = 0
+    shown = 0
+    for op in animation["ops"]:
+        if op["op"] != "round_end":
+            continue
+        running += op["final_round_payout"]
+        step = min(running, animation["payout_paid"])
+        assert step >= shown, "счётчик обязан быть монотонным"
+        assert step <= body["payout"], "счётчик перевалил за реально выплаченное"
+        shown = step
+    assert shown == body["payout"]
+
+
+@pytest.mark.asyncio
+async def test_teto_slots_win_on_funded_bank_reports_bank_capped_false(monkeypatch):
+    """Обратная сторона: тот же форсированный выигрышный спин, но банк чата
+    заведомо богат — `bank_capped: false`, выплата равна честному итогу, и
+    `animation.payout_paid` совпадает с обоими.
+
+    Без этой половины `bank_capped: true` было бы неотличимо от константы:
+    флаг, который всегда `true`, клиент так же уверенно проигнорирует, как и
+    отсутствующий."""
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    monkeypatch.setattr(casino_service, "_last_slots_spin_at", {})
+    monkeypatch.setattr(casino_service, "_rng", random.Random(12945))
+    user_id = 300428
+    await _ensure_user(user_id)
+    await _topup(TETO_SLOTS_CHAT_ID, user_id)
+    init_data = _build_init_data(user_id=user_id)
+    bet = 10 * teto_slot_engine.TOTAL_LINES
+
+    async with SessionLocal() as db_session:
+        await economy_service.credit_bank(
+            db_session, TETO_SLOTS_CHAT_ID, 1_000_000,
+            kind="test_seed", ref_id=f"test_teto_funded_bank:{uuid.uuid4()}",
+        )
+        await db_session.commit()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/games/teto_slots",
+            params={"chat_id": TETO_SLOTS_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={"bet": bet, "idem_key": str(uuid.uuid4())},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["outcome"]["total_payout"] > bet
+    assert body["payout"] == body["outcome"]["total_payout"], "богатый банк платит честный итог целиком"
+    assert body["bank_capped"] is False
+    assert body["animation"]["bank_capped"] is False
+    assert body["animation"]["payout_paid"] == body["payout"]
+    assert body["animation"]["payout_engine_total"] == body["payout"]
 
 
 @pytest.mark.asyncio
