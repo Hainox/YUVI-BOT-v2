@@ -61,10 +61,24 @@ RNG/paytable/фриспин-логику, роут только прокидыв
 оставлено как осознанный, задокументированный пробел (не тихий баг), не
 входящий в must_haves этого плана.
 
-`casino_service.RateLimited -> 429` — ТОЛЬКО у slots (авто-спин в miniapp:
-клиентский цикл повторных ставок без ручного тапа на каждый раунд, см.
-`casino_service._check_slots_throttle`); coinflip/dice/roulette/blackjack не
-имеют авто-повтора, поэтому этой ветки исключений у них нет.
+POST /games/teto_slots — тот же тонкий стейтлес-паттерн, что и POST
+/games/slots выше: `casino_service.play_teto_slots` уже несёт всю
+RNG/мегаблок/каскад/Дрель-Хант/лестница-логику, роут только прокидывает
+`bet`/`idem_key` (переиспользует ту же Pydantic-модель `SlotsBet` — форма
+тела запроса идентична). БЕЗ джекпот-слоя: `play_teto_slots` не возвращает
+ключ `"jackpot"` вовсе (джекпот CASINO-06 по дизайну — фича конкретно
+Azumanga, см. докстринг `play_teto_slots`), поэтому роут его и не проверяет.
+`bank_capped` НЕ вычисляется по той же причине, что и у слотов выше — даже
+более явно ввиду каскадно-фриспин-лестничной сложности Тето: "честная"
+выплата известна только внутри `play_teto_slots.compute()` до капа банком.
+
+`casino_service.RateLimited -> 429` — у slots И teto_slots (авто-спин в
+miniapp: клиентский цикл повторных ставок без ручного тапа на каждый раунд,
+см. `casino_service._check_slots_throttle`) — троттлинг-дикт `_last_slots_
+spin_at` общий для обоих слотов казино (один и тот же анти-абьюз-концерн
+по `user_id`, не форкается по игре, см. докстринг `_check_slots_throttle`);
+coinflip/dice/roulette/blackjack не имеют авто-повтора, поэтому этой ветки
+исключений у них нет.
 
 POST /games/blackjack (start) + POST /games/blackjack/{game_id}/action
 (04.2-10) — стейтфул-раздача (04.1-03): `game_id` из start-ответа
@@ -364,6 +378,47 @@ async def post_slots(
 
 async def _play_slots(session, auth: AuthContext, body: SlotsBet) -> dict:
     return await casino_service.play_slots(session, auth.chat_id, auth.user_id, body.bet, body.idem_key)
+
+
+@router.post("/api/v1/games/teto_slots")
+async def post_teto_slots(
+    body: SlotsBet, request: Request, auth: AuthContext = Depends(require_membership)
+) -> dict:
+    """Слот "Тето Брейнрот: Дрель-Хант" — тот же тонкий паттерн, что и
+    POST /games/slots выше (см. модульный докстринг): `casino_service.
+    play_teto_slots` уже несёт всю RNG/каскад/фриспин/лестница-логику, роут
+    только прокидывает `bet`/`idem_key`, маппит исключения на HTTP и
+    публикует баланс. Без jackpot-ветки (`play_teto_slots` не возвращает
+    ключ "jackpot") и без `bank_capped` — намеренно, см. модульный
+    докстринг."""
+    async with SessionLocal() as session:
+        try:
+            result = await _play_teto_slots(session, auth, body)
+        except casino_service.DuplicateRound:
+            try:
+                result = await _play_teto_slots(session, auth, body)
+            except casino_service.DuplicateRound as exc:
+                raise HTTPException(status_code=409, detail="round in progress, retry") from exc
+        except casino_service.GameNotActive as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except casino_service.RateLimited as exc:
+            raise HTTPException(status_code=429, detail=str(exc)) from exc
+        except (casino_service.InvalidBet, economy_service.InsufficientFunds) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        balance = await economy_service.get_balance(session, auth.chat_id, auth.user_id)
+        await balance_events.publish_balance(
+            request.app.state.redis, auth.chat_id, auth.user_id, balance
+        )
+        result["user_balance_after"] = balance
+
+        return result
+
+
+async def _play_teto_slots(session, auth: AuthContext, body: SlotsBet) -> dict:
+    return await casino_service.play_teto_slots(
+        session, auth.chat_id, auth.user_id, body.bet, body.idem_key
+    )
 
 
 @router.post("/api/v1/games/blackjack")

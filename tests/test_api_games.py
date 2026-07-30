@@ -53,6 +53,7 @@ from bot.config import settings
 from bot.services import casino_service
 from bot.services import economy_service
 from bot.services import slot_engine
+from bot.services import teto_slot_engine
 from common.db.session import engine
 from common.db.session import SessionLocal
 from common.models.casino_game import CasinoGame
@@ -83,6 +84,16 @@ JACKPOT_CHAT_ID = -900309
 # "джекпот + пустой банк -> +0¥ анонс не должен уйти" — не смешивается с
 # банком/пулом, уже накопленными JACKPOT_CHAT_ID остальными тестами выше.
 JACKPOT_EMPTY_BANK_CHAT_ID = -900310
+
+# Отдельный chat_id для POST /games/teto_slots (04.1-XX money-интеграция) —
+# НЕ переиспользует SLOTS_CHAT_ID: троттлинг-дикт `_last_slots_spin_at`
+# общий для Azumanga/Тето по user_id (не по chat_id), но отдельный chat_id
+# всё равно нужен, чтобы баланс/банк Тето-тестов не смешивался с уже
+# накопленными в SLOTS_CHAT_ID остальными slots-тестами выше (те же
+# соображения изоляции, что и у остальных диапазонов этого файла); заодно
+# используются отдельные user_id (см. ниже), чтобы не делить троттлинг-
+# состояние с конкретными slots-тестами.
+TETO_SLOTS_CHAT_ID = -900311
 
 
 class _ForcedWinRng:
@@ -825,6 +836,188 @@ async def test_slots_ignores_foreign_user_id_in_body_idor(monkeypatch):
     assert game_row.user_id == attacker_id
 
     victim_after = await _get_balance(SLOTS_CHAT_ID, victim_id)
+    assert victim_after == victim_before
+
+
+# --- POST /api/v1/games/teto_slots ("Тето Брейнрот: Дрель-Хант") -------------
+#
+# Money-интеграция (`casino_service.play_teto_slots`) уже полностью
+# протестирована в `tests/test_casino_service.py`; здесь — только тонкий
+# API-слой, тот же набор сценариев, что и у POST /games/slots выше, минус
+# джекпот (которого у Тето нет вовсе — `play_teto_slots` не возвращает ключ
+# "jackpot") и минус bank_capped (см. докстринг api/routes/games.py).
+
+
+@pytest.mark.asyncio
+async def test_teto_slots_valid_bet_returns_200_with_settled_result(monkeypatch):
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    user_id = 300420
+    await _ensure_user(user_id)
+    await _topup(TETO_SLOTS_CHAT_ID, user_id)
+    init_data = _build_init_data(user_id=user_id)
+    bet = 10 * teto_slot_engine.TOTAL_LINES
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/games/teto_slots",
+            params={"chat_id": TETO_SLOTS_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={"bet": bet, "idem_key": str(uuid.uuid4())},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["game"] == "teto_slots"
+    assert body["bet"] == bet
+    assert "payout" in body
+    # Реальный RNG, без форса — структурная проверка формы (см.
+    # teto_slot_engine.play_one_spin/serialize_spin_result докстринги), не
+    # конкретного исхода, тот же подход, что и test_slots_valid_bet_ выше.
+    outcome = body["outcome"]
+    assert "scatter_count" in outcome
+    assert "freespins_awarded" in outcome
+    assert "freespins_played" in outcome
+    assert "final_blocks" in outcome
+    # Azumanga-специфика (CASINO-06 джекпот) намеренно отсутствует у Тето:
+    # play_teto_slots не возвращает ключ "jackpot" вовсе (см. её докстринг в
+    # casino_service.py) — доказываем, что роут не унаследовал jackpot-ветку
+    # post_slots по ошибке.
+    assert "jackpot" not in body
+
+
+@pytest.mark.asyncio
+async def test_teto_slots_missing_init_data_returns_401():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/games/teto_slots",
+            params={"chat_id": TETO_SLOTS_CHAT_ID},
+            json={"bet": 10 * teto_slot_engine.TOTAL_LINES, "idem_key": str(uuid.uuid4())},
+        )
+
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_teto_slots_bet_below_minimum_returns_400(monkeypatch):
+    """bet=1 нарушает ОБА ограничения play_teto_slots: ниже casino_min_bet И
+    не кратно teto_slot_engine.TOTAL_LINES — оба пути ведут к
+    InvalidBet->400 (тот же приём, что test_slots_bet_below_minimum_returns_400
+    выше)."""
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    user_id = 300421
+    await _ensure_user(user_id)
+    await _topup(TETO_SLOTS_CHAT_ID, user_id)
+    init_data = _build_init_data(user_id=user_id)
+    assert 1 < settings.casino_min_bet
+    assert 1 % teto_slot_engine.TOTAL_LINES != 0
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/games/teto_slots",
+            params={"chat_id": TETO_SLOTS_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={"bet": 1, "idem_key": str(uuid.uuid4())},
+        )
+
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_teto_slots_bet_not_multiple_of_lines_returns_400(monkeypatch):
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    user_id = 300422
+    await _ensure_user(user_id)
+    await _topup(TETO_SLOTS_CHAT_ID, user_id)
+    init_data = _build_init_data(user_id=user_id)
+    bet = settings.casino_min_bet + 1
+    assert bet >= settings.casino_min_bet
+    assert bet % teto_slot_engine.TOTAL_LINES != 0
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/games/teto_slots",
+            params={"chat_id": TETO_SLOTS_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={"bet": bet, "idem_key": str(uuid.uuid4())},
+        )
+
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_teto_slots_rapid_second_spin_returns_429(monkeypatch):
+    """Троттлинг-дикт `_last_slots_spin_at` общий для Azumanga и Тето (см.
+    докстринг `casino_service._check_slots_throttle`) — тот же сброс, что и
+    test_slots_rapid_second_spin_returns_429 выше."""
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    monkeypatch.setattr(casino_service, "_last_slots_spin_at", {})
+    user_id = 300423
+    await _ensure_user(user_id)
+    await _topup(TETO_SLOTS_CHAT_ID, user_id)
+    init_data = _build_init_data(user_id=user_id)
+    bet = 10 * teto_slot_engine.TOTAL_LINES
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        first = await client.post(
+            "/api/v1/games/teto_slots",
+            params={"chat_id": TETO_SLOTS_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={"bet": bet, "idem_key": str(uuid.uuid4())},
+        )
+        second = await client.post(
+            "/api/v1/games/teto_slots",
+            params={"chat_id": TETO_SLOTS_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={"bet": bet, "idem_key": str(uuid.uuid4())},
+        )
+
+    assert first.status_code == 200
+    assert second.status_code == 429
+
+
+@pytest.mark.asyncio
+async def test_teto_slots_ignores_foreign_user_id_in_body_idor(monkeypatch):
+    """T-04.2-02: та же IDOR-защита, что и у остальных игр этого файла."""
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    attacker_id = 300424
+    victim_id = 300425
+    await _ensure_user(attacker_id)
+    await _topup(TETO_SLOTS_CHAT_ID, attacker_id)
+    await _ensure_user(victim_id)
+    await _topup(TETO_SLOTS_CHAT_ID, victim_id)
+    init_data = _build_init_data(user_id=attacker_id)
+    idem_key = str(uuid.uuid4())
+    bet = 10 * teto_slot_engine.TOTAL_LINES
+
+    victim_before = await _get_balance(TETO_SLOTS_CHAT_ID, victim_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/games/teto_slots",
+            params={"chat_id": TETO_SLOTS_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={
+                "bet": bet,
+                "idem_key": idem_key,
+                "user_id": victim_id,  # атакующий пытается подставить чужой user_id
+            },
+        )
+
+    assert resp.status_code == 200
+
+    async with SessionLocal() as verify_session:
+        game_row = (
+            await verify_session.execute(select(CasinoGame).where(CasinoGame.idem_key == idem_key))
+        ).scalar_one()
+    assert game_row.user_id == attacker_id
+
+    victim_after = await _get_balance(TETO_SLOTS_CHAT_ID, victim_id)
     assert victim_after == victim_before
 
 
