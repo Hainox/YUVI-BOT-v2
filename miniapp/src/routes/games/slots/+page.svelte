@@ -17,7 +17,7 @@
 		{ title: 'Азуманга', desc: '3×5, 10 линий, до 1000×', accent: 'pink', href: '/games/slots/azumanga' },
 		{
 			title: 'Тето Брейнрот: Дрель-Хант',
-			desc: '6×6, мегаблоки, тумбл-каскады',
+			desc: '6×6, 50 линий, тумбл-каскады',
 			accent: 'cyan',
 			href: '/games/slots/teto'
 		}
