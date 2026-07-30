@@ -53,6 +53,7 @@ from bot.services.teto_tumble import count_scatter_blocks
 from bot.services.teto_tumble import describe_winning_lines
 from bot.services.teto_tumble import evaluate_paylines
 from bot.services.teto_tumble import resolve_tumble
+from bot.services.teto_tumble import win_units
 
 # Число линий этого слота — тот же паттерн, что `slot_engine.TOTAL_LINES =
 # len(slot_data.PAYLINES)`: единственный источник истины — фактическая длина
@@ -213,12 +214,15 @@ def _record_evaluate(
     выполнено структурно порядком op'ов: `winning_block_ids` этого op'а — ровно
     то, что удалит СЛЕДУЮЩИЙ `tumble`.
 
-    `payout` — СЫРОЙ, ДО множителя лестницы (`bet_per_line * cells_won`), и это
-    место, где фронт легко ошибётся: множитель применяется РОВНО РАЗ ЗА РАУНД
-    (Вариант Y, см. `teto_drillhunt.apply_ladder`), поэтому умножение на
-    каждом шаге дало бы двойное умножение. Инвариант, который стоит держать в
-    голове: сумма `evaluate.payout` по раунду == `round_end.raw_round_payout`,
-    а множитель виден только в `round_end.multiplier_applied`."""
+    `payout` — СЫРОЙ, ДО множителя лестницы (`bet_per_line * win_units`, т.е.
+    ВЗВЕШЕННЫЙ паутейблом: `cells_won` — площадь для анимации, а деньги шага —
+    площадь, умноженная на пер-символьный множитель `TETO_PAYTABLE`), и это
+    место, где фронт легко ошибётся: множитель ЛЕСТНИЦЫ применяется РОВНО РАЗ
+    ЗА РАУНД (Вариант Y, см. `teto_drillhunt.apply_ladder`), поэтому умножение
+    на каждом шаге дало бы двойное умножение. Инвариант, который стоит держать
+    в голове: сумма `evaluate.payout` по раунду == `round_end.raw_round_payout`
+    ТОЧНО (арифметика целочисленная на всех уровнях), а множитель виден только
+    в `round_end.multiplier_applied`."""
     winning_list = sorted(winning_ids)
     cells_won = sum(b.area for b in blocks if b.block_id in winning_ids)
     _record(
@@ -228,7 +232,7 @@ def _record_evaluate(
         winning_block_ids=winning_list,
         winning_lines=winning_lines if winning_lines is not None else [],
         cells_won=cells_won,
-        payout=bet_per_line * cells_won,
+        payout=bet_per_line * win_units(blocks, winning_ids),
     )
     return winning_list
 
@@ -236,10 +240,11 @@ def _record_evaluate(
 def _run_tumble_cascade(
     rng, blocks: list[MegaBlock], hard_cap: int, bet_per_line: int, *,
     phase: str, round_index: int, step_offset: int = 0, trace: list | None = None,
-) -> tuple[list[MegaBlock], int, int]:
+) -> tuple[list[MegaBlock], int, int, int]:
     """Повторяет `evaluate_paylines` -> `resolve_tumble`, пока есть выигрыш и
     `hard_cap` не исчерпан. Возвращает `(blocks, total_winning_cells,
-    шагов_использовано)`.
+    total_win_units, шагов_использовано)`: клетки — статистика/анимация,
+    юниты — деньги (площадь, взвешенная `TETO_PAYTABLE`, см. `win_units`).
 
     `phase`/`round_index` — обязательные keyword-параметры БЕЗ дефолтов
     (функция приватная, вызывается только из `_play_one_round`): дефолт
@@ -256,6 +261,7 @@ def _run_tumble_cascade(
     отдельный тест)."""
     steps = 0
     total_cells = 0
+    total_units = 0
     while steps < hard_cap:
         has_win, winning_ids = evaluate_paylines(blocks)
         winning_list: list[int] = []
@@ -271,6 +277,7 @@ def _run_tumble_cascade(
         if not has_win:
             break
         total_cells += sum(b.area for b in blocks if b.block_id in winning_ids)
+        total_units += win_units(blocks, winning_ids)
         blocks = resolve_tumble(rng, blocks, winning_ids)
         steps += 1
         if trace is not None:
@@ -283,7 +290,7 @@ def _run_tumble_cascade(
                 # оглядки на предыдущий элемент массива.
                 removed_block_ids=winning_list,
             )
-    return blocks, total_cells, steps
+    return blocks, total_cells, total_units, steps
 
 
 def _play_one_round(
@@ -305,7 +312,7 @@ def _play_one_round(
     `evaluate`+`tumble` с `source="drill_hunt_wave"`: фронт переиспользует
     ТОТ ЖЕ рендерер каскада дословно, а "что выиграла волна" выражено в тех же
     самых ключах, что любой другой выигрыш."""
-    blocks, cells_won_a, steps_a = _run_tumble_cascade(
+    blocks, cells_won_a, units_a, steps_a = _run_tumble_cascade(
         rng, blocks, tumble_hard_cap, bet_per_line,
         phase=phase, round_index=round_index, step_offset=0, trace=trace,
     )
@@ -338,9 +345,14 @@ def _play_one_round(
 
     steps_b = 0
     cells_won_wave = 0
+    units_wave = 0
     if outcome.triggered_new_tumble:
         steps_b = 1  # волна = один тумбл-шаг против общего hard_cap
         cells_won_wave = outcome.wave_cells_won
+        # Юниты волны считаются по ПОСТ-инъекционной доске: выигравшие блоки
+        # волны включают только что внедрённый Wild, и он платит как топ-символ
+        # (`TETO_PAYTABLE[WILD_ID]`) — денежная кульминация Дрель-Ханта.
+        units_wave = win_units(pre_wave_blocks, outcome.wave_winning_block_ids)
         if trace is not None:
             # Волна НАМЕРЕННО выражена обычной парой `evaluate`+`tumble`
             # (только с `source="drill_hunt_wave"`), а не вложенным
@@ -364,17 +376,18 @@ def _play_one_round(
     blocks = outcome.blocks
 
     remaining_cap2 = tumble_hard_cap - steps_a - steps_b
-    blocks, cells_won_c, steps_c = _run_tumble_cascade(
+    blocks, cells_won_c, units_c, steps_c = _run_tumble_cascade(
         rng, blocks, max(0, remaining_cap2), bet_per_line,
         phase=phase, round_index=round_index, step_offset=steps_a + steps_b, trace=trace,
     )
 
     total_cells_won = cells_won_a + cells_won_wave + cells_won_c
+    total_units_won = units_a + units_wave + units_c
     tumble_steps_used = steps_a + steps_b + steps_c
 
     return {
         "blocks": blocks,
-        "raw_round_payout": bet_per_line * total_cells_won,
+        "raw_round_payout": bet_per_line * total_units_won,
         "total_cells_won": total_cells_won,
         "cells_converted_by_drill_hunt": outcome.cells_converted,
         "drill_hunt_fired": outcome.cells_converted > 0,

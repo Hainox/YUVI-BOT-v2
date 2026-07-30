@@ -472,8 +472,8 @@ async def play_teto_slots(
     `user_id`, не форкается на второй dict под конкретную игру).
 
     Что ГЕНУИННО отличается от `play_slots`:
-      - `TOTAL_LINES`/`bet_per_line` берутся из `teto_slot_engine` (3 линии
-        сейчас — MVP-подмножество, см. `teto_tumble.TETO_PAYLINES`), а не из
+      - `TOTAL_LINES`/`bet_per_line` берутся из `teto_slot_engine` (50 линий —
+        полный набор оригинала, см. `teto_tumble.TETO_PAYLINES`), а не из
         `slot_engine`.
       - `compute()` вызывает `teto_slot_engine.play_one_spin(_rng,
         bet_per_line)`, а не `slot_engine.spin_grid`/`evaluate_grid`, и
