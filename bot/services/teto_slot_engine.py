@@ -17,8 +17,6 @@ dict`, без скрытого состояния: rng — ВСЕГДА явны
 
 from __future__ import annotations
 
-from typing import Optional
-
 from bot.services.teto_drillhunt import DrillHuntOutcome
 from bot.services.teto_drillhunt import LadderState
 from bot.services.teto_drillhunt import apply_drill_hunt
@@ -45,7 +43,7 @@ FREESPINS_HARD_CAP = 100
 FREESPIN_SCATTER_MIN = 5
 
 
-def compute_freespins_awarded(scatter_count: int) -> int:
+def _compute_freespins_awarded(scatter_count: int) -> int:
     """`freespins = scatter_count if scatter_count >= 5 else 0` — буквально
     из roadmap.md, ОТКРЫТАЯ формула. Намеренно НЕ 3-кейсовый lookup вроде
     `slot_engine._freespins_for` (тот класс бага уже найден и задокументирован
@@ -55,8 +53,8 @@ def compute_freespins_awarded(scatter_count: int) -> int:
     return scatter_count if scatter_count >= FREESPIN_SCATTER_MIN else 0
 
 
-def run_tumble_cascade(
-    rng, blocks: list[MegaBlock], hard_cap: int, *, trace: Optional[list] = None
+def _run_tumble_cascade(
+    rng, blocks: list[MegaBlock], hard_cap: int, *, trace: list | None = None
 ) -> tuple[list[MegaBlock], int, int]:
     """Повторяет `evaluate_paylines` -> `resolve_tumble`, пока есть выигрыш и
     `hard_cap` не исчерпан. Возвращает `(blocks, total_winning_cells,
@@ -77,9 +75,9 @@ def run_tumble_cascade(
     return blocks, total_cells, steps
 
 
-def play_one_round(
+def _play_one_round(
     rng, blocks: list[MegaBlock], bet_per_line, *,
-    guaranteed_drill_hunt: bool, tumble_hard_cap: int, trace: Optional[list] = None,
+    guaranteed_drill_hunt: bool, tumble_hard_cap: int, trace: list | None = None,
 ) -> dict:
     """Один "раунд" = тумбл-каскад до исчерпания выигрышей ИЛИ `hard_cap`,
     затем РОВНО ОДИН вызов Дрель-Ханта (чья единственная опциональная волна
@@ -87,7 +85,7 @@ def play_one_round(
     возврат во внешний тумбл-цикл: если она оставила на доске ещё один
     выигрыш, он доигрывается как обычный тумбл (в пределах оставшегося
     бюджета `hard_cap`)."""
-    blocks, cells_won_a, steps_a = run_tumble_cascade(rng, blocks, tumble_hard_cap, trace=trace)
+    blocks, cells_won_a, steps_a = _run_tumble_cascade(rng, blocks, tumble_hard_cap, trace=trace)
 
     remaining_cap = tumble_hard_cap - steps_a
     outcome: DrillHuntOutcome = apply_drill_hunt(
@@ -109,7 +107,7 @@ def play_one_round(
         cells_won_wave = outcome.wave_cells_won
 
     remaining_cap2 = tumble_hard_cap - steps_a - steps_b
-    blocks, cells_won_c, steps_c = run_tumble_cascade(rng, blocks, max(0, remaining_cap2), trace=trace)
+    blocks, cells_won_c, steps_c = _run_tumble_cascade(rng, blocks, max(0, remaining_cap2), trace=trace)
 
     total_cells_won = cells_won_a + cells_won_wave + cells_won_c
     tumble_steps_used = steps_a + steps_b + steps_c
@@ -126,27 +124,47 @@ def play_one_round(
     }
 
 
-def play_one_spin(rng, bet_per_line, *, trace: Optional[list] = None) -> dict:
+def play_one_spin(rng, bet_per_line, *, trace: list | None = None) -> dict:
     """Оркестрирует ПОЛНЫЙ спин: заполнение -> тумбл-цикл (`TUMBLE_HARD_CAP`)
     -> Дрель-Хант (не гарантирован) -> если фриспины начислены — цикл
     фриспин-раундов (каждый: заполнение -> тумбл -> Дрель-Хант
     (`guaranteed=True`) -> обновление лестницы), капнутый `FREESPINS_HARD_CAP`.
 
-    Возвращает dict — см. поля ниже. ЧИСТАЯ функция: два вызова с двумя
-    одинаково сконфигурированными свежими rng-стабами дают побайтово
-    идентичный результат (см. `tests/test_teto_slot_engine.py`)."""
+    ЧИСТАЯ функция: два вызова с двумя одинаково сконфигурированными свежими
+    rng-стабами дают побайтово идентичный результат (см.
+    `tests/test_teto_slot_engine.py`).
+
+    Возвращает dict:
+      `initial_blocks`/`base_round` — первичная доска и результат `_play_one_round`
+      для базового (не фриспин) раунда.
+      `scatter_count`/`freespins_awarded` — по `base_round["blocks"]`.
+      `freespins_played` — ИТОГО сыграно фриспин-раундов (изначальная выдача
+      + все ретриггеры), может быть меньше `freespins_awarded`, если
+      `freespins_hard_cap_hit`.
+      `freespins_hard_cap_hit` — True, если `FREESPINS_HARD_CAP` реально
+      остановил цикл раньше, чем `remaining` естественно дошёл до 0 (т.е.
+      `freespins_played == FREESPINS_HARD_CAP` И к моменту остановки
+      оставались ещё неотыгранные фриспины).
+      `fs_round_records` — по одной записи на каждый реально сыгранный
+      фриспин-раунд (порядок розыгрыша), поля см. в цикле ниже.
+      `ladder_final_state` — `LadderState` на конец спина (score=0/multiplier=1,
+      если фриспинов не было вовсе — лестница не создавалась).
+      `total_payout` — `base_round["raw_round_payout"]` (по множителю лестница
+      НЕ трогает базовый раунд) + сумма `final_round_payout` всех фриспин-раундов.
+      `final_blocks` — доска последнего сыгранного фриспин-раунда, либо
+      `base_round["blocks"]`, если фриспинов не было вовсе."""
     initial_blocks = form_blocks(rng, set(ALL_CELLS))
     if trace is not None:
         trace.append({"op": "initial_fill", "blocks": list(initial_blocks)})
     assert_valid_partition(initial_blocks)
 
-    base_result = play_one_round(
+    base_result = _play_one_round(
         rng, initial_blocks, bet_per_line,
         guaranteed_drill_hunt=False, tumble_hard_cap=TUMBLE_HARD_CAP, trace=trace,
     )
 
     scatter_count = count_scatter_blocks(base_result["blocks"])
-    freespins_awarded = compute_freespins_awarded(scatter_count)
+    freespins_awarded = _compute_freespins_awarded(scatter_count)
 
     # Лестница живёт ТОЛЬКО во фриспинах (зафиксировано владельцем бота
     # 2026-07-30) — создаётся заново здесь, очки Дрель-Ханта из base_result
@@ -165,7 +183,7 @@ def play_one_spin(rng, bet_per_line, *, trace: Optional[list] = None) -> dict:
             trace.append({"op": f"fs_round_{freespins_played}_initial_fill", "blocks": list(fs_blocks)})
         assert_valid_partition(fs_blocks)
 
-        fs_result = play_one_round(
+        fs_result = _play_one_round(
             rng, fs_blocks, bet_per_line,
             guaranteed_drill_hunt=True, tumble_hard_cap=TUMBLE_HARD_CAP, trace=trace,
         )

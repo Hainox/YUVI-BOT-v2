@@ -20,6 +20,7 @@ from bot.services.teto_megablock import GRID_SIZE
 from bot.services.teto_megablock import SCATTER_ID
 from bot.services.teto_megablock import WILD_ID
 from bot.services.teto_megablock import MegaBlock
+from bot.services.teto_megablock import assert_valid_partition
 from bot.services.teto_tumble import count_scatter_blocks
 from bot.services.teto_tumble import evaluate_paylines
 from bot.services.teto_tumble import resolve_tumble
@@ -168,6 +169,38 @@ def test_resolve_tumble_multi_column_block_falls_as_one_rigid_unit_not_torn_apar
     assert (settled_b.row, settled_b.col) == (5, 1)  # B уже стоял на полу, не двигается
 
 
+def test_resolve_tumble_2x2_block_falls_as_rigid_body_exact_landing_row():
+    """Мегаблок 2x2 (ДВУМЕРНЫЙ — height>1 И width>1, не только широкий-но-плоский,
+    как в тесте выше) в левом верхнем углу; под ним (row=2, col=0..1) убираем
+    выигравшие одиночные блоки -> мегаблок обязан упасть КАК ЕДИНОЕ ЦЕЛОЕ ровно
+    на одну строку вниз (в rows 1-2), а не развалиться на части."""
+    mega = MegaBlock(block_id=0, symbol_id="teto_chimera", row=0, col=0, height=2, width=2)
+    covered = set(mega.cells)  # {(0,0),(0,1),(1,0),(1,1)}
+
+    singles = []
+    id_by_cell = {}
+    next_id = 1
+    for (r, c) in sorted(ALL_CELLS - covered):
+        singles.append(MegaBlock(block_id=next_id, symbol_id="utau_note", row=r, col=c, height=1, width=1))
+        id_by_cell[(r, c)] = next_id
+        next_id += 1
+
+    blocks = [mega] + singles
+    assert_valid_partition(blocks)  # sanity перед тестом
+
+    winning_ids = {id_by_cell[(2, 0)], id_by_cell[(2, 1)]}
+
+    rng = _ForcedRng(choices=ALL_SYMBOLS, randints=[7])  # без мегаблока на доборе
+    result = resolve_tumble(rng, blocks, winning_ids)
+
+    assert_valid_partition(result)
+
+    moved_mega = next(b for b in result if b.block_id == 0)
+    assert (moved_mega.height, moved_mega.width) == (2, 2), "2x2 блок не должен развалиться на части"
+    assert moved_mega.symbol_id == "teto_chimera"
+    assert (moved_mega.row, moved_mega.col) == (1, 0), "упал ровно на 1 строку (столбцы под ним были заняты ниже row=3)"
+
+
 def test_resolve_tumble_removes_winning_block_entirely_even_if_multi_cell():
     """2x2 мегаблок, где выигравшими считаются ВСЕ его клетки (весь block_id)
     — обязан быть убран ЦЕЛИКОМ, не частично."""
@@ -183,8 +216,6 @@ def test_resolve_tumble_removes_winning_block_entirely_even_if_multi_cell():
 
 
 def test_resolve_tumble_result_respects_partition_invariant():
-    from bot.services.teto_megablock import assert_valid_partition
-
     mega = MegaBlock(block_id=0, symbol_id="teto_0401", row=0, col=0, height=2, width=2)
     filler_ids = list(range(1, 33))
     other_cells = sorted(ALL_CELLS - set(mega.cells))

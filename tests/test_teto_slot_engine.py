@@ -22,7 +22,7 @@ from bot.services.teto_megablock import form_blocks
 from bot.services.teto_slot_engine import FREESPIN_SCATTER_MIN
 from bot.services.teto_slot_engine import FREESPINS_HARD_CAP
 from bot.services.teto_slot_engine import TUMBLE_HARD_CAP
-from bot.services.teto_slot_engine import compute_freespins_awarded
+from bot.services.teto_slot_engine import _compute_freespins_awarded
 from bot.services.teto_slot_engine import play_one_spin
 
 
@@ -58,7 +58,7 @@ class _ForcedRng:
 
 
 # ---------------------------------------------------------------------------
-# compute_freespins_awarded — открытая формула
+# _compute_freespins_awarded — открытая формула
 # ---------------------------------------------------------------------------
 
 
@@ -66,11 +66,11 @@ def test_compute_freespins_awarded_open_formula_not_a_lookup_table():
     """`freespins = scatter_count if scatter_count >= 5 else 0` — буквально.
     НЕ 3-кейсовый lookup вроде `slot_engine._freespins_for` (тот класс бага
     уже найден для Azumanga — здесь не повторяем, см. `teto_slot_engine.py`)."""
-    assert compute_freespins_awarded(0) == 0
-    assert compute_freespins_awarded(4) == 0
-    assert compute_freespins_awarded(FREESPIN_SCATTER_MIN) == FREESPIN_SCATTER_MIN
-    assert compute_freespins_awarded(6) == 6
-    assert compute_freespins_awarded(16) == 16, "скаттер-мегаблок может закрыть до 16 клеток одним блоком"
+    assert _compute_freespins_awarded(0) == 0
+    assert _compute_freespins_awarded(4) == 0
+    assert _compute_freespins_awarded(FREESPIN_SCATTER_MIN) == FREESPIN_SCATTER_MIN
+    assert _compute_freespins_awarded(6) == 6
+    assert _compute_freespins_awarded(16) == 16, "скаттер-мегаблок может закрыть до 16 клеток одним блоком"
 
 
 # ---------------------------------------------------------------------------
@@ -128,9 +128,9 @@ def test_tumble_hard_cap_and_freespins_hard_cap_both_respected_simultaneously(mo
     payline всегда выигрывает на каждом шаге тумбла, добор после удаления даёт
     тот же символ — тумбл-каскад никогда не затухает естественно и обязан
     быть остановлен ИСКЛЮЧИТЕЛЬНО `TUMBLE_HARD_CAP`. Дополнительно форсируем
-    `compute_freespins_awarded` на 1000 — `freespins_played` обязан
+    `_compute_freespins_awarded` на 1000 — `freespins_played` обязан
     остановиться ИСКЛЮЧИТЕЛЬНО `FREESPINS_HARD_CAP`."""
-    monkeypatch.setattr(eng, "compute_freespins_awarded", lambda scatter_count: 1000)
+    monkeypatch.setattr(eng, "_compute_freespins_awarded", lambda scatter_count: 1000)
 
     rng = _ForcedRng()
     t0 = time.perf_counter()
@@ -152,6 +152,7 @@ def test_tumble_hard_cap_and_freespins_hard_cap_both_respected_simultaneously(mo
 
     assert result["freespins_awarded"] == 1000
     assert result["freespins_played"] == FREESPINS_HARD_CAP
+    assert result["freespins_hard_cap_hit"] is True, "хардкап реально остановил цикл раньше естественного исчерпания"
     assert len(result["fs_round_records"]) == FREESPINS_HARD_CAP
 
     assert elapsed < 10.0, f"патологический сценарий занял {elapsed:.2f}s — подозрение на runaway"
@@ -288,3 +289,56 @@ def test_forced_end_to_end_nontrivial_spin_matches_expected_shape():
     )
     print(f"TOTAL PAYOUT: {result['total_payout']}")
     print("=" * 70)
+
+
+# ---------------------------------------------------------------------------
+# 7. Лестница живёт ТОЛЬКО во фриспинах — очки базового Дрель-Ханта в неё не идут
+# ---------------------------------------------------------------------------
+
+
+def test_base_round_drill_hunt_cells_never_feed_the_ladder_score(monkeypatch):
+    """ЗАФИКСИРОВАНО владельцем бота 2026-07-30 (см. `teto_slot_engine.py`,
+    строка `ladder = LadderState()`): лестница множителя — фича ТОЛЬКО
+    фриспинов, `LadderState` создаётся заново на вход во фриспины, очки
+    Дрель-Ханта из БАЗОВОГО (не фриспин) раунда в неё не идут. Прямой
+    регрессионный тест на этот инвариант — без него правка вроде
+    `LadderState(score=base_result["cells_converted_by_drill_hunt"])` прошла
+    бы незамеченной всем остальным набором.
+
+    Форсируем apply_drill_hunt на ПЕРВЫЙ вызов (базовый раунд) вернуть
+    заведомо большой cells_converted (30 — намеренно больше первого порога
+    лестницы 10, чтобы утечка была однозначно детектируема), делегируя
+    реальной реализации на всех последующих вызовах (фриспин-раунды), чтобы
+    остальная механика оставалась настоящей."""
+    from bot.services import teto_drillhunt
+
+    real_apply_drill_hunt = teto_drillhunt.apply_drill_hunt
+    call_count = {"n": 0}
+
+    def spy_apply_drill_hunt(rng, blocks, *, guaranteed, tumble_hard_cap_remaining):
+        call_count["n"] += 1
+        outcome = real_apply_drill_hunt(
+            rng, blocks, guaranteed=guaranteed, tumble_hard_cap_remaining=tumble_hard_cap_remaining
+        )
+        if call_count["n"] == 1:
+            # Первый вызов apply_drill_hunt за весь спин — ВСЕГДА базовый
+            # раунд (play_one_spin вызывает _play_one_round(guaranteed=False)
+            # для базы ДО цикла фриспинов, см. teto_slot_engine.py).
+            outcome = outcome._replace(cells_converted=30)
+        return outcome
+
+    monkeypatch.setattr(eng, "apply_drill_hunt", spy_apply_drill_hunt)
+    monkeypatch.setattr(eng, "_compute_freespins_awarded", lambda scatter_count: 3)  # гарантируем фриспины
+
+    rng = random.Random(12345)
+    result = play_one_spin(rng, bet_per_line=1)
+
+    assert result["base_round"]["cells_converted_by_drill_hunt"] == 30, "форс не применился к базовому раунду"
+    assert result["fs_round_records"], "ожидались фриспин-раунды (форсировали _compute_freespins_awarded)"
+
+    first_fs_round = result["fs_round_records"][0]
+    assert first_fs_round["ladder_score_after"] == first_fs_round["cells_converted_by_drill_hunt"], (
+        "счёт лестницы после ПЕРВОГО фриспин-раунда обязан включать ТОЛЬКО очки "
+        "этого раунда (без форсированных 30 клеток базового раунда) — иначе "
+        "лестница ошибочно унаследовала счёт из базовой игры"
+    )
