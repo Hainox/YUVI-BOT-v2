@@ -100,6 +100,47 @@ MEGA_BLOCK_SCATTER_AREA_CAP = 16
 # мегаблок (area>=4) — остальные пустые клетки всегда одиночные 1x1.
 MEGA_BLOCK_ATTEMPT_DENOM = 10
 
+# Веса символов при заполнении (Monte-Carlo калибровка, roadmap.md: «обязателен
+# Monte-Carlo прогон паутейбла/весов мегаблоков до продакшена»). До калибровки
+# заполнение было РАВНОВЕРОЯТНЫМ по 9 символам — на доске из 36 клеток это
+# давало в среднем 4 скаттер-БЛОКА, и порог фриспинов (>=5 блоков,
+# `teto_slot_engine.FREESPIN_SCATTER_MIN`) пробивался КАЖДЫМ ~2.5-м спином
+# (замерено симуляцией: 0.40 триггера/спин) — бонус переставал быть событием,
+# а 77% всего RTP уезжало во фриспины. Формула фриспинов зафиксирована
+# владельцем и не трогается; калибровочная ручка — именно ЧАСТОТА скаттера в
+# заполнении, как и в оригинальном Gigablox, где скаттер на барабанах редок.
+# Вес 1/27 на клетку -> в среднем ~1.3 скаттер-блока на доску -> триггер
+# ~1 к 100 спинов (перемерено скриптом scripts/calibrate_teto_rtp.py).
+#
+# Веса выражены ПУЛОМ С ПОВТОРАМИ (список, где символ встречается weight раз),
+# а не rng.choices(weights=...) — намеренно: единственный RNG-контракт движка
+# это .choice(seq)/.randint(a,b) (см. _ForcedRng-стабы в тестах), и пул
+# сохраняет его. Порядок пула держит LOW_SYMBOLS[0] ПЕРВЫМ элементом, чтобы
+# детерминированные стабы (choice -> seq[0]) продолжали получать тот же символ,
+# что и при старом равновероятном списке.
+WEIGHTS: dict[str, int] = {
+    "baguette_crumb": 4,
+    "drill_lollipop": 4,
+    "utau_note": 4,
+    "skull_cringe": 4,
+    "teto_chimera": 3,
+    "teto_drill_rage": 3,
+    "teto_baguette_knight": 2,
+    "teto_0401": 2,
+    SCATTER_ID: 1,
+}
+assert set(WEIGHTS) == set(ALL_SYMBOLS), "WEIGHTS должен покрывать ровно ALL_SYMBOLS"
+
+# Пул одиночного заполнения: символ повторён weight раз (27 элементов).
+FILL_POOL: list[str] = [s for s in ALL_SYMBOLS for _ in range(WEIGHTS[s])]
+
+# Пул символа мегаблока: те же веса, но скаттер вынесен отдельно — его
+# допустимость зависит от площади формы (MEGA_BLOCK_SCATTER_AREA_CAP).
+MEGA_POOL_NO_SCATTER: list[str] = [
+    s for s in (LOW_SYMBOLS + HIGH_SYMBOLS) for _ in range(WEIGHTS[s])
+]
+MEGA_POOL_WITH_SCATTER: list[str] = MEGA_POOL_NO_SCATTER + [SCATTER_ID] * WEIGHTS[SCATTER_ID]
+
 
 def form_blocks(rng, empty_cells: set[tuple[int, int]], *, start_id: int = 0) -> list[MegaBlock]:
     """Заполняет ПЕРЕДАННЫЕ пустые клетки блоками — MVP: не более ОДНОГО
@@ -133,9 +174,11 @@ def form_blocks(rng, empty_cells: set[tuple[int, int]], *, start_id: int = 0) ->
             top, left = valid_positions[idx]
 
             area = h * w
-            symbol_candidates = list(LOW_SYMBOLS) + list(HIGH_SYMBOLS)
+            # Взвешенный пул вместо равновероятного списка — см. WEIGHTS выше.
             if area <= MEGA_BLOCK_SCATTER_AREA_CAP:
-                symbol_candidates.append(SCATTER_ID)
+                symbol_candidates = MEGA_POOL_WITH_SCATTER
+            else:
+                symbol_candidates = MEGA_POOL_NO_SCATTER
             mega_symbol = rng.choice(symbol_candidates)
 
             mega_cells = {(r, c) for r in range(top, top + h) for c in range(left, left + w)}
@@ -147,7 +190,7 @@ def form_blocks(rng, empty_cells: set[tuple[int, int]], *, start_id: int = 0) ->
         # иначе позиция не найдена — fallback: нет мегаблока, все клетки одиночные
 
     for (r, c) in sorted(cells - mega_cells):
-        symbol = rng.choice(ALL_SYMBOLS)
+        symbol = rng.choice(FILL_POOL)
         blocks.append(MegaBlock(block_id=next_id, symbol_id=symbol, row=r, col=c, height=1, width=1))
         next_id += 1
 

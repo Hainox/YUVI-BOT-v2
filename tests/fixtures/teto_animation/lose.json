@@ -1,0 +1,2438 @@
+{
+  "game": "teto_slots",
+  "bet": 500,
+  "payout": 0,
+  "outcome": {
+    "initial_blocks": [
+      {
+        "block_id": 0,
+        "symbol_id": "teto_0401",
+        "row": 0,
+        "col": 0,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 1,
+        "symbol_id": "skull_cringe",
+        "row": 0,
+        "col": 1,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 2,
+        "symbol_id": "baguette_crumb",
+        "row": 0,
+        "col": 2,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 3,
+        "symbol_id": "utau_note",
+        "row": 0,
+        "col": 3,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 4,
+        "symbol_id": "teto_chimera",
+        "row": 0,
+        "col": 4,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 5,
+        "symbol_id": "skull_cringe",
+        "row": 0,
+        "col": 5,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 6,
+        "symbol_id": "skull_cringe",
+        "row": 1,
+        "col": 0,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 7,
+        "symbol_id": "teto_0401",
+        "row": 1,
+        "col": 1,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 8,
+        "symbol_id": "baguette_cerberus",
+        "row": 1,
+        "col": 2,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 9,
+        "symbol_id": "utau_note",
+        "row": 1,
+        "col": 3,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 10,
+        "symbol_id": "skull_cringe",
+        "row": 1,
+        "col": 4,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 11,
+        "symbol_id": "utau_note",
+        "row": 1,
+        "col": 5,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 12,
+        "symbol_id": "teto_chimera",
+        "row": 2,
+        "col": 0,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 13,
+        "symbol_id": "drill_lollipop",
+        "row": 2,
+        "col": 1,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 14,
+        "symbol_id": "teto_chimera",
+        "row": 2,
+        "col": 2,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 15,
+        "symbol_id": "drill_lollipop",
+        "row": 2,
+        "col": 3,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 16,
+        "symbol_id": "utau_note",
+        "row": 2,
+        "col": 4,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 17,
+        "symbol_id": "drill_lollipop",
+        "row": 2,
+        "col": 5,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 18,
+        "symbol_id": "teto_0401",
+        "row": 3,
+        "col": 0,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 19,
+        "symbol_id": "baguette_crumb",
+        "row": 3,
+        "col": 1,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 20,
+        "symbol_id": "teto_drill_rage",
+        "row": 3,
+        "col": 2,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 21,
+        "symbol_id": "teto_0401",
+        "row": 3,
+        "col": 3,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 22,
+        "symbol_id": "utau_note",
+        "row": 3,
+        "col": 4,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 23,
+        "symbol_id": "teto_chimera",
+        "row": 3,
+        "col": 5,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 24,
+        "symbol_id": "teto_baguette_knight",
+        "row": 4,
+        "col": 0,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 25,
+        "symbol_id": "teto_0401",
+        "row": 4,
+        "col": 1,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 26,
+        "symbol_id": "teto_drill_rage",
+        "row": 4,
+        "col": 2,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 27,
+        "symbol_id": "drill_lollipop",
+        "row": 4,
+        "col": 3,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 28,
+        "symbol_id": "utau_note",
+        "row": 4,
+        "col": 4,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 29,
+        "symbol_id": "baguette_crumb",
+        "row": 4,
+        "col": 5,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 30,
+        "symbol_id": "teto_baguette_knight",
+        "row": 5,
+        "col": 0,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 31,
+        "symbol_id": "baguette_crumb",
+        "row": 5,
+        "col": 1,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 32,
+        "symbol_id": "teto_drill_rage",
+        "row": 5,
+        "col": 2,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 33,
+        "symbol_id": "utau_note",
+        "row": 5,
+        "col": 3,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 34,
+        "symbol_id": "skull_cringe",
+        "row": 5,
+        "col": 4,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 35,
+        "symbol_id": "teto_chimera",
+        "row": 5,
+        "col": 5,
+        "height": 1,
+        "width": 1
+      }
+    ],
+    "base_round": {
+      "blocks": [
+        {
+          "block_id": 0,
+          "symbol_id": "teto_0401",
+          "row": 0,
+          "col": 0,
+          "height": 1,
+          "width": 1
+        },
+        {
+          "block_id": 1,
+          "symbol_id": "skull_cringe",
+          "row": 0,
+          "col": 1,
+          "height": 1,
+          "width": 1
+        },
+        {
+          "block_id": 2,
+          "symbol_id": "baguette_crumb",
+          "row": 0,
+          "col": 2,
+          "height": 1,
+          "width": 1
+        },
+        {
+          "block_id": 3,
+          "symbol_id": "utau_note",
+          "row": 0,
+          "col": 3,
+          "height": 1,
+          "width": 1
+        },
+        {
+          "block_id": 4,
+          "symbol_id": "teto_chimera",
+          "row": 0,
+          "col": 4,
+          "height": 1,
+          "width": 1
+        },
+        {
+          "block_id": 5,
+          "symbol_id": "skull_cringe",
+          "row": 0,
+          "col": 5,
+          "height": 1,
+          "width": 1
+        },
+        {
+          "block_id": 6,
+          "symbol_id": "skull_cringe",
+          "row": 1,
+          "col": 0,
+          "height": 1,
+          "width": 1
+        },
+        {
+          "block_id": 7,
+          "symbol_id": "teto_0401",
+          "row": 1,
+          "col": 1,
+          "height": 1,
+          "width": 1
+        },
+        {
+          "block_id": 8,
+          "symbol_id": "baguette_cerberus",
+          "row": 1,
+          "col": 2,
+          "height": 1,
+          "width": 1
+        },
+        {
+          "block_id": 9,
+          "symbol_id": "utau_note",
+          "row": 1,
+          "col": 3,
+          "height": 1,
+          "width": 1
+        },
+        {
+          "block_id": 10,
+          "symbol_id": "skull_cringe",
+          "row": 1,
+          "col": 4,
+          "height": 1,
+          "width": 1
+        },
+        {
+          "block_id": 11,
+          "symbol_id": "utau_note",
+          "row": 1,
+          "col": 5,
+          "height": 1,
+          "width": 1
+        },
+        {
+          "block_id": 12,
+          "symbol_id": "teto_chimera",
+          "row": 2,
+          "col": 0,
+          "height": 1,
+          "width": 1
+        },
+        {
+          "block_id": 13,
+          "symbol_id": "drill_lollipop",
+          "row": 2,
+          "col": 1,
+          "height": 1,
+          "width": 1
+        },
+        {
+          "block_id": 14,
+          "symbol_id": "teto_chimera",
+          "row": 2,
+          "col": 2,
+          "height": 1,
+          "width": 1
+        },
+        {
+          "block_id": 15,
+          "symbol_id": "drill_lollipop",
+          "row": 2,
+          "col": 3,
+          "height": 1,
+          "width": 1
+        },
+        {
+          "block_id": 16,
+          "symbol_id": "utau_note",
+          "row": 2,
+          "col": 4,
+          "height": 1,
+          "width": 1
+        },
+        {
+          "block_id": 17,
+          "symbol_id": "drill_lollipop",
+          "row": 2,
+          "col": 5,
+          "height": 1,
+          "width": 1
+        },
+        {
+          "block_id": 18,
+          "symbol_id": "teto_0401",
+          "row": 3,
+          "col": 0,
+          "height": 1,
+          "width": 1
+        },
+        {
+          "block_id": 19,
+          "symbol_id": "baguette_crumb",
+          "row": 3,
+          "col": 1,
+          "height": 1,
+          "width": 1
+        },
+        {
+          "block_id": 20,
+          "symbol_id": "teto_drill_rage",
+          "row": 3,
+          "col": 2,
+          "height": 1,
+          "width": 1
+        },
+        {
+          "block_id": 21,
+          "symbol_id": "teto_0401",
+          "row": 3,
+          "col": 3,
+          "height": 1,
+          "width": 1
+        },
+        {
+          "block_id": 22,
+          "symbol_id": "utau_note",
+          "row": 3,
+          "col": 4,
+          "height": 1,
+          "width": 1
+        },
+        {
+          "block_id": 23,
+          "symbol_id": "teto_chimera",
+          "row": 3,
+          "col": 5,
+          "height": 1,
+          "width": 1
+        },
+        {
+          "block_id": 24,
+          "symbol_id": "teto_baguette_knight",
+          "row": 4,
+          "col": 0,
+          "height": 1,
+          "width": 1
+        },
+        {
+          "block_id": 25,
+          "symbol_id": "teto_0401",
+          "row": 4,
+          "col": 1,
+          "height": 1,
+          "width": 1
+        },
+        {
+          "block_id": 26,
+          "symbol_id": "teto_drill_rage",
+          "row": 4,
+          "col": 2,
+          "height": 1,
+          "width": 1
+        },
+        {
+          "block_id": 27,
+          "symbol_id": "drill_lollipop",
+          "row": 4,
+          "col": 3,
+          "height": 1,
+          "width": 1
+        },
+        {
+          "block_id": 28,
+          "symbol_id": "utau_note",
+          "row": 4,
+          "col": 4,
+          "height": 1,
+          "width": 1
+        },
+        {
+          "block_id": 29,
+          "symbol_id": "baguette_crumb",
+          "row": 4,
+          "col": 5,
+          "height": 1,
+          "width": 1
+        },
+        {
+          "block_id": 30,
+          "symbol_id": "teto_baguette_knight",
+          "row": 5,
+          "col": 0,
+          "height": 1,
+          "width": 1
+        },
+        {
+          "block_id": 31,
+          "symbol_id": "baguette_crumb",
+          "row": 5,
+          "col": 1,
+          "height": 1,
+          "width": 1
+        },
+        {
+          "block_id": 32,
+          "symbol_id": "teto_drill_rage",
+          "row": 5,
+          "col": 2,
+          "height": 1,
+          "width": 1
+        },
+        {
+          "block_id": 33,
+          "symbol_id": "utau_note",
+          "row": 5,
+          "col": 3,
+          "height": 1,
+          "width": 1
+        },
+        {
+          "block_id": 34,
+          "symbol_id": "skull_cringe",
+          "row": 5,
+          "col": 4,
+          "height": 1,
+          "width": 1
+        },
+        {
+          "block_id": 35,
+          "symbol_id": "teto_chimera",
+          "row": 5,
+          "col": 5,
+          "height": 1,
+          "width": 1
+        }
+      ],
+      "raw_round_payout": 0,
+      "total_cells_won": 0,
+      "cells_converted_by_drill_hunt": 0,
+      "drill_hunt_fired": false,
+      "drill_hunt_wave_fired": false,
+      "tumble_steps_used": 0,
+      "tumble_hard_cap_hit": false
+    },
+    "scatter_count": 1,
+    "freespins_awarded": 0,
+    "freespins_played": 0,
+    "freespins_hard_cap_hit": false,
+    "fs_round_records": [],
+    "ladder_final_state": {
+      "score": 0,
+      "multiplier": 1,
+      "crossed_thresholds": []
+    },
+    "total_payout": 0,
+    "final_blocks": [
+      {
+        "block_id": 0,
+        "symbol_id": "teto_0401",
+        "row": 0,
+        "col": 0,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 1,
+        "symbol_id": "skull_cringe",
+        "row": 0,
+        "col": 1,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 2,
+        "symbol_id": "baguette_crumb",
+        "row": 0,
+        "col": 2,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 3,
+        "symbol_id": "utau_note",
+        "row": 0,
+        "col": 3,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 4,
+        "symbol_id": "teto_chimera",
+        "row": 0,
+        "col": 4,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 5,
+        "symbol_id": "skull_cringe",
+        "row": 0,
+        "col": 5,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 6,
+        "symbol_id": "skull_cringe",
+        "row": 1,
+        "col": 0,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 7,
+        "symbol_id": "teto_0401",
+        "row": 1,
+        "col": 1,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 8,
+        "symbol_id": "baguette_cerberus",
+        "row": 1,
+        "col": 2,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 9,
+        "symbol_id": "utau_note",
+        "row": 1,
+        "col": 3,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 10,
+        "symbol_id": "skull_cringe",
+        "row": 1,
+        "col": 4,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 11,
+        "symbol_id": "utau_note",
+        "row": 1,
+        "col": 5,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 12,
+        "symbol_id": "teto_chimera",
+        "row": 2,
+        "col": 0,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 13,
+        "symbol_id": "drill_lollipop",
+        "row": 2,
+        "col": 1,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 14,
+        "symbol_id": "teto_chimera",
+        "row": 2,
+        "col": 2,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 15,
+        "symbol_id": "drill_lollipop",
+        "row": 2,
+        "col": 3,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 16,
+        "symbol_id": "utau_note",
+        "row": 2,
+        "col": 4,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 17,
+        "symbol_id": "drill_lollipop",
+        "row": 2,
+        "col": 5,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 18,
+        "symbol_id": "teto_0401",
+        "row": 3,
+        "col": 0,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 19,
+        "symbol_id": "baguette_crumb",
+        "row": 3,
+        "col": 1,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 20,
+        "symbol_id": "teto_drill_rage",
+        "row": 3,
+        "col": 2,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 21,
+        "symbol_id": "teto_0401",
+        "row": 3,
+        "col": 3,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 22,
+        "symbol_id": "utau_note",
+        "row": 3,
+        "col": 4,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 23,
+        "symbol_id": "teto_chimera",
+        "row": 3,
+        "col": 5,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 24,
+        "symbol_id": "teto_baguette_knight",
+        "row": 4,
+        "col": 0,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 25,
+        "symbol_id": "teto_0401",
+        "row": 4,
+        "col": 1,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 26,
+        "symbol_id": "teto_drill_rage",
+        "row": 4,
+        "col": 2,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 27,
+        "symbol_id": "drill_lollipop",
+        "row": 4,
+        "col": 3,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 28,
+        "symbol_id": "utau_note",
+        "row": 4,
+        "col": 4,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 29,
+        "symbol_id": "baguette_crumb",
+        "row": 4,
+        "col": 5,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 30,
+        "symbol_id": "teto_baguette_knight",
+        "row": 5,
+        "col": 0,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 31,
+        "symbol_id": "baguette_crumb",
+        "row": 5,
+        "col": 1,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 32,
+        "symbol_id": "teto_drill_rage",
+        "row": 5,
+        "col": 2,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 33,
+        "symbol_id": "utau_note",
+        "row": 5,
+        "col": 3,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 34,
+        "symbol_id": "skull_cringe",
+        "row": 5,
+        "col": 4,
+        "height": 1,
+        "width": 1
+      },
+      {
+        "block_id": 35,
+        "symbol_id": "teto_chimera",
+        "row": 5,
+        "col": 5,
+        "height": 1,
+        "width": 1
+      }
+    ]
+  },
+  "user_balance_after": 9500,
+  "bank_capped": false,
+  "animation": {
+    "version": 1,
+    "payout_paid": 0,
+    "payout_engine_total": 0,
+    "bank_capped": false,
+    "ladder_thresholds": [
+      {
+        "score": 10,
+        "multiplier": 2
+      },
+      {
+        "score": 15,
+        "multiplier": 3
+      },
+      {
+        "score": 20,
+        "multiplier": 5
+      },
+      {
+        "score": 25,
+        "multiplier": 10
+      }
+    ],
+    "ladder_max_score": 36,
+    "ops": [
+      {
+        "op": "fill",
+        "seq": 0,
+        "phase": "base",
+        "round": 0,
+        "blocks": [
+          {
+            "block_id": 0,
+            "symbol_id": "teto_0401",
+            "row": 0,
+            "col": 0,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 1,
+            "symbol_id": "skull_cringe",
+            "row": 0,
+            "col": 1,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 2,
+            "symbol_id": "baguette_crumb",
+            "row": 0,
+            "col": 2,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 3,
+            "symbol_id": "utau_note",
+            "row": 0,
+            "col": 3,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 4,
+            "symbol_id": "teto_chimera",
+            "row": 0,
+            "col": 4,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 5,
+            "symbol_id": "skull_cringe",
+            "row": 0,
+            "col": 5,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 6,
+            "symbol_id": "skull_cringe",
+            "row": 1,
+            "col": 0,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 7,
+            "symbol_id": "teto_0401",
+            "row": 1,
+            "col": 1,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 8,
+            "symbol_id": "baguette_cerberus",
+            "row": 1,
+            "col": 2,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 9,
+            "symbol_id": "utau_note",
+            "row": 1,
+            "col": 3,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 10,
+            "symbol_id": "skull_cringe",
+            "row": 1,
+            "col": 4,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 11,
+            "symbol_id": "utau_note",
+            "row": 1,
+            "col": 5,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 12,
+            "symbol_id": "teto_chimera",
+            "row": 2,
+            "col": 0,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 13,
+            "symbol_id": "drill_lollipop",
+            "row": 2,
+            "col": 1,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 14,
+            "symbol_id": "teto_chimera",
+            "row": 2,
+            "col": 2,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 15,
+            "symbol_id": "drill_lollipop",
+            "row": 2,
+            "col": 3,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 16,
+            "symbol_id": "utau_note",
+            "row": 2,
+            "col": 4,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 17,
+            "symbol_id": "drill_lollipop",
+            "row": 2,
+            "col": 5,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 18,
+            "symbol_id": "teto_0401",
+            "row": 3,
+            "col": 0,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 19,
+            "symbol_id": "baguette_crumb",
+            "row": 3,
+            "col": 1,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 20,
+            "symbol_id": "teto_drill_rage",
+            "row": 3,
+            "col": 2,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 21,
+            "symbol_id": "teto_0401",
+            "row": 3,
+            "col": 3,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 22,
+            "symbol_id": "utau_note",
+            "row": 3,
+            "col": 4,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 23,
+            "symbol_id": "teto_chimera",
+            "row": 3,
+            "col": 5,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 24,
+            "symbol_id": "teto_baguette_knight",
+            "row": 4,
+            "col": 0,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 25,
+            "symbol_id": "teto_0401",
+            "row": 4,
+            "col": 1,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 26,
+            "symbol_id": "teto_drill_rage",
+            "row": 4,
+            "col": 2,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 27,
+            "symbol_id": "drill_lollipop",
+            "row": 4,
+            "col": 3,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 28,
+            "symbol_id": "utau_note",
+            "row": 4,
+            "col": 4,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 29,
+            "symbol_id": "baguette_crumb",
+            "row": 4,
+            "col": 5,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 30,
+            "symbol_id": "teto_baguette_knight",
+            "row": 5,
+            "col": 0,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 31,
+            "symbol_id": "baguette_crumb",
+            "row": 5,
+            "col": 1,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 32,
+            "symbol_id": "teto_drill_rage",
+            "row": 5,
+            "col": 2,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 33,
+            "symbol_id": "utau_note",
+            "row": 5,
+            "col": 3,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 34,
+            "symbol_id": "skull_cringe",
+            "row": 5,
+            "col": 4,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 35,
+            "symbol_id": "teto_chimera",
+            "row": 5,
+            "col": 5,
+            "height": 1,
+            "width": 1
+          }
+        ]
+      },
+      {
+        "op": "evaluate",
+        "seq": 1,
+        "phase": "base",
+        "round": 0,
+        "source": "cascade",
+        "has_win": false,
+        "winning_block_ids": [],
+        "winning_lines": [],
+        "cells_won": 0,
+        "payout": 0,
+        "blocks": [
+          {
+            "block_id": 0,
+            "symbol_id": "teto_0401",
+            "row": 0,
+            "col": 0,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 1,
+            "symbol_id": "skull_cringe",
+            "row": 0,
+            "col": 1,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 2,
+            "symbol_id": "baguette_crumb",
+            "row": 0,
+            "col": 2,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 3,
+            "symbol_id": "utau_note",
+            "row": 0,
+            "col": 3,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 4,
+            "symbol_id": "teto_chimera",
+            "row": 0,
+            "col": 4,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 5,
+            "symbol_id": "skull_cringe",
+            "row": 0,
+            "col": 5,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 6,
+            "symbol_id": "skull_cringe",
+            "row": 1,
+            "col": 0,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 7,
+            "symbol_id": "teto_0401",
+            "row": 1,
+            "col": 1,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 8,
+            "symbol_id": "baguette_cerberus",
+            "row": 1,
+            "col": 2,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 9,
+            "symbol_id": "utau_note",
+            "row": 1,
+            "col": 3,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 10,
+            "symbol_id": "skull_cringe",
+            "row": 1,
+            "col": 4,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 11,
+            "symbol_id": "utau_note",
+            "row": 1,
+            "col": 5,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 12,
+            "symbol_id": "teto_chimera",
+            "row": 2,
+            "col": 0,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 13,
+            "symbol_id": "drill_lollipop",
+            "row": 2,
+            "col": 1,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 14,
+            "symbol_id": "teto_chimera",
+            "row": 2,
+            "col": 2,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 15,
+            "symbol_id": "drill_lollipop",
+            "row": 2,
+            "col": 3,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 16,
+            "symbol_id": "utau_note",
+            "row": 2,
+            "col": 4,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 17,
+            "symbol_id": "drill_lollipop",
+            "row": 2,
+            "col": 5,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 18,
+            "symbol_id": "teto_0401",
+            "row": 3,
+            "col": 0,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 19,
+            "symbol_id": "baguette_crumb",
+            "row": 3,
+            "col": 1,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 20,
+            "symbol_id": "teto_drill_rage",
+            "row": 3,
+            "col": 2,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 21,
+            "symbol_id": "teto_0401",
+            "row": 3,
+            "col": 3,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 22,
+            "symbol_id": "utau_note",
+            "row": 3,
+            "col": 4,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 23,
+            "symbol_id": "teto_chimera",
+            "row": 3,
+            "col": 5,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 24,
+            "symbol_id": "teto_baguette_knight",
+            "row": 4,
+            "col": 0,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 25,
+            "symbol_id": "teto_0401",
+            "row": 4,
+            "col": 1,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 26,
+            "symbol_id": "teto_drill_rage",
+            "row": 4,
+            "col": 2,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 27,
+            "symbol_id": "drill_lollipop",
+            "row": 4,
+            "col": 3,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 28,
+            "symbol_id": "utau_note",
+            "row": 4,
+            "col": 4,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 29,
+            "symbol_id": "baguette_crumb",
+            "row": 4,
+            "col": 5,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 30,
+            "symbol_id": "teto_baguette_knight",
+            "row": 5,
+            "col": 0,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 31,
+            "symbol_id": "baguette_crumb",
+            "row": 5,
+            "col": 1,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 32,
+            "symbol_id": "teto_drill_rage",
+            "row": 5,
+            "col": 2,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 33,
+            "symbol_id": "utau_note",
+            "row": 5,
+            "col": 3,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 34,
+            "symbol_id": "skull_cringe",
+            "row": 5,
+            "col": 4,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 35,
+            "symbol_id": "teto_chimera",
+            "row": 5,
+            "col": 5,
+            "height": 1,
+            "width": 1
+          }
+        ]
+      },
+      {
+        "op": "drill_hunt",
+        "seq": 2,
+        "phase": "base",
+        "round": 0,
+        "fired": false,
+        "wild_block_id": null,
+        "cells_converted": 0,
+        "wave_fired": false,
+        "blocks": [
+          {
+            "block_id": 0,
+            "symbol_id": "teto_0401",
+            "row": 0,
+            "col": 0,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 1,
+            "symbol_id": "skull_cringe",
+            "row": 0,
+            "col": 1,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 2,
+            "symbol_id": "baguette_crumb",
+            "row": 0,
+            "col": 2,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 3,
+            "symbol_id": "utau_note",
+            "row": 0,
+            "col": 3,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 4,
+            "symbol_id": "teto_chimera",
+            "row": 0,
+            "col": 4,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 5,
+            "symbol_id": "skull_cringe",
+            "row": 0,
+            "col": 5,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 6,
+            "symbol_id": "skull_cringe",
+            "row": 1,
+            "col": 0,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 7,
+            "symbol_id": "teto_0401",
+            "row": 1,
+            "col": 1,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 8,
+            "symbol_id": "baguette_cerberus",
+            "row": 1,
+            "col": 2,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 9,
+            "symbol_id": "utau_note",
+            "row": 1,
+            "col": 3,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 10,
+            "symbol_id": "skull_cringe",
+            "row": 1,
+            "col": 4,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 11,
+            "symbol_id": "utau_note",
+            "row": 1,
+            "col": 5,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 12,
+            "symbol_id": "teto_chimera",
+            "row": 2,
+            "col": 0,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 13,
+            "symbol_id": "drill_lollipop",
+            "row": 2,
+            "col": 1,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 14,
+            "symbol_id": "teto_chimera",
+            "row": 2,
+            "col": 2,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 15,
+            "symbol_id": "drill_lollipop",
+            "row": 2,
+            "col": 3,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 16,
+            "symbol_id": "utau_note",
+            "row": 2,
+            "col": 4,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 17,
+            "symbol_id": "drill_lollipop",
+            "row": 2,
+            "col": 5,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 18,
+            "symbol_id": "teto_0401",
+            "row": 3,
+            "col": 0,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 19,
+            "symbol_id": "baguette_crumb",
+            "row": 3,
+            "col": 1,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 20,
+            "symbol_id": "teto_drill_rage",
+            "row": 3,
+            "col": 2,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 21,
+            "symbol_id": "teto_0401",
+            "row": 3,
+            "col": 3,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 22,
+            "symbol_id": "utau_note",
+            "row": 3,
+            "col": 4,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 23,
+            "symbol_id": "teto_chimera",
+            "row": 3,
+            "col": 5,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 24,
+            "symbol_id": "teto_baguette_knight",
+            "row": 4,
+            "col": 0,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 25,
+            "symbol_id": "teto_0401",
+            "row": 4,
+            "col": 1,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 26,
+            "symbol_id": "teto_drill_rage",
+            "row": 4,
+            "col": 2,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 27,
+            "symbol_id": "drill_lollipop",
+            "row": 4,
+            "col": 3,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 28,
+            "symbol_id": "utau_note",
+            "row": 4,
+            "col": 4,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 29,
+            "symbol_id": "baguette_crumb",
+            "row": 4,
+            "col": 5,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 30,
+            "symbol_id": "teto_baguette_knight",
+            "row": 5,
+            "col": 0,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 31,
+            "symbol_id": "baguette_crumb",
+            "row": 5,
+            "col": 1,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 32,
+            "symbol_id": "teto_drill_rage",
+            "row": 5,
+            "col": 2,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 33,
+            "symbol_id": "utau_note",
+            "row": 5,
+            "col": 3,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 34,
+            "symbol_id": "skull_cringe",
+            "row": 5,
+            "col": 4,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 35,
+            "symbol_id": "teto_chimera",
+            "row": 5,
+            "col": 5,
+            "height": 1,
+            "width": 1
+          }
+        ]
+      },
+      {
+        "op": "evaluate",
+        "seq": 3,
+        "phase": "base",
+        "round": 0,
+        "source": "cascade",
+        "has_win": false,
+        "winning_block_ids": [],
+        "winning_lines": [],
+        "cells_won": 0,
+        "payout": 0,
+        "blocks": [
+          {
+            "block_id": 0,
+            "symbol_id": "teto_0401",
+            "row": 0,
+            "col": 0,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 1,
+            "symbol_id": "skull_cringe",
+            "row": 0,
+            "col": 1,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 2,
+            "symbol_id": "baguette_crumb",
+            "row": 0,
+            "col": 2,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 3,
+            "symbol_id": "utau_note",
+            "row": 0,
+            "col": 3,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 4,
+            "symbol_id": "teto_chimera",
+            "row": 0,
+            "col": 4,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 5,
+            "symbol_id": "skull_cringe",
+            "row": 0,
+            "col": 5,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 6,
+            "symbol_id": "skull_cringe",
+            "row": 1,
+            "col": 0,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 7,
+            "symbol_id": "teto_0401",
+            "row": 1,
+            "col": 1,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 8,
+            "symbol_id": "baguette_cerberus",
+            "row": 1,
+            "col": 2,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 9,
+            "symbol_id": "utau_note",
+            "row": 1,
+            "col": 3,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 10,
+            "symbol_id": "skull_cringe",
+            "row": 1,
+            "col": 4,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 11,
+            "symbol_id": "utau_note",
+            "row": 1,
+            "col": 5,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 12,
+            "symbol_id": "teto_chimera",
+            "row": 2,
+            "col": 0,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 13,
+            "symbol_id": "drill_lollipop",
+            "row": 2,
+            "col": 1,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 14,
+            "symbol_id": "teto_chimera",
+            "row": 2,
+            "col": 2,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 15,
+            "symbol_id": "drill_lollipop",
+            "row": 2,
+            "col": 3,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 16,
+            "symbol_id": "utau_note",
+            "row": 2,
+            "col": 4,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 17,
+            "symbol_id": "drill_lollipop",
+            "row": 2,
+            "col": 5,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 18,
+            "symbol_id": "teto_0401",
+            "row": 3,
+            "col": 0,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 19,
+            "symbol_id": "baguette_crumb",
+            "row": 3,
+            "col": 1,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 20,
+            "symbol_id": "teto_drill_rage",
+            "row": 3,
+            "col": 2,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 21,
+            "symbol_id": "teto_0401",
+            "row": 3,
+            "col": 3,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 22,
+            "symbol_id": "utau_note",
+            "row": 3,
+            "col": 4,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 23,
+            "symbol_id": "teto_chimera",
+            "row": 3,
+            "col": 5,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 24,
+            "symbol_id": "teto_baguette_knight",
+            "row": 4,
+            "col": 0,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 25,
+            "symbol_id": "teto_0401",
+            "row": 4,
+            "col": 1,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 26,
+            "symbol_id": "teto_drill_rage",
+            "row": 4,
+            "col": 2,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 27,
+            "symbol_id": "drill_lollipop",
+            "row": 4,
+            "col": 3,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 28,
+            "symbol_id": "utau_note",
+            "row": 4,
+            "col": 4,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 29,
+            "symbol_id": "baguette_crumb",
+            "row": 4,
+            "col": 5,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 30,
+            "symbol_id": "teto_baguette_knight",
+            "row": 5,
+            "col": 0,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 31,
+            "symbol_id": "baguette_crumb",
+            "row": 5,
+            "col": 1,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 32,
+            "symbol_id": "teto_drill_rage",
+            "row": 5,
+            "col": 2,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 33,
+            "symbol_id": "utau_note",
+            "row": 5,
+            "col": 3,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 34,
+            "symbol_id": "skull_cringe",
+            "row": 5,
+            "col": 4,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 35,
+            "symbol_id": "teto_chimera",
+            "row": 5,
+            "col": 5,
+            "height": 1,
+            "width": 1
+          }
+        ]
+      },
+      {
+        "op": "round_end",
+        "seq": 4,
+        "phase": "base",
+        "round": 0,
+        "raw_round_payout": 0,
+        "multiplier_applied": 1,
+        "final_round_payout": 0,
+        "cells_converted_by_drill_hunt": 0,
+        "tumble_steps_used": 0,
+        "tumble_hard_cap_hit": false,
+        "scatter_count": 1,
+        "freespins_awarded": 0,
+        "ladder": null,
+        "blocks": [
+          {
+            "block_id": 0,
+            "symbol_id": "teto_0401",
+            "row": 0,
+            "col": 0,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 1,
+            "symbol_id": "skull_cringe",
+            "row": 0,
+            "col": 1,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 2,
+            "symbol_id": "baguette_crumb",
+            "row": 0,
+            "col": 2,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 3,
+            "symbol_id": "utau_note",
+            "row": 0,
+            "col": 3,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 4,
+            "symbol_id": "teto_chimera",
+            "row": 0,
+            "col": 4,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 5,
+            "symbol_id": "skull_cringe",
+            "row": 0,
+            "col": 5,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 6,
+            "symbol_id": "skull_cringe",
+            "row": 1,
+            "col": 0,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 7,
+            "symbol_id": "teto_0401",
+            "row": 1,
+            "col": 1,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 8,
+            "symbol_id": "baguette_cerberus",
+            "row": 1,
+            "col": 2,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 9,
+            "symbol_id": "utau_note",
+            "row": 1,
+            "col": 3,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 10,
+            "symbol_id": "skull_cringe",
+            "row": 1,
+            "col": 4,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 11,
+            "symbol_id": "utau_note",
+            "row": 1,
+            "col": 5,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 12,
+            "symbol_id": "teto_chimera",
+            "row": 2,
+            "col": 0,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 13,
+            "symbol_id": "drill_lollipop",
+            "row": 2,
+            "col": 1,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 14,
+            "symbol_id": "teto_chimera",
+            "row": 2,
+            "col": 2,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 15,
+            "symbol_id": "drill_lollipop",
+            "row": 2,
+            "col": 3,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 16,
+            "symbol_id": "utau_note",
+            "row": 2,
+            "col": 4,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 17,
+            "symbol_id": "drill_lollipop",
+            "row": 2,
+            "col": 5,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 18,
+            "symbol_id": "teto_0401",
+            "row": 3,
+            "col": 0,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 19,
+            "symbol_id": "baguette_crumb",
+            "row": 3,
+            "col": 1,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 20,
+            "symbol_id": "teto_drill_rage",
+            "row": 3,
+            "col": 2,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 21,
+            "symbol_id": "teto_0401",
+            "row": 3,
+            "col": 3,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 22,
+            "symbol_id": "utau_note",
+            "row": 3,
+            "col": 4,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 23,
+            "symbol_id": "teto_chimera",
+            "row": 3,
+            "col": 5,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 24,
+            "symbol_id": "teto_baguette_knight",
+            "row": 4,
+            "col": 0,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 25,
+            "symbol_id": "teto_0401",
+            "row": 4,
+            "col": 1,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 26,
+            "symbol_id": "teto_drill_rage",
+            "row": 4,
+            "col": 2,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 27,
+            "symbol_id": "drill_lollipop",
+            "row": 4,
+            "col": 3,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 28,
+            "symbol_id": "utau_note",
+            "row": 4,
+            "col": 4,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 29,
+            "symbol_id": "baguette_crumb",
+            "row": 4,
+            "col": 5,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 30,
+            "symbol_id": "teto_baguette_knight",
+            "row": 5,
+            "col": 0,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 31,
+            "symbol_id": "baguette_crumb",
+            "row": 5,
+            "col": 1,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 32,
+            "symbol_id": "teto_drill_rage",
+            "row": 5,
+            "col": 2,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 33,
+            "symbol_id": "utau_note",
+            "row": 5,
+            "col": 3,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 34,
+            "symbol_id": "skull_cringe",
+            "row": 5,
+            "col": 4,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 35,
+            "symbol_id": "teto_chimera",
+            "row": 5,
+            "col": 5,
+            "height": 1,
+            "width": 1
+          }
+        ]
+      }
+    ],
+    "ops_recorded": 5,
+    "ops_total": 5,
+    "rounds_recorded": 1,
+    "rounds_total": 1,
+    "complete_through_round": 0,
+    "truncated": false,
+    "truncated_reason": null
+  }
+}

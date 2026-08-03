@@ -17,6 +17,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from bot.services.teto_drillhunt import LADDER
 from bot.services.teto_drillhunt import LadderState
 from bot.services.teto_drillhunt import apply_drill_hunt
@@ -25,7 +27,9 @@ from bot.services.teto_megablock import GRID_SIZE
 from bot.services.teto_megablock import WILD_ID
 from bot.services.teto_megablock import MegaBlock
 from bot.services.teto_megablock import assert_valid_partition
+from bot.services.teto_tumble import TETO_PAYTABLE
 from bot.services.teto_tumble import evaluate_paylines
+from bot.services.teto_tumble import win_units
 
 
 class _ForcedRng:
@@ -52,18 +56,24 @@ class _ForcedRng:
         return v
 
 
-DEFAULT_FILLER = "utau_note"
+# Три РАЗНЫХ не-wild/не-scatter символа «тихой» полосной базы — см. _make_grid.
+_STRIPE_SYMBOLS = ("baguette_crumb", "drill_lollipop", "utau_note")
 
 
 def _make_grid(overrides: dict) -> list[MegaBlock]:
     """Доска 6x6 из одиночных 1x1 блоков, `block_id = row*6 + col`.
     `overrides`: `{(row, col): symbol_id}` для конкретных клеток; остальное —
-    `DEFAULT_FILLER` (эти клетки никогда не читаются `evaluate_paylines`,
-    т.к. не лежат ни на одной из 3 `TETO_PAYLINES`)."""
+    столбцовые полосы `_STRIPE_SYMBOLS[col % 3]`. На полных 50 линиях
+    (`TETO_PAYLINES`) КАЖДАЯ клетка лежит хотя бы на горизонтали своей строки,
+    поэтому однородный филлер (прежний `DEFAULT_FILLER`) выигрывал бы сам по
+    себе; полосы же читаются любой линией как S0,S1,S2,S0,S1,S2 — три подряд
+    равных не собираются ни на одной линии никакой формы (подробный разбор —
+    в докстринге `tests/test_teto_tumble.py::_build_board`). Символ врезки
+    обязан отличаться от всех трёх полосных."""
     blocks = []
     for r in range(GRID_SIZE):
         for c in range(GRID_SIZE):
-            symbol = overrides.get((r, c), DEFAULT_FILLER)
+            symbol = overrides.get((r, c), _STRIPE_SYMBOLS[c % 3])
             blocks.append(MegaBlock(block_id=r * 6 + c, symbol_id=symbol, row=r, col=c, height=1, width=1))
     return blocks
 
@@ -73,37 +83,53 @@ def _cell_symbol_map(blocks: list[MegaBlock]) -> dict:
 
 
 def _make_win_after_injection_grid() -> list[MegaBlock]:
-    """target = блок (row=2, col=0), block_id=12. До инъекции ни одна из 3
-    линий не выигрывает. После инъекции ((2,0) -> WILD) line1 выигрывает
-    длиной 4 (ids 12,13,14,15)."""
+    """target = блок (row=2, col=0), block_id=12 (skull_cringe — вне полосных
+    символов, поэтому до инъекции ни одна из 50 линий не выигрывает: прогон
+    средней горизонтали обрывается на нём же). После инъекции ((2,0) -> WILD)
+    средняя горизонталь `TETO_PAYLINES[2]` выигрывает длиной 4 (ids
+    12,13,14,15: WILD + три teto_chimera; (2,4) — полосный drill_lollipop —
+    обрывает прогон). Что выигрыш РОВНО этот и никакой другой, пинует
+    `test_fixture_grids_have_no_pre_existing_win_sanity_check`."""
     return _make_grid({
-        (2, 0): "skull_cringe", (2, 1): "drill_lollipop", (2, 2): "drill_lollipop",
-        (2, 3): "drill_lollipop", (2, 4): "baguette_crumb", (2, 5): "teto_chimera",
-        (0, 0): "utau_note", (1, 1): "baguette_crumb", (3, 3): "skull_cringe",
-        (4, 4): "utau_note", (5, 5): "teto_0401",
-        (5, 0): "teto_chimera", (4, 1): "teto_drill_rage", (3, 2): "teto_baguette_knight",
-        (1, 4): "teto_0401", (0, 5): "skull_cringe",
+        (2, 0): "skull_cringe", (2, 1): "teto_chimera",
+        (2, 2): "teto_chimera", (2, 3): "teto_chimera",
     })
 
 
 def _make_no_new_win_grid() -> list[MegaBlock]:
-    """target = блок (row=0, col=0), block_id=0. Ни до, ни после инъекции
-    ((0,0) -> WILD) ни одна линия не выигрывает."""
-    return _make_grid({
-        (2, 0): "skull_cringe", (2, 1): "drill_lollipop", (2, 2): "drill_lollipop",
-        (2, 3): "baguette_crumb", (2, 4): "teto_chimera", (2, 5): "teto_drill_rage",
-        (0, 0): "utau_note", (1, 1): "baguette_crumb", (3, 3): "skull_cringe",
-        (4, 4): "utau_note", (5, 5): "teto_0401",
-        (5, 0): "teto_chimera", (4, 1): "teto_drill_rage", (3, 2): "teto_baguette_knight",
-        (1, 4): "teto_0401", (0, 5): "skull_cringe",
-    })
+    """target = блок (row=0, col=0), block_id=0. Чистая полосная база: ни до,
+    ни после инъекции ((0,0) -> WILD) ни одна линия не выигрывает — wild в
+    столбце 0 даёт линиям, начинающимся с него, target = полосный S1
+    (drill_lollipop), но третья позиция любой такой линии — уже S2, прогон
+    обрывается на длине 2."""
+    return _make_grid({})
 
 
 def test_fixture_grids_have_no_pre_existing_win_sanity_check():
-    has_win, _ = evaluate_paylines(_make_win_after_injection_grid())
+    """Санити обеих фикстур — на 50 линиях это ЕДИНСТВЕННЫЙ заслон от
+    «фикстура выигрывает не там, где задумано» (класс бага, вернувшийся при
+    расширении 3 -> 50: старые доски, собранные под 3 MVP-линии, начали
+    выигрывать на зигзагах/лесенках). Проверяется не только тишина ДО
+    инъекции, но и что ПОСЛЕ ручной инъекции Wild выигрыш — в точности тот
+    набор блоков, который тесты ниже считают волной (или его нет — для
+    no-new-win фикстуры): иначе врезка могла бы молча зацепить вторую линию,
+    и `wave_cells_won`/юниты волны проверялись бы против неверной базы."""
+    win_grid = _make_win_after_injection_grid()
+    has_win, ids = evaluate_paylines(win_grid)
     assert has_win is False
-    has_win2, _ = evaluate_paylines(_make_no_new_win_grid())
+    assert ids == set()
+
+    injected = [replace(b, symbol_id=WILD_ID) if b.block_id == 12 else b for b in win_grid]
+    has_win_after, ids_after = evaluate_paylines(injected)
+    assert has_win_after is True
+    assert ids_after == {12, 13, 14, 15}, "инъекция обязана дать РОВНО прогон средней горизонтали"
+
+    no_win_grid = _make_no_new_win_grid()
+    has_win2, _ = evaluate_paylines(no_win_grid)
     assert has_win2 is False
+    injected2 = [replace(b, symbol_id=WILD_ID) if b.block_id == 0 else b for b in no_win_grid]
+    has_win2_after, _ = evaluate_paylines(injected2)
+    assert has_win2_after is False, "wild на (0,0) не должен порождать выигрыш на этой фикстуре"
 
 
 # ---------------------------------------------------------------------------
@@ -174,7 +200,14 @@ def test_apply_drill_hunt_respects_tumble_hard_cap_remaining_zero(monkeypatch):
 
 def test_apply_drill_hunt_wave_payout_is_separately_attributable():
     """Выигрыш от доп. волны Дрель-Ханта можно отличить от обычных
-    тумбл-выигрышей через `wave_winning_block_ids`/`wave_cells_won`."""
+    тумбл-выигрышей через `wave_winning_block_ids`/`wave_cells_won`, а его
+    ДЕНЬГИ — посчитать по пост-инъекционной доске: `wave_cells_won` — площадь
+    (анимация/статистика), деньги же взвешены паутейблом (`win_units`, ровно
+    так волну оплачивает `teto_slot_engine._play_one_round`), и внедрённый
+    Wild платит как топ-символ (`TETO_PAYTABLE[WILD_ID]`) — денежная
+    кульминация Дрель-Ханта. Ожидание собирается ИЗ `TETO_PAYTABLE`
+    (Wild-клетка + три teto_chimera, все 1x1), а не магическим числом:
+    перекалибровка тарифов не должна ронять тест про атрибуцию."""
     blocks = _make_win_after_injection_grid()
     rng = _ForcedRng(choices=[12] + ["baguette_crumb"] * 10, randints=[7])
 
@@ -184,6 +217,10 @@ def test_apply_drill_hunt_wave_payout_is_separately_attributable():
     assert outcome.cells_converted == 1
     assert outcome.wave_winning_block_ids == frozenset({12, 13, 14, 15})
     assert outcome.wave_cells_won == 4
+    expected_wave_units = TETO_PAYTABLE[WILD_ID] * 1 + 3 * TETO_PAYTABLE["teto_chimera"] * 1
+    assert win_units(outcome.blocks_after_injection, outcome.wave_winning_block_ids) == (
+        expected_wave_units
+    ), "юниты волны обязаны считаться по паутейблу с Wild как топ-символом"
     assert_valid_partition(outcome.blocks)
 
 

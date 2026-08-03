@@ -20,7 +20,10 @@ import random
 
 from bot.services.teto_megablock import ALL_CELLS
 from bot.services.teto_megablock import ALL_SYMBOLS
+from bot.services.teto_megablock import FILL_POOL
+from bot.services.teto_megablock import LOW_SYMBOLS
 from bot.services.teto_megablock import SCATTER_ID
+from bot.services.teto_megablock import WEIGHTS
 from bot.services.teto_megablock import WILD_ID
 from bot.services.teto_megablock import MegaBlock
 from bot.services.teto_megablock import assert_valid_partition
@@ -158,3 +161,35 @@ def test_wild_symbol_never_appears_in_form_blocks_output():
         blocks = form_blocks(rng, set(ALL_CELLS))
         for b in blocks:
             assert b.symbol_id != WILD_ID, f"seed={seed}: WILD_ID найден в обычном заполнении"
+
+
+def test_fill_weights_cover_all_symbols_and_scatter_is_rarest():
+    """Структурный пин взвешенного заполнения (Monte-Carlo калибровка, см.
+    комментарий к `WEIGHTS` в `teto_megablock.py`), три инварианта:
+
+    1. `WEIGHTS` покрывает РОВНО `ALL_SYMBOLS` (без WILD — тот приходит
+       только через Дрель-Хант и имеет вес 0 по построению: его просто нет
+       в пуле). Пропущенный символ выпал бы из заполнения молча, лишний —
+       раздул бы пул мёртвой строкой.
+    2. Скаттер — СТРОГО самый редкий. Это не вкусовщина, а калибровочный
+       инвариант: формула фриспинов зафиксирована владельцем бота и не
+       трогается, единственная разрешённая ручка частоты бонуса — редкость
+       скаттера на барабанах; равновероятное заполнение уже дало триггер
+       каждым ~2.5-м спином (замерено, см. комментарий к WEIGHTS).
+    3. `FILL_POOL` — пул с повторами ровно по весам (длина == сумме весов;
+       выражен списком, а не rng.choices(weights=...), потому что
+       единственный RNG-контракт движка — .choice(seq)/.randint(a,b)), и его
+       ПЕРВЫЙ элемент — `LOW_SYMBOLS[0]`: детерминированные стабы
+       (`.choice(seq) -> seq[0]`) обязаны видеть тот же символ, что при
+       старом равновероятном `ALL_SYMBOLS` (гарантия закреплена комментарием
+       к пулу в `teto_megablock.py` — этот тест не даёт её молча потерять
+       при перекалибровке весов)."""
+    assert set(WEIGHTS) == set(ALL_SYMBOLS)
+    scatter_weight = WEIGHTS[SCATTER_ID]
+    assert all(scatter_weight < w for s, w in WEIGHTS.items() if s != SCATTER_ID), (
+        "скаттер обязан быть строго реже любого другого символа заполнения"
+    )
+    assert len(FILL_POOL) == sum(WEIGHTS.values())
+    assert FILL_POOL[0] == LOW_SYMBOLS[0], (
+        "первый элемент пула — стаб-совместимость: choice -> seq[0] должен видеть прежний символ"
+    )

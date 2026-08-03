@@ -22,6 +22,7 @@ import json
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy import text
 
 from bot.config import settings
 from bot.services import blackjack_engine
@@ -711,6 +712,317 @@ async def test_teto_slots_real_spin_outcome_round_trips_through_json(session, mo
     if not hit_freespins:
         logger_msg = "не удалось застать ветку с фриспинами за 40 реальных спинов — не блокирующе"
         print(f"\n[test_teto_slots_real_spin_outcome_round_trips_through_json] {logger_msg}")
+
+
+# --- Тето: трейс анимации (animation_sink) — побочный канал, не outcome ------
+#
+# Схема самого трейса (5 op'ов, сегментация по раундам, пределы размера) уже
+# покрыта `tests/test_teto_slot_engine.py` и здесь НЕ переповторяется. Тут —
+# только плюмбинг money-слоя: кто заполняет sink, когда он обязан остаться
+# пустым, и главное — что трейс НИКОГДА не оказывается в JSONB-колонке
+# `CasinoGame.outcome`.
+
+
+@pytest.mark.asyncio
+async def test_teto_slots_animation_sink_filled_on_fresh_spin_and_empty_on_replay(session, monkeypatch):
+    """Замок сразу на два свойства, ради которых `animation_sink` сделан
+    OUT-параметром, а не новым ключом возвращаемого dict'а:
+
+      1. На СВЕЖЕМ спине sink заполнен полноценным конвертом анимации.
+      2. На replay ТОГО ЖЕ `idem_key` sink остаётся ПУСТЫМ — `_settle`
+         возвращает сохранённый исход, не вызывая `compute()` вовсе, поэтому
+         трейса физически нет. Синтезировать его нельзя: повторный
+         `play_one_spin` съел бы свежий `_rng` и показал бы игроку анимацию
+         спина, которого не было, с выигрышем, не совпадающим с изменением
+         баланса (см. докстринг `play_teto_slots`).
+      3. И при этом ВОЗВРАЩАЕМОЕ значение обоих вызовов идентично (`second ==
+         first`) — то самое свойство, которое проверяет
+         `test_teto_slots_replay_of_settled_idem_key_not_throttled` выше и
+         которое сломал бы ключ `animation` в возврате (dict на свежем спине,
+         None на replay)."""
+    chat_id = -100900048
+    user_id = 900048
+    await _ensure_user(session, user_id)
+    await _fund(session, chat_id, user_id)
+    await economy_service.credit_bank(
+        session, chat_id, 1_000_000, kind="test_seed", ref_id="test_teto_anim_sink_seed_bank"
+    )
+    await session.commit()
+    monkeypatch.setattr(casino_service, "_last_slots_spin_at", {})
+
+    idem_key = "test_teto_animation_sink_replay"
+    bet = _min_valid_teto_bet()
+
+    sink: dict = {}
+    first = await casino_service.play_teto_slots(
+        session, chat_id, user_id, bet, idem_key, animation_sink=sink
+    )
+
+    assert sink, "на свежем спине sink обязан быть заполнен"
+    assert sink["version"] == teto_slot_engine.TRACE_SCHEMA_VERSION
+    assert sink["ops"], "конверт без op'ов бесполезен фронту"
+    assert sink["ops"][0]["op"] == "fill", "первый кадр спина — первичное заполнение доски"
+    assert sink["ops"][-1]["op"] == "round_end"
+    assert sink["truncated"] is False, "обычный спин не должен усекаться (см. TRACE_MAX_OPS)"
+    assert sink["rounds_recorded"] == sink["rounds_total"] == 1 + first["outcome"]["freespins_played"]
+
+    # Деньги в конверте — то, ради чего `serialize_animation` вызывается ПОСЛЕ
+    # `_settle`, а не внутри `compute()`: до капа банком (D-06) фактическая
+    # выплата попросту неизвестна. `payout_paid` обязан быть тем же числом,
+    # что и `payout` возврата (== изменение баланса игрока), иначе счётчик на
+    # экране досчитает до суммы, которой игрок не получил.
+    assert sink["payout_paid"] == first["payout"]
+    assert sink["payout_engine_total"] == first["outcome"]["total_payout"]
+    # Банк здесь заведомо богатый (1 000 000 выше) — капа быть не может.
+    assert sink["bank_capped"] is False
+    assert first["payout"] == first["outcome"]["total_payout"]
+
+    # Возврат — РОВНО те же четыре ключа, что и до появления анимации.
+    assert set(first) == {"game", "bet", "payout", "outcome"}
+
+    replay_sink: dict = {"мусор_от_предыдущего_запроса": 1}
+    replay_sink.clear()
+    second = await casino_service.play_teto_slots(
+        session, chat_id, user_id, bet, idem_key, animation_sink=replay_sink
+    )
+
+    assert replay_sink == {}, "на replay трейса нет — синтезировать его было бы ложью про спин"
+    assert second == first, "возврат обязан быть идентичен между свежим спином и replay"
+
+    # Без sink'а вообще (путь любого вызывающего, которому анимация не нужна —
+    # напр. бот-команда) — то же поведение, никаких новых ключей.
+    third = await casino_service.play_teto_slots(session, chat_id, user_id, bet, idem_key)
+    assert third == first
+
+
+@pytest.mark.asyncio
+async def test_teto_slots_animation_trace_never_lands_in_persisted_outcome(session, monkeypatch):
+    """ГЛАВНЫЙ структурный инвариант этой фичи: трейс — ПРЕЗЕНТАЦИОННЫЕ данные,
+    он уходит в HTTP-ответ и умирает вместе с запросом; аудиторская запись
+    (`CasinoGame.outcome`, JSONB) остаётся точно той же, что была.
+
+    Проверяем на РЕАЛЬНО ЗАПИСАННОЙ В POSTGRES строке (сырой SELECT, а не
+    объект из identity map сессии — иначе тест сравнивал бы dict сам с собой и
+    ничего не доказывал про то, что реально легло в колонку) ТРЕМЯ
+    независимыми гардами, каждый из которых закрывает дыру предыдущего:
+      1. набор ключей верхнего уровня — в точности прежний;
+      2. НИ НА ОДНОМ уровне вложенности нет ни ключа-имени из конверта, ни —
+         главное — dict'а ФОРМЫ КАДРА (`op`+`seq`+`blocks`), под каким бы
+         именем контейнера он ни лежал;
+      3. абсолютный потолок на размер строки в байтах.
+    Почему трёх мало по отдельности, и почему именно так — в комментариях у
+    каждого гарда ниже. Коротко: гард (1) слеп ко вложенности, (2) слеп к
+    размеру, (3) слеп к медианной протечке.
+
+    Конкретный риск, который это стережёт (см. докстринг
+    `teto_slot_engine.serialize_animation`): медианный трейс ~17 КБ против ~10.6
+    КБ `outcome` — +160% к КАЖДОЙ строке казино данными без аудиторской
+    ценности; а патологический спин добавил бы ~21 МБ JSON внутрь той же
+    транзакции `_settle`, которая держит row-lock на `chat_bank`."""
+    chat_id = -100900049
+    user_id = 900049
+    await _ensure_user(session, user_id)
+    await _fund(session, chat_id, user_id)
+    await economy_service.credit_bank(
+        session, chat_id, 1_000_000, kind="test_seed", ref_id="test_teto_anim_outcome_seed_bank"
+    )
+    await session.commit()
+    monkeypatch.setattr(casino_service, "_check_slots_throttle", lambda user_id: None)
+
+    idem_key = "test_teto_animation_not_in_outcome"
+    bet = _min_valid_teto_bet()
+
+    sink: dict = {}
+    result = await casino_service.play_teto_slots(
+        session, chat_id, user_id, bet, idem_key, animation_sink=sink
+    )
+
+    # Трейс ЕСТЬ в том, что получил вызывающий (иначе тест ниже был бы
+    # тривиально зелёным и на сломанной реализации, которая вообще ничего не
+    # записывает).
+    assert sink["ops"], "фронту нечего анимировать — трейс не собрался"
+
+    persisted = (
+        await session.execute(
+            text("SELECT outcome FROM casino_games WHERE user_id = :u AND idem_key = :k"),
+            {"u": user_id, "k": idem_key},
+        )
+    ).scalar_one()
+
+    assert set(persisted) == {
+        "initial_blocks", "base_round", "scatter_count", "freespins_awarded",
+        "freespins_played", "freespins_hard_cap_hit", "fs_round_records",
+        "ladder_final_state", "total_payout", "final_blocks",
+    }, "форма outcome обязана остаться в точности прежней"
+    assert persisted == result["outcome"]
+
+    envelope_keys = {
+        "ops", "ops_recorded", "ops_total", "rounds_recorded", "rounds_total",
+        "complete_through_round", "truncated", "truncated_reason", "version",
+        "payout_paid", "payout_engine_total", "bank_capped",
+        "ladder_thresholds", "ladder_max_score",
+        "animation", "trace",
+    }
+
+    def _assert_no_envelope_key(node, path: str) -> None:
+        """Рекурсивный обход всего JSONB: маркерный ключ конверта анимации не
+        должен встретиться НИ НА ОДНОМ уровне (например внутри
+        `fs_round_records[i]`, если кто-то однажды решит "приложить трейс
+        раунда к записи раунда").
+
+        ВСПОМОГАТЕЛЬНАЯ проверка, НЕ основная: она ловит только протечку,
+        сохранившую ИМЯ контейнера. Основная — `_assert_no_animation_frame`
+        ниже (по форме кадра) плюс байтовый потолок."""
+        if isinstance(node, dict):
+            leaked = envelope_keys & set(node)
+            assert not leaked, f"ключи анимации {sorted(leaked)} утекли в outcome по пути {path}"
+            for key, value in node.items():
+                _assert_no_envelope_key(value, f"{path}.{key}")
+        elif isinstance(node, list):
+            for i, value in enumerate(node):
+                _assert_no_envelope_key(value, f"{path}[{i}]")
+
+    _assert_no_envelope_key(persisted, "outcome")
+
+    # Опознаём КАДР ПО ФОРМЕ, а не по имени контейнера. Ровно эту дыру
+    # оставляла проверка выше: ОДНА строка в `play_teto_slots.compute()` —
+    # `outcome["base_round"]["frames"] = serialize_animation(trace)["ops"]` —
+    # проходила мимо всего набора, потому что (а) проверка набора ключей
+    # смотрит только ВЕРХНИЙ уровень, (б) чёрный список перечисляет имена
+    # КОНВЕРТА, а не кадра, и правдоподобное имя контейнера
+    # (`frames`/`steps`/`replay`/`_debug`) в нём отсутствует по определению —
+    # угадать все имена нельзя в принципе. Форма же кадра фиксирована схемой:
+    # `op` + `seq` + `blocks` в одном dict'е — это трейс, как бы ни назывался
+    # список, в котором он лежит. Легитимный `outcome` эту тройку не даёт
+    # нигде: доски раундов лежат рядом с `raw_round_payout`/`round_index` и
+    # ключей `op`/`seq` не имеют вовсе.
+    frame_marker_keys = {"op", "seq", "blocks"}
+
+    def _assert_no_animation_frame(node, path: str) -> None:
+        if isinstance(node, dict):
+            assert not frame_marker_keys <= set(node), (
+                f"по пути {path} лежит КАДР анимации (op+seq+blocks) — трейс утёк в "
+                f"outcome под именем контейнера, которого нет ни в одном чёрном списке"
+            )
+            for key, value in node.items():
+                _assert_no_animation_frame(value, f"{path}.{key}")
+        elif isinstance(node, list):
+            for i, value in enumerate(node):
+                _assert_no_animation_frame(value, f"{path}[{i}]")
+
+    _assert_no_animation_frame(persisted, "outcome")
+
+    # Размерная сторона того же инварианта: строка в БД осталась "маленькой",
+    # хотя трейс того же спина заведомо крупнее — прямое численное
+    # доказательство, что раздувание строки не состоялось.
+    outcome_bytes = len(json.dumps(persisted).encode())
+    animation_bytes = len(json.dumps(sink).encode())
+
+    # Трейс обязан быть содержательным — иначе всё выше зелено тривиально и на
+    # реализации, которая просто ничего не собирает (минимум раунда — 4 op'а:
+    # fill/evaluate/drill_hunt/round_end, каждый с полной доской 6x6).
+    assert sink["ops_total"] >= 4, "трейс подозрительно пуст — проверять было бы нечего"
+    assert animation_bytes > outcome_bytes // 4, (
+        f"анимация ({animation_bytes} Б) неправдоподобно мала против outcome "
+        f"({outcome_bytes} Б) — похоже, кадры не собрались"
+    )
+
+    # АБСОЛЮТНЫЙ ПОТОЛОК СТРОКИ — единственный гард, который не обходится
+    # переименованием ключа. 131 072 Б (128 КиБ) выбраны не «на глаз», а по
+    # замеру `outcome` на 20 000 настоящих спинов (`random.Random(0..19999)`,
+    # ставка на линию 10): медиана 10 580 Б, p95 36 210, p99 43 552,
+    # p99.9 61 236, МАКСИМУМ 76 382. Потолок = ~1.7x измеренного максимума и
+    # ~12x медианы — запас, которого хватает и на естественный рост схемы
+    # `outcome`, и на хвост длиннее наблюдённого (максимум за 20 000 спинов —
+    # 19 раундов; структурный предел раундов выше, но такие спины требуют
+    # почти полностью скаттерной доски).
+    # Честно про границы этого гарда — измерено на той же протечке
+    # (`outcome["base_round"]["frames"] = serialize_animation(trace)["ops"]`,
+    # 3 000 спинов): она растит медиану 10 580 -> 28 341 Б (+168%), p95
+    # 36 499 -> 187 498, p99 43 911 -> 232 060, максимум 76 649 -> 427 280.
+    # Потолок 128 КиБ ловит 1 046 таких строк из 3 000 (35% — все спины с
+    # фриспинами) и НЕ ловит остальные 65%, которые остаются под ним. Тихую
+    # медианную протечку ловит проверка ФОРМЫ выше (100% случаев), байтовый
+    # потолок берёт на себя катастрофический хвост (теоретически +490 КиБ в
+    # одной строке, ~57 ГБ таблицы+TOAST на 10^6 спинов) и любой будущий
+    # неограниченный блоб под любым именем. Оба гарда нужны: ни один не
+    # покрывает случай другого. Ложных срабатываний на честных строках нет —
+    # 0 из 3 000 (и 0 из 20 000 в основном замере).
+    # Если этот assert когда-нибудь упадёт на ЧЕСТНОЙ строке — перемерить
+    # распределение и двигать потолок осознанно, а не «чуть выше факта».
+    max_outcome_bytes = 128 * 1024
+    assert outcome_bytes <= max_outcome_bytes, (
+        f"строка casino_games.outcome раздулась до {outcome_bytes} Б при потолке "
+        f"{max_outcome_bytes} Б — в JSONB поехало что-то, чего там быть не должно "
+        f"(INSERT идёт ВНУТРИ транзакции `_settle`, держащей row-lock на chat_bank)"
+    )
+
+    print(
+        f"\n[teto animation] outcome в БД: {outcome_bytes} Б (потолок {max_outcome_bytes} Б), "
+        f"анимация в ответе: {animation_bytes} Б (в БД не попала)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_teto_slots_real_spin_full_payload_including_animation_round_trips_through_json(
+    session, monkeypatch
+):
+    """Тот же safety-net, что `test_teto_slots_real_spin_outcome_round_trips_
+    through_json` выше, но на ПОЛНОМ пейлоаде ответа роута (`outcome` +
+    `animation` в одном dict'е) и на РЕАЛЬНОМ (не форсированном) `_rng`.
+
+    Зачем отдельно от outcome-теста: конверт анимации содержит структуры,
+    которых в `outcome` нет вообще — `MegaBlock`-доски на КАЖДОМ кадре (включая
+    кадры внутри фриспин-раундов), `frozenset` выигравших id волны Дрель-Ханта
+    и `tuple` описаний линий. Забытая конверсия любого из них уронила бы
+    `json.dumps` на реальном пользовательском спине уже в FastAPI, ПОСЛЕ того
+    как деньги закоммичены — то есть игрок заплатил бы за спин и получил 500.
+    Крутим несколько настоящих спинов подряд, пытаясь застать ветку с
+    фриспинами (там кадров больше всего и вложенность максимальная)."""
+    chat_id = -100900050
+    user_id = 900050
+    await _ensure_user(session, user_id)
+    await _fund(session, chat_id, user_id)
+    await economy_service.credit_bank(
+        session, chat_id, 1_000_000, kind="test_seed", ref_id="test_teto_anim_json_seed_bank"
+    )
+    await session.commit()
+    monkeypatch.setattr(casino_service, "_check_slots_throttle", lambda user_id: None)
+
+    bet = _min_valid_teto_bet()
+    hit_freespins = False
+    hit_drill_hunt_wave = False
+
+    for i in range(40):
+        sink: dict = {}
+        result = await casino_service.play_teto_slots(
+            session, chat_id, user_id, bet, f"test_teto_anim_payload_{i}", animation_sink=sink
+        )
+        payload = {**result, "user_balance_after": 12345, "animation": sink or None}
+
+        round_tripped = json.loads(json.dumps(payload))
+        assert round_tripped == payload
+
+        # Кадры трейса обязаны быть теми же plain-dict'ами, что доски в outcome
+        # (ОДНА кодировка доски на весь ответ — фронт парсит одну структуру).
+        for op in sink["ops"]:
+            for block in op["blocks"]:
+                assert set(block) == {"block_id", "symbol_id", "row", "col", "height", "width"}
+        assert sink["ops"][0]["blocks"] == result["outcome"]["initial_blocks"]
+
+        if result["outcome"]["freespins_played"] > 0:
+            hit_freespins = True
+        if any(op["op"] == "drill_hunt" and op["wave_fired"] for op in sink["ops"]):
+            hit_drill_hunt_wave = True
+        if hit_freespins and hit_drill_hunt_wave:
+            break
+
+    if not (hit_freespins and hit_drill_hunt_wave):
+        print(
+            "\n[test_teto_slots_real_spin_full_payload...] за 40 реальных спинов не удалось "
+            f"застать всё (фриспины={hit_freespins}, волна Дрель-Ханта={hit_drill_hunt_wave}) "
+            "— не блокирующе, round-trip выше уже доказан на реальных спинах"
+        )
 
 
 # --- Блэкджек: двойной натурал (push 1.0x) — редкая ветка settle_outcome ----

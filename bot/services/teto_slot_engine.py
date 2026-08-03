@@ -12,32 +12,56 @@ dict`, без скрытого состояния: rng — ВСЕГДА явны
 осознанно, проверено RNG-аудитом отдельно; здесь тот же паттерн реинтродуцировал
 бы дыру, которую весь RNG-аудит существует, чтобы закрыть — см. roadmap.md).
 
-Пока — ЧИСТЫЙ движок без интеграции с БД/`casino_service`/деньгами (это
-следующий шаг, `play_teto_slots` по образцу `play_slots`, см. roadmap.md)."""
+Сам модуль остаётся ЧИСТЫМ (никакой БД/сессий/денег внутри) — money/DB-обвязка
+живёт снаружи, в `casino_service.play_teto_slots` (по образцу `play_slots`).
+
+Два разных выхода одного и того же спина, которые НЕЛЬЗЯ путать:
+  - `serialize_spin_result(result)` -> в `CasinoGame.outcome` (JSONB) — ЗАПИСЬ
+    ФАКТА: финальные доски раундов, выплаты, лестница. Есть всегда, включая
+    replay, не усекается никогда.
+  - `serialize_animation(trace, paid_total=...)` -> в HTTP-ответ (ключ
+    `animation`) — ПРЕЗЕНТАЦИОННЫЙ СЦЕНАРИЙ для анимации миниаппа: покадровый
+    лог спина (`fill`/`evaluate`/`tumble`/`drill_hunt`/`round_end`) плюс
+    ФАКТИЧЕСКИ выплаченная сумма (`paid_total` — обязательный аргумент: она
+    известна только денежному слою, ПОСЛЕ капа банком, и без неё счётчик на
+    экране досчитывает до суммы, которой игрок не получил). Может
+    отсутствовать (replay), может быть усечён по размеру. В `outcome` не
+    попадает НИКОГДА — почему именно, подробно в докстринге
+    `serialize_animation`.
+Это тот же урок, что уже выучен на Azumanga (`slot_engine.SlotResult.
+freespin_rounds`): фронту, получающему только ИТОГОВОЕ число вместо данных на
+каждый раунд, нечего показать, и игрок читает результат как «авторасчёт, а не
+полный прокрут». Здесь то же самое применено к каскадам внутри раунда."""
 
 from __future__ import annotations
 
 import dataclasses
 
+from bot.services.teto_drillhunt import LADDER
+from bot.services.teto_drillhunt import MAX_BOARD_SCORE
 from bot.services.teto_drillhunt import DrillHuntOutcome
 from bot.services.teto_drillhunt import LadderState
 from bot.services.teto_drillhunt import apply_drill_hunt
 from bot.services.teto_drillhunt import apply_ladder
+from bot.services.teto_drillhunt import ladder_gauge
 from bot.services.teto_megablock import ALL_CELLS
 from bot.services.teto_megablock import MegaBlock
 from bot.services.teto_megablock import assert_valid_partition
 from bot.services.teto_megablock import form_blocks
 from bot.services.teto_tumble import TETO_PAYLINES
 from bot.services.teto_tumble import count_scatter_blocks
+from bot.services.teto_tumble import describe_winning_lines
 from bot.services.teto_tumble import evaluate_paylines
 from bot.services.teto_tumble import resolve_tumble
+from bot.services.teto_tumble import win_units
 
 # Число линий этого слота — тот же паттерн, что `slot_engine.TOTAL_LINES =
 # len(slot_data.PAYLINES)`: единственный источник истины — фактическая длина
-# `TETO_PAYLINES` (сейчас 3, MVP-подмножество будущих 50, см. докстринг
-# `teto_tumble.py`), а не захардкоженное число, которое рассинхронизировалось
-# бы при правке набора линий. Используется `casino_service.play_teto_slots`
-# для валидации `bet % TOTAL_LINES == 0` (по образцу `play_slots`).
+# `TETO_PAYLINES` (полные 50, roadmap 1:1 — состав пинует
+# `tests/test_teto_tumble.py::test_teto_paylines_full_set_is_valid`), а не
+# захардкоженное число, которое рассинхронизировалось бы при правке набора
+# линий. Используется `casino_service.play_teto_slots` для валидации
+# `bet % TOTAL_LINES == 0` (по образцу `play_slots`).
 TOTAL_LINES = len(TETO_PAYLINES)
 
 # Хардкап на число тумбл-шагов ЗА ОДИН РАУНД (базовый или один фриспин-раунд)
@@ -53,6 +77,72 @@ FREESPINS_HARD_CAP = 100
 
 FREESPIN_SCATTER_MIN = 5
 
+# --- Трейс анимации: версия схемы и два независимых предела размера ----------
+
+# Версия схемы трейса (ключ `version` в конверте `serialize_animation`). Нужна
+# потому, что контракт поедет: первое запланированное расширение (набор линий
+# 3 -> 50, см. `teto_tumble.TETO_PAYLINES`) уже случилось и версии не
+# потребовало — геометрия линии самодостаточна в `winning_lines.cells`, — но
+# следующая правка формы может быть не такой удачной. Без явной версии миниапп
+# на старом деплое отрисовал бы новую форму молча-неправильно вместо того,
+# чтобы честно деградировать до финальной доски из `outcome`.
+TRACE_SCHEMA_VERSION = 1
+
+# Предел на число ОПЕРАЦИЙ в отдаваемом наружу трейсе — бюджет БАЙТ ответа.
+# Конкретный риск: худший op — 4 631 Б ИЗМЕРЕННЫХ (доска из 36 одиночных
+# блоков 3 590 Б + winning_block_ids + до 3 описанных линий + скаляры), а
+# патологический (форсированный) спин 100 фриспин-раундов x 30 тумбл-шагов
+# даёт ~6.3k ops -> ~21 МБ JSON-текста. Без предела это уехало бы в
+# HTTP-ответ на одном спине. 120 ops -> <=543 КиБ в самом худшем случае
+# (~40x сокращение; прошлая редакция комментария писала "<=480 КБ" по
+# заниженной оценке op'а в 4.0 КБ — перемерено) и при этом НЕ срезает ни один
+# реальный спин: на 20 000 настоящих спинов (`random.Random(0..19999)`)
+# распределение ops (перемерено на текущей редакции трейса) — медиана 5,
+# p95 42, p99 54, p99.9 79, максимум 101, т.е. усечение при 120 не наступило
+# НИ РАЗУ (0 из 20 000; при пределе 60 срезало бы 0.82%, при 90 — 0.04%).
+# Предел живёт в `serialize_animation`, а НЕ в `play_one_spin` — см. её
+# докстринг про 500-сидовый инвариант партиции.
+TRACE_MAX_OPS = 120
+
+# Предел на число РАУНДОВ в трейсе — бюджет ВРЕМЕНИ анимации, а не байт: это
+# принципиально другой отказ. 20 крошечных раундов по 4 op — всего 80 ops
+# (предел ops не сработает), но проиграть их на экране по ~1.5-3 с/раунд —
+# уже 30-60 с, которые никто не смотрит; 100 раундов — минуты. Оба предела
+# нужны одновременно, потому что ни один из них не мажорирует другой.
+# На тех же 20 000 реальных спинов раунды: медиана 1, p95 8, p99 10, p99.9 15,
+# максимум 19 — усечения по 20 не было ни разу (при 12 срезало бы 0.79%).
+TRACE_MAX_ROUNDS = 20
+
+# Полный словарь op'ов трейса — РОВНО пять, ни один НЕ содержит цифры.
+# Держится здесь как единственный источник истины для тестов схемы.
+TRACE_OPS = ("fill", "evaluate", "tumble", "drill_hunt", "round_end")
+
+
+def _next_block_id(blocks: list[MegaBlock]) -> int:
+    """Следующий свободный `block_id` ПОСЛЕ доски `blocks` — тот же приём, что
+    `teto_tumble.resolve_tumble` применяет ВНУТРИ раунда, поднятый на уровень
+    спина: заполнение каждого фриспин-раунда продолжает нумерацию предыдущего,
+    а не начинает заново с 0.
+
+    Зачем (это НЕ косметика): `block_id` — единственный стабильный идентификатор
+    блока между кадрами, по нему анимация твинит движение (тот же id на двух
+    соседних кадрах == тот же прямоугольник переехал). Пока каждый раунд звал
+    `form_blocks(rng, set(ALL_CELLS))` с дефолтным `start_id=0`, id
+    ПЕРЕИСПОЛЬЗОВАЛИСЬ между раундами: блок 7 раунда 1 и блок 7 раунда 2 —
+    разные блоки с разными символами, и потребитель, который диффает кадры
+    сквозь границу раунда (а `fill` следующего раунда идёт в трейсе сразу за
+    `round_end` предыдущего — соседние элементы одного массива), нарисовал бы
+    "переезд" несуществующего блока. Уникальность ВНУТРИ СПИНА снимает вопрос
+    целиком; глобальная (между спинами) не нужна — спин и есть граница жизни
+    трейса.
+
+    Корректность "максимум по ФИНАЛЬНОЙ доске == максимум когда-либо выданного
+    id в раунде": `resolve_tumble` берёт `max(...) + 1` по ВСЕМ блокам шага
+    (включая только что удалённые), поэтому нумерация строго монотонна, а
+    самые старшие id всегда у блоков последнего добора — те доживают до конца
+    раунда по построению (после них удалений в раунде уже не было)."""
+    return max((b.block_id for b in blocks), default=-1) + 1
+
 
 def _compute_freespins_awarded(scatter_count: int) -> int:
     """`freespins = scatter_count if scatter_count >= 5 else 0` — буквально
@@ -64,68 +154,243 @@ def _compute_freespins_awarded(scatter_count: int) -> int:
     return scatter_count if scatter_count >= FREESPIN_SCATTER_MIN else 0
 
 
+def _record(
+    trace: list, op: str, *, phase: str, round_index: int, blocks: list[MegaBlock], **extra
+) -> None:
+    """Дописывает ОДИН op в трейс анимации. Порядок ключей фиксирован:
+    `op`, `seq`, `phase`, `round`, op-специфичные, `blocks` (всегда последним) —
+    чтобы дамп трейса в `psql`/логах читался глазами без прокрутки доски.
+
+    ПОЧЕМУ идентичность раунда — структурные `phase`/`round`, а НЕ имя op'а.
+    Старый трейс кодировал номер раунда в СТРОКЕ имени
+    (`f"fs_round_{n}_initial_fill"`), а тумбл/дрель-op'ы внутри фриспин-раунда
+    не несли маркера раунда вообще. Цена для потребителя была не косметическая:
+    чтобы просто разбить трейс на раунды, фронту пришлось бы парсить имена
+    регуляркой И ДОГАДЫВАТЬСЯ о сегментации остальных op'ов по позиции между
+    "fill"-ами; любая правка формата имени (или второй слот с другим
+    префиксом) молча ломала бы такой парсер. Здесь: `phase` ∈
+    {"base","freespin"}, `round` = 0 для базового раунда и 1..N для
+    фриспин-раундов (совпадает с `fs_round_records[round-1]["round_index"]`),
+    ни одно имя op'а не содержит цифры вовсе (регрессия — тест схемы).
+
+    ПОЧЕМУ `blocks` есть на КАЖДОМ op'е, включая избыточный `evaluate` (его
+    доска равна доске предыдущего op'а). Две причины, обе перевешивают ~2x
+    оверхед байт (под который и подобран `TRACE_MAX_OPS`):
+      1. `test_partition_invariant_holds_through_entire_spin_including_freespins`
+         гоняет `entry["blocks"]` для КАЖДОЙ записи трейса на 500 сидах —
+         это единственная проверка инварианта партиции на ПРОМЕЖУТОЧНЫХ
+         досках; op без `blocks` тихо вынул бы кадр из-под этой проверки.
+      2. Seek-to-any-op: кнопка "пропустить/промотать" в миниаппе прыгает на
+         op k и рисует его немедленно, без переигрывания с нуля. Дельты
+         (отклонённая альтернатива, см. `serialize_animation`) это ломают.
+
+    Правило фиксированной формы: op НИКОГДА не опускает ключ. Неприменимое
+    значение — `None`/`[]`/`0`, но не отсутствие ключа: потребителю не нужно
+    писать `if (key in op)`, и опечатка в имени ключа на бэке проявляется как
+    `null` в UI, а не как молчаливое падение в ветку "ключа нет"."""
+    trace.append({
+        "op": op,
+        # `seq` дублирует индекс в массиве (усечение сейчас режет только хвост
+        # ЦЕЛЫМИ раундами, см. `serialize_animation`), но передаётся явно:
+        # дампы грепаются по seq, а гипотетическое будущее выкидывание op'ов из
+        # СЕРЕДИНЫ не сможет молча сломать потребителя, который считал индекс.
+        "seq": len(trace),
+        "phase": phase,
+        "round": round_index,
+        **extra,
+        "blocks": list(blocks),
+    })
+
+
+def _record_evaluate(
+    trace: list, *, phase: str, round_index: int, blocks: list[MegaBlock],
+    source: str, has_win: bool, winning_ids, bet_per_line: int,
+    winning_lines: list[dict] | None = None,
+) -> list[int]:
+    """Записывает op `evaluate` — кадр ДО удаления, тот самый, на котором
+    анимация подсвечивает/взрывает выигравшие блоки. Возвращает отсортированный
+    список выигравших id, чтобы вызывающий продублировал его в следующий
+    `tumble` (`removed_block_ids`) без второй сортировки.
+
+    Требование "знать, что умрёт, ДО того как оно умрёт" (старый op
+    `evaluate_paylines` не говорил, КАКИЕ блоки выиграли, вообще никак)
+    выполнено структурно порядком op'ов: `winning_block_ids` этого op'а — ровно
+    то, что удалит СЛЕДУЮЩИЙ `tumble`.
+
+    `payout` — СЫРОЙ, ДО множителя лестницы (`bet_per_line * win_units`, т.е.
+    ВЗВЕШЕННЫЙ паутейблом: `cells_won` — площадь для анимации, а деньги шага —
+    площадь, умноженная на пер-символьный множитель `TETO_PAYTABLE`), и это
+    место, где фронт легко ошибётся: множитель ЛЕСТНИЦЫ применяется РОВНО РАЗ
+    ЗА РАУНД (Вариант Y, см. `teto_drillhunt.apply_ladder`), поэтому умножение
+    на каждом шаге дало бы двойное умножение. Инвариант, который стоит держать
+    в голове: сумма `evaluate.payout` по раунду == `round_end.raw_round_payout`
+    ТОЧНО (арифметика целочисленная на всех уровнях), а множитель виден только
+    в `round_end.multiplier_applied`."""
+    winning_list = sorted(winning_ids)
+    cells_won = sum(b.area for b in blocks if b.block_id in winning_ids)
+    _record(
+        trace, "evaluate", phase=phase, round_index=round_index, blocks=blocks,
+        source=source,
+        has_win=has_win,
+        winning_block_ids=winning_list,
+        winning_lines=winning_lines if winning_lines is not None else [],
+        cells_won=cells_won,
+        payout=bet_per_line * win_units(blocks, winning_ids),
+    )
+    return winning_list
+
+
 def _run_tumble_cascade(
-    rng, blocks: list[MegaBlock], hard_cap: int, *, trace: list | None = None
-) -> tuple[list[MegaBlock], int, int]:
+    rng, blocks: list[MegaBlock], hard_cap: int, bet_per_line: int, *,
+    phase: str, round_index: int, step_offset: int = 0, trace: list | None = None,
+) -> tuple[list[MegaBlock], int, int, int]:
     """Повторяет `evaluate_paylines` -> `resolve_tumble`, пока есть выигрыш и
     `hard_cap` не исчерпан. Возвращает `(blocks, total_winning_cells,
-    шагов_использовано)`."""
+    total_win_units, шагов_использовано)`: клетки — статистика/анимация,
+    юниты — деньги (площадь, взвешенная `TETO_PAYTABLE`, см. `win_units`).
+
+    `phase`/`round_index` — обязательные keyword-параметры БЕЗ дефолтов
+    (функция приватная, вызывается только из `_play_one_round`): дефолт
+    `round_index=0` означал бы, что будущий забывчивый call site молча пишет
+    фриспин-раунды в трейс как базовый раунд — ровно тот класс тихой порчи
+    сегментации, от которого структурные `phase`/`round` и вводились.
+
+    `step_offset` делает нумерацию `tumble.step` СКВОЗНОЙ ПО РАУНДУ, а не
+    локальной для вызова каскада. Старый `step` считался внутри каждого вызова
+    и поэтому НАЧИНАЛСЯ ЗАНОВО с 1 во втором каскаде раунда (после волны
+    Дрель-Ханта), а сама волна не нумеровалась вообще — из трейса нельзя было
+    ни упорядочить шаги, ни сверить их число с `tumble_steps_used`. Теперь
+    `max(step)` по раунду == `round_end.tumble_steps_used` (это и проверяет
+    отдельный тест)."""
     steps = 0
     total_cells = 0
+    total_units = 0
     while steps < hard_cap:
         has_win, winning_ids = evaluate_paylines(blocks)
+        winning_list: list[int] = []
         if trace is not None:
-            trace.append({"op": "evaluate_paylines", "has_win": has_win, "blocks": list(blocks)})
+            winning_list = _record_evaluate(
+                trace, phase=phase, round_index=round_index, blocks=blocks,
+                source="cascade", has_win=has_win, winning_ids=winning_ids,
+                bet_per_line=bet_per_line,
+                # Проход по линиям только когда выигрыш РЕАЛЬНО есть: на
+                # терминальном (has_win=False) evaluate описывать нечего.
+                winning_lines=describe_winning_lines(blocks) if has_win else [],
+            )
         if not has_win:
             break
         total_cells += sum(b.area for b in blocks if b.block_id in winning_ids)
+        total_units += win_units(blocks, winning_ids)
         blocks = resolve_tumble(rng, blocks, winning_ids)
         steps += 1
         if trace is not None:
-            trace.append({"op": "resolve_tumble", "step": steps, "blocks": list(blocks)})
-    return blocks, total_cells, steps
+            _record(
+                trace, "tumble", phase=phase, round_index=round_index, blocks=blocks,
+                source="cascade",
+                step=step_offset + steps,
+                # Дублируем список из предыдущего evaluate намеренно: op должен
+                # рисоваться АВТОНОМНО при прыжке seek'ом прямо на него, без
+                # оглядки на предыдущий элемент массива.
+                removed_block_ids=winning_list,
+            )
+    return blocks, total_cells, total_units, steps
 
 
 def _play_one_round(
     rng, blocks: list[MegaBlock], bet_per_line, *,
-    guaranteed_drill_hunt: bool, tumble_hard_cap: int, trace: list | None = None,
+    guaranteed_drill_hunt: bool, tumble_hard_cap: int,
+    phase: str, round_index: int, trace: list | None = None,
 ) -> dict:
     """Один "раунд" = тумбл-каскад до исчерпания выигрышей ИЛИ `hard_cap`,
     затем РОВНО ОДИН вызов Дрель-Ханта (чья единственная опциональная волна
     засчитывается в тот же общий `hard_cap`), затем — если волна сработала —
     возврат во внешний тумбл-цикл: если она оставила на доске ещё один
     выигрыш, он доигрывается как обычный тумбл (в пределах оставшегося
-    бюджета `hard_cap`)."""
-    blocks, cells_won_a, steps_a = _run_tumble_cascade(rng, blocks, tumble_hard_cap, trace=trace)
+    бюджета `hard_cap`).
+
+    Трейс раунда: `fill` пишет вызывающий (`play_one_spin` — только он знает,
+    что раунд начинается), `round_end` — тоже он (только он держит лестницу,
+    см. его докстринг); здесь пишутся `evaluate`/`tumble`/`drill_hunt`.
+    Волна Дрель-Ханта НАМЕРЕННО не вложенный под-объект, а обычная пара
+    `evaluate`+`tumble` с `source="drill_hunt_wave"`: фронт переиспользует
+    ТОТ ЖЕ рендерер каскада дословно, а "что выиграла волна" выражено в тех же
+    самых ключах, что любой другой выигрыш."""
+    blocks, cells_won_a, units_a, steps_a = _run_tumble_cascade(
+        rng, blocks, tumble_hard_cap, bet_per_line,
+        phase=phase, round_index=round_index, step_offset=0, trace=trace,
+    )
 
     remaining_cap = tumble_hard_cap - steps_a
     outcome: DrillHuntOutcome = apply_drill_hunt(
         rng, blocks, guaranteed=guaranteed_drill_hunt, tumble_hard_cap_remaining=remaining_cap,
     )
-    blocks = outcome.blocks
+    # Доска ДО волны (post-injection/pre-wave) — главное содержательное отличие
+    # от старого op'а, который нёс доску ПОСЛЕ волны, из-за чего кадр посадки
+    # дрели был невосстановим (см. `DrillHuntOutcome`). Она нужна ДВУМ op'ам
+    # ниже (`drill_hunt` и `evaluate` волны), поэтому считается один раз здесь.
+    # `blocks_after_injection` заполняется `apply_drill_hunt` всегда; fallback на
+    # `outcome.blocks` — страховка от шпиона в тестах, собравшего outcome через
+    # `_replace` на старом наборе полей.
+    pre_wave_blocks = outcome.blocks_after_injection
+    if pre_wave_blocks is None:
+        pre_wave_blocks = outcome.blocks
+
     if trace is not None:
-        trace.append({
-            "op": "drill_hunt",
-            "cells_converted": outcome.cells_converted,
-            "wave_fired": outcome.triggered_new_tumble,
-            "blocks": list(blocks),
-        })
+        _record(
+            trace, "drill_hunt", phase=phase, round_index=round_index, blocks=pre_wave_blocks,
+            # `fired` — то же самое выражение, что и `drill_hunt_fired` ниже:
+            # один источник истины, чтобы UI и запись раунда не разошлись.
+            fired=outcome.cells_converted > 0,
+            wild_block_id=outcome.wild_block_id,
+            cells_converted=outcome.cells_converted,
+            wave_fired=outcome.triggered_new_tumble,
+        )
 
     steps_b = 0
     cells_won_wave = 0
+    units_wave = 0
     if outcome.triggered_new_tumble:
         steps_b = 1  # волна = один тумбл-шаг против общего hard_cap
         cells_won_wave = outcome.wave_cells_won
+        # Юниты волны считаются по ПОСТ-инъекционной доске: выигравшие блоки
+        # волны включают только что внедрённый Wild, и он платит как топ-символ
+        # (`TETO_PAYTABLE[WILD_ID]`) — денежная кульминация Дрель-Ханта.
+        units_wave = win_units(pre_wave_blocks, outcome.wave_winning_block_ids)
+        if trace is not None:
+            # Волна НАМЕРЕННО выражена обычной парой `evaluate`+`tumble`
+            # (только с `source="drill_hunt_wave"`), а не вложенным
+            # под-объектом: фронт переиспользует свой рендерер каскада
+            # дословно, а "что выиграла волна" читается из тех же самых ключей,
+            # что и любой другой выигрыш.
+            wave_winning_list = _record_evaluate(
+                trace, phase=phase, round_index=round_index, blocks=pre_wave_blocks,
+                source="drill_hunt_wave", has_win=True,
+                winning_ids=outcome.wave_winning_block_ids,
+                bet_per_line=bet_per_line,
+                winning_lines=list(outcome.wave_winning_lines),
+            )
+            _record(
+                trace, "tumble", phase=phase, round_index=round_index, blocks=outcome.blocks,
+                source="drill_hunt_wave",
+                step=steps_a + steps_b,
+                removed_block_ids=wave_winning_list,
+            )
+
+    blocks = outcome.blocks
 
     remaining_cap2 = tumble_hard_cap - steps_a - steps_b
-    blocks, cells_won_c, steps_c = _run_tumble_cascade(rng, blocks, max(0, remaining_cap2), trace=trace)
+    blocks, cells_won_c, units_c, steps_c = _run_tumble_cascade(
+        rng, blocks, max(0, remaining_cap2), bet_per_line,
+        phase=phase, round_index=round_index, step_offset=steps_a + steps_b, trace=trace,
+    )
 
     total_cells_won = cells_won_a + cells_won_wave + cells_won_c
+    total_units_won = units_a + units_wave + units_c
     tumble_steps_used = steps_a + steps_b + steps_c
 
     return {
         "blocks": blocks,
-        "raw_round_payout": bet_per_line * total_cells_won,
+        "raw_round_payout": bet_per_line * total_units_won,
         "total_cells_won": total_cells_won,
         "cells_converted_by_drill_hunt": outcome.cells_converted,
         "drill_hunt_fired": outcome.cells_converted > 0,
@@ -163,19 +428,74 @@ def play_one_spin(rng, bet_per_line, *, trace: list | None = None) -> dict:
       `total_payout` — `base_round["raw_round_payout"]` (по множителю лестница
       НЕ трогает базовый раунд) + сумма `final_round_payout` всех фриспин-раундов.
       `final_blocks` — доска последнего сыгранного фриспин-раунда, либо
-      `base_round["blocks"]`, если фриспинов не было вовсе."""
+      `base_round["blocks"]`, если фриспинов не было вовсе.
+
+    `trace` (опциональный список) — ПРЕЗЕНТАЦИОННЫЙ сценарий спина для
+    анимации миниаппа: сюда дописывается по op'у на каждый видимый кадр
+    (`fill`/`evaluate`/`tumble`/`drill_hunt`/`round_end`, см. `_record`).
+    Возвращаемый dict от наличия трейса НЕ зависит ни одним ключом, RNG
+    потребляется бит-в-бит так же (всё добавленное — чистые функции), поэтому
+    `trace=None` (прод-путь любого вызывающего, которому анимация не нужна) по
+    поведению и стоимости идентичен состоянию до появления трейса. Наружу
+    трейс уходит ТОЛЬКО через `serialize_animation` — в `CasinoGame.outcome`
+    он не попадает никогда (обоснование — там же).
+
+    Op `round_end` пишется ИМЕННО ЗДЕСЬ, а не в `_play_one_round`, по двум
+    причинам: (а) только `play_one_spin` держит `LadderState`, а
+    `multiplier_applied` обязан быть прочитан ДО `apply_ladder` (Вариант Y:
+    множитель раунда — тот, что был активен НА ВХОДЕ, порог, пересечённый
+    этим же раундом, начинает действовать только со следующего); (б) закрывающая
+    доска раунда до появления `round_end` попадала в трейс НЕ ВСЕГДА — когда
+    каскад A выедал весь `TUMBLE_HARD_CAP`, каскад C входил с `hard_cap=0`,
+    его `while` не выполнялся ни разу и не записывал ничего, так что потребителю
+    приходилось разбирать случаи, какая ветка закрыла раунд. Теперь закрывающая
+    доска есть безусловно.
+
+    Op `spin_end` НАМЕРЕННО отсутствует: спиновые агрегаты (`total_payout`,
+    `freespins_awarded`/`freespins_played`, `freespins_hard_cap_hit`,
+    `ladder_final_state`, `final_blocks`) уже лежат в `outcome`, который есть
+    и на свежем спине, и на replay. Разделение жёсткое: трейс — сценарий показа
+    (может отсутствовать, может быть усечён), `outcome` — запись факта (есть
+    всегда, не усекается никогда).
+
+    ЕДИНСТВЕННОЕ исключение из "агрегаты только в outcome" — денежная тройка
+    конверта (`payout_paid`/`payout_engine_total`/`bank_capped`), которую
+    добавляет `serialize_animation`, а не этот op. Она не нарушает правило, а
+    вытекает из него: `payout_paid` (фактически выплаченное после капа банком,
+    D-06) в `outcome` НЕ СУЩЕСТВУЕТ вовсе, а без него счётчик на экране
+    досчитывает до `total_payout` — суммы, которой игрок не получил. Полный
+    разбор и формула счётчика — в докстринге `serialize_animation`."""
     initial_blocks = form_blocks(rng, set(ALL_CELLS))
     if trace is not None:
-        trace.append({"op": "initial_fill", "blocks": list(initial_blocks)})
+        _record(trace, "fill", phase="base", round_index=0, blocks=initial_blocks)
     assert_valid_partition(initial_blocks)
 
     base_result = _play_one_round(
         rng, initial_blocks, bet_per_line,
-        guaranteed_drill_hunt=False, tumble_hard_cap=TUMBLE_HARD_CAP, trace=trace,
+        guaranteed_drill_hunt=False, tumble_hard_cap=TUMBLE_HARD_CAP,
+        phase="base", round_index=0, trace=trace,
     )
 
     scatter_count = count_scatter_blocks(base_result["blocks"])
     freespins_awarded = _compute_freespins_awarded(scatter_count)
+
+    if trace is not None:
+        # Базовый раунд лестницей не умножается вовсе (Вариант Y, зафиксировано
+        # владельцем бота 2026-07-30), поэтому `multiplier_applied=1` и
+        # `ladder=None` — не "заглушка", а факт: `LadderState` на этот момент
+        # ещё даже не создан. Зато только у базового раунда есть скаттер-итог.
+        _record(
+            trace, "round_end", phase="base", round_index=0, blocks=base_result["blocks"],
+            raw_round_payout=base_result["raw_round_payout"],
+            multiplier_applied=1,
+            final_round_payout=base_result["raw_round_payout"],
+            cells_converted_by_drill_hunt=base_result["cells_converted_by_drill_hunt"],
+            tumble_steps_used=base_result["tumble_steps_used"],
+            tumble_hard_cap_hit=base_result["tumble_hard_cap_hit"],
+            scatter_count=scatter_count,
+            freespins_awarded=freespins_awarded,
+            ladder=None,
+        )
 
     # Лестница живёт ТОЛЬКО во фриспинах (зафиксировано владельцем бота
     # 2026-07-30) — создаётся заново здесь, очки Дрель-Ханта из base_result
@@ -184,25 +504,72 @@ def play_one_spin(rng, bet_per_line, *, trace: list | None = None) -> dict:
     fs_round_records: list[dict] = []
     freespins_played = 0
     remaining = freespins_awarded
+    # Доска, ПОСЛЕ которой продолжается нумерация `block_id` следующего раунда
+    # (см. `_next_block_id`): сначала закрывающая доска базового раунда, дальше
+    # — закрывающая доска предыдущего фриспин-раунда.
+    prev_round_blocks = base_result["blocks"]
 
     while remaining > 0 and freespins_played < FREESPINS_HARD_CAP:
         remaining -= 1
         freespins_played += 1
 
-        fs_blocks = form_blocks(rng, set(ALL_CELLS))
+        # `start_id` продолжает нумерацию ПРЕДЫДУЩЕГО раунда — см. `_next_block_id`
+        # (id уникален в пределах спина, иначе твин движения через границу
+        # раунда связал бы два РАЗНЫХ блока с одинаковым id).
+        fs_blocks = form_blocks(rng, set(ALL_CELLS), start_id=_next_block_id(prev_round_blocks))
         if trace is not None:
-            trace.append({"op": f"fs_round_{freespins_played}_initial_fill", "blocks": list(fs_blocks)})
+            _record(
+                trace, "fill", phase="freespin", round_index=freespins_played, blocks=fs_blocks
+            )
         assert_valid_partition(fs_blocks)
 
         fs_result = _play_one_round(
             rng, fs_blocks, bet_per_line,
-            guaranteed_drill_hunt=True, tumble_hard_cap=TUMBLE_HARD_CAP, trace=trace,
+            guaranteed_drill_hunt=True, tumble_hard_cap=TUMBLE_HARD_CAP,
+            phase="freespin", round_index=freespins_played, trace=trace,
         )
+
+        # Множитель, применяемый К ЭТОМУ раунду, обязан быть считан ДО
+        # `apply_ladder` (Вариант Y — та возвращает УЖЕ обновлённое состояние,
+        # чей `multiplier` относится к СЛЕДУЮЩЕМУ раунду). Ровно поэтому
+        # `round_end` не может жить внутри `_play_one_round`.
+        multiplier_applied = ladder.multiplier
 
         ladder, extra_fs, final_payout = apply_ladder(
             ladder, fs_result["cells_converted_by_drill_hunt"], fs_result["raw_round_payout"],
         )
         remaining += extra_fs
+
+        if trace is not None:
+            # Фриспин-раунд Тето НИКОГДА не переначисляет фриспины скаттером
+            # (лишние фриспины приходят только с порогов лестницы), поэтому
+            # `scatter_count`/`freespins_awarded` здесь честный `None`, а не 0:
+            # 0 читался бы как "скаттеров не выпало", хотя их тут не считают.
+            _record(
+                trace, "round_end", phase="freespin", round_index=freespins_played,
+                blocks=fs_result["blocks"],
+                raw_round_payout=fs_result["raw_round_payout"],
+                multiplier_applied=multiplier_applied,
+                final_round_payout=final_payout,
+                cells_converted_by_drill_hunt=fs_result["cells_converted_by_drill_hunt"],
+                tumble_steps_used=fs_result["tumble_steps_used"],
+                tumble_hard_cap_hit=fs_result["tumble_hard_cap_hit"],
+                scatter_count=None,
+                freespins_awarded=None,
+                ladder={
+                    "score_after": ladder.score,
+                    "multiplier_after": ladder.multiplier,
+                    "crossed_thresholds": sorted(ladder.crossed_thresholds),
+                    "extra_freespins_awarded": extra_fs,
+                    # Цель, а не только пройденное: без этих трёх полей
+                    # прогресс-шкала (главный визуальный приём экрана) не
+                    # рисуется вовсе — разбор в `teto_drillhunt.ladder_gauge`.
+                    # Статическая часть (сами пороги + потолок счёта) едет
+                    # ОДИН РАЗ в конверте `serialize_animation`, а не копией на
+                    # каждом round_end: она не меняется в течение спина.
+                    **ladder_gauge(ladder),
+                },
+            )
 
         fs_round_records.append({
             "round_index": freespins_played,
@@ -217,6 +584,8 @@ def play_one_spin(rng, bet_per_line, *, trace: list | None = None) -> dict:
             "ladder_score_after": ladder.score,
             "extra_freespins_awarded_this_round": extra_fs,
         })
+
+        prev_round_blocks = fs_result["blocks"]
 
     total_fs_final_payout = sum(r["final_round_payout"] for r in fs_round_records)
     final_blocks = fs_round_records[-1]["blocks"] if fs_round_records else base_result["blocks"]
@@ -290,4 +659,240 @@ def serialize_spin_result(result: dict) -> dict:
             "crossed_thresholds": sorted(ladder.crossed_thresholds),
         },
         "final_blocks": _serialize_blocks(result["final_blocks"]),
+    }
+
+
+def serialize_animation(
+    trace: list[dict],
+    *,
+    paid_total: int,
+    max_ops: int = TRACE_MAX_OPS,
+    max_rounds: int = TRACE_MAX_ROUNDS,
+) -> dict:
+    """Приводит сырой `trace` (как его набил `play_one_spin`) к JSON-совместимому
+    конверту анимации И ОГРАНИЧИВАЕТ его размер. Отдельная функция от
+    `serialize_spin_result` НАМЕРЕННО: результат той уходит в JSONB-колонку
+    `CasinoGame.outcome`, результат этой — только в HTTP-ответ, и две разные
+    функции делают "трейс случайно оказался в outcome" структурно невозможным,
+    а не соглашением, которое кто-то должен помнить.
+
+    ПОЧЕМУ ТРЕЙС НИКОГДА НЕ ЕДЕТ В `CasinoGame.outcome` — четыре конкретных
+    причины, не эстетика:
+      1. Раздувание КАЖДОЙ строки: медианы измерены — `outcome` ~10.6 КБ,
+         трейс ~17 КБ, т.е. +160% на строку данными с нулевой аудиторской
+         ценностью, и записывалось бы это на КАЖДОМ спине, включая ~64%
+         спинов вообще без фриспинов (авто-спин в миниаппе — клиентский цикл,
+         см. `casino_service._check_slots_throttle`).
+      2. Окно блокировки, а не только диск: патологическая строка выросла бы с
+         373.5 КБ до ~21 МБ, и этот INSERT происходит ВНУТРИ единственной
+         транзакции `_settle` — той же, что держит row-lock на `chat_bank`,
+         взятый `economy_service.pay_from_bank`. Сериализовать и записать там
+         21 МБ — удлинить блокировку горячей строки чата. Это дефект
+         пропускной способности, а не потраченные байты.
+      3. Не тот род данных: аудиторская запись, нужная при разборе спора, —
+         финальные доски по раундам + выплаты + лестница, и она УЖЕ лежит в
+         `outcome`. Сценарий анимации — не доказательство.
+      4. Такой JSONB ушёл бы в TOAST out-of-line и распаковывался бы при
+         КАЖДОМ обычном чтении строки, включая ручной `SELECT *` в psql.
+
+    ДЕНЬГИ В КОНВЕРТЕ (`payout_paid`/`payout_engine_total`/`bank_capped`) —
+    ЕДИНСТВЕННОЕ, ЧТО НЕ ДАЁТ ЭКРАНУ СОВРАТЬ ПРО ВЫИГРЫШ. `paid_total` —
+    обязательный (без дефолта) keyword: конверт анимации НЕЛЬЗЯ собрать, не
+    назвав сумму, которая реально ушла игроку.
+
+    Дефект, который это закрывает (тот же класс, что уже случился на Azumanga —
+    см. `bank_capped` в докстринге `api/routes/games.py`, инцидент "/me до и
+    после раунда 1000 и 1000, банк чата был 0"): `round_end.final_round_payout`
+    и `outcome.total_payout` — это ЧЕСТНЫЙ (движковый) выигрыш, а по факту
+    `economy_service.pay_from_bank` (D-06) платит `min(payout, остаток банка)`.
+    На пустом/выеденном банке чата это расходится ЛЕГКО, а не в экзотике:
+    измерено на 20 000 реальных спинов — 10.8% спинов платят больше ставки,
+    максимум 126x ставки. Экран, тикающий счётчик по суммам раундов, досчитал
+    бы до 1080 и грейданул "большой выигрыш", после чего `user_balance_after`
+    показал бы +430. Игрок читает это ровно одним способом: экран соврал.
+
+    КОНТРАКТ СЧЁТЧИКА (единственная правильная формула, работает и в
+    капнутом, и в обычном случае, целочисленная, монотонная):
+
+        показанный итог после раунда k =
+            min(сумма final_round_payout по раундам 0..k, payout_paid)
+
+    т.е. `min(...)` применяется ВСЕГДА, а не "если bank_capped". Тогда один и
+    тот же код правилен в обоих случаях (без капа `min` — no-op), счётчик
+    монотонно не убывает и заканчивается РОВНО на `payout_paid` — числе,
+    равном изменению баланса игрока. Грейдинг ("большой выигрыш", хаптик,
+    масштаб цифр) считается ТОЛЬКО от `payout_paid`; `payout_engine_total`
+    годится исключительно для честной подписи вида "выплачено 430 из 1080 —
+    банк чата пуст". Отклонённая альтернатива — пропорциональное
+    масштабирование каждого раунда на `paid/total`: даёт дробные суммы, не
+    сходится по округлению и всё равно требует финального клампа.
+
+    Почему деньги дублируются в конверт, хотя `play_one_spin` намеренно НЕ
+    пишет op `spin_end` "чтобы не создавать второй источник истины": (а)
+    `payout_paid` в `outcome` не существует ВООБЩЕ ни в каком виде — там лежит
+    только неурезанный движковый итог, а фактическая выплата живёт в
+    `CasinoGame.payout`/ключе `payout` ответа, т.е. это не копия, а
+    недостающее число; (б) `payout_engine_total` — сознательный дубль
+    `outcome.total_payout` (равенство пиновано тестом), потому что компонент,
+    который КРУТИТ СЧЁТЧИК, обязан получать оба числа из одного объекта: любой
+    его поход в соседнюю ветку ответа за "вторым" числом — это и есть место,
+    где они однажды разойдутся; (в) риск "копия отсутствует ровно тогда, когда
+    отсутствует анимация" здесь нулевой: нет анимации — нет и счётчика, экран
+    рисует финал из `outcome` и деньги из `payout` (см. контракт replay ниже).
+
+    ДВА ПРЕДЕЛА, ДВА РАЗНЫХ КОНЦЕРНА (см. константы `TRACE_MAX_OPS` /
+    `TRACE_MAX_ROUNDS`): первый бьёт по БАЙТАМ, второй — по ВРЕМЕНИ показа.
+    Ни один не мажорирует другой: 20 крошечных раундов по 4 op — 80 ops (предел
+    ops молчит), но это уже до минуты анимации; наоборот, один раунд с полным
+    каскадом на 30 шагов — 63 op'а в одном раунде (предел раундов молчит).
+    Арифметика (перемерена; прошлая редакция этого абзаца занижала потолок,
+    объявляя "<=480 КБ"): худший op — `evaluate` с доской из 36 одиночных
+    блоков и тремя описанными линиями, 4 631 Б ИЗМЕРЕННЫХ (доска 3 590 Б +
+    winning_block_ids/lines/скаляры), => 120 ops <= 555 720 Б ≈ 543 КиБ, а не
+    480 КБ. Реальность сильно ниже теоретического потолка: на тех же 20 000
+    настоящих спинов самый крупный конверт — 349 597 Б (101 op), типичный
+    ~17 КБ (5 ops), p95 ~135 КБ (42 ops). НЕусечённый патологический спин
+    (`_ForcedRng` + `_compute_freespins_awarded -> 1000`, т.е. ровно форс из
+    `test_tumble_hard_cap_and_freespins_hard_cap_both_respected_simultaneously`)
+    — 225 432 блок-словаря = 21 678 218 Б ≈ 21 МБ JSON-текста. Т.е. предел
+    превращает 21 МБ в <=543 КиБ (~40x) и при этом не задевает ни один из
+    20 000 реальных спинов (усечение 0 из 20 000 и по ops, и по раундам).
+    Предел считает ОПЕРАЦИИ, а не байты, сознательно: побайтовый предел
+    требовал бы сериализовать раунд, чтобы узнать, влезает ли он (двойная
+    работа на каждом спине ради случая, который не наступил ни разу на
+    20 000 спинов), а разброс размера op'а зажат сверху теми самыми 4.6 КБ —
+    36 клеток доски физически не могут дать больше.
+
+    УСЕЧЕНИЕ — ТОЛЬКО ЦЕЛЫМИ РАУНДАМИ. Раунды в трейсе идут непрерывными
+    группами по построению (раунды играются последовательно), группируем по
+    `(phase, round)` и берём раунд целиком, только если ОБА бюджета вмещают его
+    полностью. Частичный раунд не отдаётся никогда: потребитель, получивший
+    раунд, обрезанный посередине каскада, нарисовал бы недоигранный каскад как
+    ФИНАЛЬНУЮ доску этого раунда с неправильной суммой на экране — ровно тот
+    отказ ("показать частичный спин как полный"), ради предотвращения которого
+    предел и существует.
+
+    ⚠ `complete_through_round` — САМАЯ ВЕРОЯТНАЯ ошибка интеграции во всём
+    контракте: базовый раунд имеет номер `0`, а `0` в JavaScript ЛОЖЕН.
+    Потребитель обязан проверять `complete_through_round !== null`, НИКОГДА не
+    `if (complete_through_round)` — иначе спин, у которого поместился ровно
+    базовый раунд, будет обработан как "не поместилось ничего". `null` здесь
+    означает "не влез даже базовый раунд" (сегодня структурно недостижимо —
+    <=65 ops на раунд < 120 — но значение определено всегда).
+
+    Контракт деградации при `truncated`: проиграть раунды
+    `0..complete_through_round` из `ops`, затем прыгнуть в финальное состояние
+    по `outcome` и честно показать индикатор (`rounds_total - rounds_recorded`
+    раундов пропущено). Никогда не выдавать усечённый трейс за весь спин.
+
+    `block_id` УНИКАЛЕН В ПРЕДЕЛАХ СПИНА (не только раунда) — на это можно
+    опираться, твиня движение блока между любыми двумя кадрами трейса, включая
+    кадры по РАЗНЫЕ стороны границы раунда (`fill` следующего раунда — соседний
+    элемент массива после `round_end` предыдущего). Как это обеспечено и какой
+    именно баг твина закрывает — см. `_next_block_id`. Между РАЗНЫМИ спинами
+    id, разумеется, повторяются: спин и есть граница жизни трейса.
+
+    ЛЕСТНИЦА ДЛЯ ШКАЛЫ-ВАЛА: статическая часть (`ladder_thresholds` — сами
+    пороги и множители по порядку, `ladder_max_score` — потолок счёта) лежит в
+    конверте ОДИН РАЗ (за спин она не меняется), динамическая — в
+    `round_end.ladder` каждого фриспин-раунда (`score_after`/`multiplier_after`/
+    `crossed_thresholds` + цель: `next_threshold`/`next_multiplier`/
+    `score_to_next`, см. `teto_drillhunt.ladder_gauge`). Копия порогов на
+    клиенте не нужна и заводить её нельзя — разъедется при перекалибровке.
+    ⚠ Вариант Y: `multiplier_after` вступает в силу со СЛЕДУЮЩЕГО раунда, а к
+    текущему применён `round_end.multiplier_applied` — шкала обязана показывать
+    только что взятый порог как "сработает дальше" (см.
+    `docs/teto-slot-design-direction.md` §4).
+
+    Контракт "анимации может не быть вообще": `animation === null` в ответе
+    роута => НЕ анимировать; рисовать финальную доску из `outcome.final_blocks`,
+    лестницу из `outcome.ladder_final_state`, деньги из `payout`/
+    `user_balance_after`. Так бывает на идемпотентном replay уже
+    рассчитанного `idem_key` (см. `casino_service.play_teto_slots`) — и это же
+    ПРАВИЛЬНОЕ продуктовое поведение: игрок этот спин уже посмотрел, replay —
+    это сетевой ретрай, а не новый раунд.
+
+    ОТКЛОНЁННЫЕ альтернативы сокращения размера (чтобы их не переоткрывали):
+      - Дельты вместо полных снапшотов. Отклонено: чтобы восстановить шаг на
+        клиенте, пришлось бы переписать на TypeScript и порядок rigid-body
+        гравитации (`sorted(survivors, key=lambda b: -(b.row + b.height))`), и
+        аллокацию id при доборе (`max(все id) + 1`, включая уже удалённых
+        победителей) — дублирование денежно-смежной логики движка, т.е. ровно
+        тот класс расхождения, который комментарий в `resolve_tumble`
+        фиксирует как УЖЕ однажды поймавшийся на прототипе. Плюс это убивает
+        seek-to-any-op.
+      - Компактная позиционная кодировка блока `[block_id, symbol_id, row,
+        col, height, width]` — ~30 Б против 97 Б, честный ~3x выигрыш, но она
+        вводит ВТОРУЮ кодировку доски в тот же ответ (`outcome.final_blocks`
+        остаётся многословной через `_serialize_blocks`), заставляя фронт
+        держать два парсера одного понятия. Предел ops уже даёт нужный запас;
+        одна кодировка везде дороже 3x.
+      - Убрать `blocks` из `evaluate`-op'ов (~50% пейлоада). Отклонено дважды —
+        см. `_record`."""
+    # Группировка по (phase, round) с сохранением порядка: раунды непрерывны по
+    # построению, поэтому достаточно сравнивать с последней группой — dict/
+    # sort не нужны, и порядок раундов гарантированно совпадает с порядком
+    # розыгрыша (важно: усечение обязано срезать ПОСЛЕДНИЕ раунды, не любые).
+    groups: list[list[dict]] = []
+    last_key: tuple[str, int] | None = None
+    for op in trace or ():
+        key = (op["phase"], op["round"])
+        if key != last_key:
+            groups.append([])
+            last_key = key
+        groups[-1].append(op)
+
+    kept: list[dict] = []
+    rounds_recorded = 0
+    truncated_reason: str | None = None
+    for round_ops in groups:
+        if rounds_recorded >= max_rounds:
+            truncated_reason = "round_cap"
+            break
+        if len(kept) + len(round_ops) > max_ops:
+            truncated_reason = "op_cap"
+            break
+        kept.extend(round_ops)
+        rounds_recorded += 1
+
+    # `_serialize_blocks` переиспользуется целиком: доска в трейсе побайтово
+    # той же формы, что `outcome.final_blocks` — ОДНА кодировка доски на весь
+    # ответ, фронт парсит одну структуру и там, и там. `blocks` уже последний
+    # ключ, поэтому распаковка через `**op` порядок ключей не ломает.
+    ops_out = [{**op, "blocks": _serialize_blocks(op["blocks"])} for op in kept]
+
+    # Движковый итог считается по ВСЕМУ сырому трейсу, а не по `kept`: усечение
+    # — свойство ПОКАЗА, а не денег, и на усечённом спине "сколько всего
+    # начислил движок" обязано остаться тем же числом, что `outcome.
+    # total_payout` (равенство пиновано тестом). Иначе экран, у которого
+    # усеклись последние раунды, показал бы "выплачено 430 из 200".
+    engine_total = sum(
+        op["final_round_payout"] for op in (trace or ()) if op["op"] == "round_end"
+    )
+
+    return {
+        "version": TRACE_SCHEMA_VERSION,
+        # --- деньги: единственная авторитетная сумма — `payout_paid` ---------
+        # Контракт счётчика (min-по-префиксу) и обоснование дубля — в докстринге
+        # выше. `payout_paid` == `payout` HTTP-ответа == изменение баланса
+        # игрока; `payout_engine_total` == `outcome.total_payout` == сумма
+        # `round_end.final_round_payout` по ВСЕМ раундам спина.
+        "payout_paid": paid_total,
+        "payout_engine_total": engine_total,
+        "bank_capped": paid_total < engine_total,
+        # --- статическая конфигурация лестницы (за спин не меняется) --------
+        "ladder_thresholds": [{"score": score, "multiplier": mult} for score, mult in LADDER],
+        "ladder_max_score": MAX_BOARD_SCORE,
+        "ops": ops_out,
+        "ops_recorded": len(ops_out),
+        "ops_total": len(trace or ()),
+        "rounds_recorded": rounds_recorded,
+        "rounds_total": len(groups),
+        # Наибольший ПОЛНОСТЬЮ поместившийся раунд. Раунды идут по возрастанию
+        # (база=0, затем фриспины 1..N), усечение режет только хвост — значит
+        # это просто `round` последнего оставленного op'а. См. предупреждение
+        # про falsy-0 в JS выше.
+        "complete_through_round": kept[-1]["round"] if kept else None,
+        "truncated": truncated_reason is not None,
+        "truncated_reason": truncated_reason,
     }
