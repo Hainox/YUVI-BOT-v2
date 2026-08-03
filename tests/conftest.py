@@ -18,12 +18,38 @@ from __future__ import annotations
 import os
 from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock
+from urllib.parse import urlparse
 
 import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlalchemy.ext.asyncio import create_async_engine
+
+# Инцидент 2026-07-23: некоторые test_api_*.py пишут в БД через SessionLocal()
+# напрямую (реальная фабрика сессий бота), а не через rollback-safe фикстуру
+# `session` ниже — при прогоне с DATABASE_URL, указывающим на прод, эти тесты
+# закоммитили ~125 синтетических "Тест"-пользователей и их дуэли/маркеты/
+# фидбек/economy_tx прямо в живую БД (см. cleanup-скрипт в истории чата).
+# Прод по .env.example всегда резолвит Postgres через docker-compose хост
+# `postgres` (внутренняя сеть контейнеров); localhost/127.0.0.1 — только
+# локальная разработка и CI (.github/workflows/ci.yml). Стоп-кран ниже не
+# даёт тестам стартовать, если хост не входит в этот список.
+_SAFE_DATABASE_HOSTS = {"localhost", "127.0.0.1"}
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    database_url = os.environ.get("DATABASE_URL", "")
+    host = urlparse(database_url).hostname
+    if host not in _SAFE_DATABASE_HOSTS:
+        pytest.exit(
+            f"DATABASE_URL host {host!r} не похож на локальный/CI Postgres "
+            f"(ожидались {sorted(_SAFE_DATABASE_HOSTS)}) — похоже на прод. "
+            "Часть тестов пишут в БД напрямую и не откатываются, прогон "
+            "против прода оставит там мусор (см. коммент выше). Остановлено "
+            "до первого теста.",
+            returncode=1,
+        )
 
 
 @pytest_asyncio.fixture
