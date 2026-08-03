@@ -5,7 +5,7 @@
 // Source: REFERENCE-XYLOZ.md §6 ("balance sniffing from any API response")
 // + api/deps.py (header/query contract).
 import { initData } from './tg';
-import { balance } from './balance';
+import { applyBalanceUpdate } from './balance';
 
 let chatId: number | null = null;
 
@@ -103,11 +103,14 @@ export async function apiFetch<T>(
 	// Balance sniffing: any response carrying a known balance field updates
 	// the shared store immediately — the tab that triggered the action gets
 	// instant feedback without waiting for the SSE round-trip. SSE remains
-	// the source of truth for OTHER tabs/actions.
+	// the source of truth for OTHER tabs/actions. Routed through
+	// applyBalanceUpdate (not balance.set directly) so screens with their own
+	// multi-second reveal animation (the two slot screens) can hold this off
+	// until their reveal actually finishes — see lib/balance.ts.
 	const maybeBalance =
 		(data as Record<string, unknown>)?.user_balance_after ??
 		(data as Record<string, unknown>)?.balance;
-	if (typeof maybeBalance === 'number') balance.set(maybeBalance);
+	if (typeof maybeBalance === 'number') applyBalanceUpdate(maybeBalance);
 
 	return data;
 }

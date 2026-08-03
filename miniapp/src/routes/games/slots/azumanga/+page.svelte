@@ -19,8 +19,9 @@
 	// replay pacing is informational only — it does not invent outcomes, it
 	// only staggers the reveal of grids/numbers the server already sent in
 	// `outcome`.
-	import { onMount } from 'svelte';
+	import { onMount, onDestroy } from 'svelte';
 	import { apiFetch, ApiError } from '$lib/api';
+	import { holdBalanceUpdates } from '$lib/balance';
 	import { haptic } from '$lib/tg';
 	import { SLOT_SYMBOLS, SLOT_PAYLINES, symbolSrc } from '$lib/slotData';
 	import BetControl from '$lib/components/BetControl.svelte';
@@ -326,6 +327,12 @@
 		// sees motion the instant they tap — the strip's tail (last 3 rows)
 		// still shows the previous grid until the real result lands below.
 		reelStrips = _stripsFromGrid(grid);
+		// Held until the reveal below (including any bonus replay) actually
+		// finishes — otherwise the header balance jumps to the new total via
+		// api.ts's sniff (or an SSE broadcast, published server-side at the
+		// same settle moment) before the drum even lands, spoiling the
+		// result. See lib/balance.ts.
+		holdBalanceUpdates(true);
 
 		let res: SlotResult;
 		try {
@@ -334,6 +341,7 @@
 				body: JSON.stringify({ bet, idem_key: `slots:${crypto.randomUUID()}` })
 			});
 		} catch (err) {
+			holdBalanceUpdates(false);
 			spinning = false;
 			error = err instanceof ApiError ? err.message : String(err ?? 'unknown_error');
 			haptic('error');
@@ -377,6 +385,9 @@
 		// once the full visual cycle — including the bonus replay — is done;
 		// runAutoSpin() below relies on that to pace spins one at a time.
 		await _revealScatterAndBonus(res);
+		// Реплей (база + возможный бонус) реально закончен — теперь можно
+		// отпустить шапку-баланс, см. holdBalanceUpdates(true) выше.
+		holdBalanceUpdates(false);
 
 		if (res.jackpot?.won) {
 			// Джекпот — редчайший исход, всегда наивысший приоритет на экране:
@@ -444,6 +455,11 @@
 		_autoSpinRunId += 1;
 		autoSpinsLeft = null;
 	}
+
+	// Если экран размонтировали посреди спина/бонус-реплея — код после
+	// _revealScatterAndBonus() выше никогда не выполнится, значит холд
+	// баланса больше некому отпустить, кроме как здесь.
+	onDestroy(() => holdBalanceUpdates(false));
 </script>
 
 <div class="slot-screen">

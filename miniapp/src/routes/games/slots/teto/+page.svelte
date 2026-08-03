@@ -23,6 +23,7 @@
 	// 200: без реплеера вовсе, тикер говорит «повтор раунда».
 	import { onDestroy } from 'svelte';
 	import { apiFetch, ApiError } from '$lib/api';
+	import { holdBalanceUpdates } from '$lib/balance';
 	import { haptic } from '$lib/tg';
 	import { TETO_SYMBOLS, TETO_PAYTABLE_ORDER, tetoSymbolSrc } from '$lib/tetoSlotData';
 	import BetControl from '$lib/components/BetControl.svelte';
@@ -311,8 +312,12 @@
 		skipNow = true;
 		for (const wake of [...pendingWakes]) wake();
 		// Демонтированный компонент не трогает стейт и не жужжит хаптикой —
-		// просто гасим паузы и выходим (см. onDestroy ниже).
+		// просто гасим паузы и выходим (см. onDestroy ниже, который уже
+		// отпустил холд баланса за нас в этом случае).
 		if (!alive) return;
+		// Реплей действительно закончен (или его не было вовсе) — теперь
+		// можно отпустить шапку-баланс, см. holdBalanceUpdates(true) в spin().
+		holdBalanceUpdates(false);
 		winningIds = new Set();
 		removingIds = new Set();
 		enteringIds = new Set();
@@ -510,6 +515,12 @@
 		skipNow = false;
 		playing = true;
 		haptic('spin');
+		// Held until settle() (or onDestroy, if the player navigates away
+		// mid-reveal) releases it — otherwise the header balance jumps to the
+		// new total via api.ts's sniff (or an SSE broadcast, published
+		// server-side at the same settle moment) before the board even starts
+		// animating, spoiling the reveal. See lib/balance.ts.
+		holdBalanceUpdates(true);
 
 		const idemKey = retryIdemKey ?? `teto:${crypto.randomUUID()}`;
 		retryIdemKey = idemKey;
@@ -521,6 +532,7 @@
 				body: JSON.stringify({ bet, idem_key: idemKey })
 			});
 		} catch (err) {
+			holdBalanceUpdates(false);
 			playing = false;
 			if (err instanceof ApiError && err.status > 0 && err.status < 500) {
 				// Сервер определённо ОТКАЗАЛ (ставка не проведена) — ключ не
@@ -619,6 +631,10 @@
 		stopAutoSpin();
 		skipNow = true;
 		for (const wake of [...pendingWakes]) wake();
+		// Если экран размонтировали посреди спина/анимации — settle() выше
+		// уже никогда не выполнится (алайв-гард), значит холд баланса больше
+		// некому отпустить, кроме как здесь.
+		holdBalanceUpdates(false);
 	});
 </script>
 
