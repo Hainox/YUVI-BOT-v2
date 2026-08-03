@@ -21,6 +21,7 @@
 	// и тот же settle()-путь (финальная доска из outcome.final_blocks, деньги
 	// из payout). animation:null (replay идемпотентного idem_key) — нормальный
 	// 200: без реплеера вовсе, тикер говорит «повтор раунда».
+	import { onDestroy } from 'svelte';
 	import { apiFetch, ApiError } from '$lib/api';
 	import { haptic } from '$lib/tg';
 	import { TETO_SYMBOLS, TETO_PAYTABLE_ORDER, tetoSymbolSrc } from '$lib/tetoSlotData';
@@ -179,6 +180,11 @@
 	let lastBet = $state(500);
 	let playing = $state(false);
 	let blocks = $state<TetoBlock[]>(placeholderBoard());
+	// block_id уникален только В ПРЕДЕЛАХ спина (движок начинает базовый fill
+	// с start_id=0, плэйсхолдер тоже 0..35) — эпоха доски входит в ключ
+	// {#each}, чтобы на границе спина старые DOM-узлы уничтожались, а не
+	// «переезжали» CSS-твином в чужие позиции с подменой спрайта.
+	let boardEpoch = $state(0);
 	let winningIds = $state<Set<number>>(new Set());
 	let removingIds = $state<Set<number>>(new Set());
 	let enteringIds = $state<Set<number>>(new Set());
@@ -234,6 +240,9 @@
 	// фриспин-спин может играться до 20 раундов.
 	let skipNow = false;
 	const pendingWakes = new Set<() => void>();
+	// false после демонтирования экрана (onDestroy внизу): реплеер, хаптика и
+	// — главное — цикл авто-спина не имеют права жить на призраке компонента.
+	let alive = true;
 
 	function wait(ms: number): Promise<void> {
 		if (skipNow) return Promise.resolve();
@@ -254,10 +263,10 @@
 		for (const wake of [...pendingWakes]) wake();
 	}
 
-	// Смена доски. Блоки рендерятся keyed по block_id (уникален в пределах
-	// СПИНА, включая границы раундов — гарантия _next_block_id движка),
-	// поэтому CSS-transition на top/left сам твинит падение выживших блоков;
-	// genuinely-новые id получают drop-in.
+	// Смена доски ВНУТРИ спина. Блоки рендерятся keyed по boardEpoch:block_id
+	// (block_id уникален в пределах СПИНА, включая границы раундов — гарантия
+	// _next_block_id движка), поэтому CSS-transition на top/left сам твинит
+	// падение выживших блоков; genuinely-новые id получают drop-in.
 	function setBoard(next: TetoBlock[], markEntering: boolean) {
 		if (markEntering) {
 			const prevIds = new Set(blocks.map((b) => b.block_id));
@@ -268,7 +277,24 @@
 		blocks = next;
 	}
 
+	// fill — полная замена доски НОВОГО спина: диффать по block_id через
+	// границу спина нельзя (id повторяются между спинами), поэтому все блоки
+	// entering, а инкремент boardEpoch меняет ключи {#each} — прошлые узлы
+	// уничтожаются и drop-in играет для всей доски.
+	function fillBoard(next: TetoBlock[]) {
+		boardEpoch += 1;
+		enteringIds = new Set(next.map((b) => b.block_id));
+		blocks = next;
+	}
+
 	const LINE_COLORS = ['var(--accent-cyan)', 'var(--accent-pink)', 'var(--accent-yellow)'];
+
+	// Оверлей линий читаем до ~полудюжины полилиний; дальше (мульти-лайн
+	// выигрыши мегаблоков — вплоть до всех 50 линий на 6×6-блоке) он хоронит
+	// доску и сам выигравший блок под спагетти, поэтому при превышении капа
+	// линии гасятся целиком — момент несёт подсветка самих блоков
+	// (winning_block_ids → .block-hit).
+	const MAX_DRAWN_LINES = 6;
 
 	// winning_lines.cells — [[row, col], ...] самодостаточной геометрией
 	// (клиентской копии пейлайнов нет и не нужно). Центр клетки в viewBox
@@ -284,6 +310,9 @@
 	function settle(res: TetoResult) {
 		skipNow = true;
 		for (const wake of [...pendingWakes]) wake();
+		// Демонтированный компонент не трогает стейт и не жужжит хаптикой —
+		// просто гасим паузы и выходим (см. onDestroy ниже).
+		if (!alive) return;
 		winningIds = new Set();
 		removingIds = new Set();
 		enteringIds = new Set();
@@ -315,6 +344,11 @@
 					? 'win'
 					: 'lose'
 		);
+		// Скип-флаг не переживает спин: иначе следующий wait() — в том числе
+		// AUTO_SPIN_GAP_MS между авто-спинами — резолвится микротаском, и
+		// браузер стирает установившийся результат, не успев его отрисовать
+		// (ровно тот баг игроков, ради которого гэп существует).
+		skipNow = false;
 	}
 
 	async function playOps(res: TetoResult, anim: TetoAnimation): Promise<void> {
@@ -343,14 +377,14 @@
 					interstitial = null;
 					if (skipNow) return;
 				}
-				setBoard(op.blocks, true);
+				fillBoard(op.blocks);
 				await wait(FILL_MS);
 			} else if (op.op === 'evaluate') {
 				// Терминальный evaluate (has_win=false) — просто конец каскада,
 				// визуального шага нет.
 				if (!op.has_win) continue;
 				winningIds = new Set(op.winning_block_ids);
-				winLines = op.winning_lines;
+				winLines = op.winning_lines.length <= MAX_DRAWN_LINES ? op.winning_lines : [];
 				// Сырой счётчик РАУНДА (до множителя лестницы) — evaluate.payout
 				// приходит сырым, множитель применяется РОВНО РАЗ в round_end.
 				roundRaw += op.payout;
@@ -438,6 +472,15 @@
 		}
 	}
 
+	// Сетевой ретрай по контракту games.py (пункт «сетевой ретрай»): если
+	// ответ на спин потерялся (timeout/обрыв/5xx), сервер, возможно, УЖЕ
+	// провёл раунд и списал ставку. Следующий тап повторяет ТОТ ЖЕ idem_key —
+	// проведённый раунд вернётся сохранённым исходом (animation:null,
+	// нормальный 200-replay, экран честно покажет «повтор раунда»), а не
+	// превратится во второй платный раунд. Детерминированные отказы
+	// (400/401/403/409/429 — раунд не проведён) ключ сбрасывают.
+	let retryIdemKey: string | null = null;
+
 	async function spin() {
 		if (playing) return;
 		error = null;
@@ -454,28 +497,51 @@
 		bonusWinShown = 0;
 		fsRound = 0;
 		fsTotal = 0;
+		// Шкала-вал стартует спин чистой: прошлый ×N/насечки/заполнение —
+		// состояние ПРОШЛОГО спина, база нового всегда играется при
+		// multiplier 1 (§4: шкала обязана показывать множитель честно). Иначе
+		// же первый freespin round_end нового бонуса с multiplier_after=1
+		// ложно «клацал» бы взятым порогом (1 !== прошлые ×10).
+		ladderScore = 0;
+		ladderMultiplier = 1;
+		ladderCrossed = new Set();
+		gaugeNote = null;
 		lastBet = bet;
 		skipNow = false;
 		playing = true;
 		haptic('spin');
 
+		const idemKey = retryIdemKey ?? `teto:${crypto.randomUUID()}`;
+		retryIdemKey = idemKey;
+
 		let res: TetoResult;
 		try {
 			res = await apiFetch<TetoResult>('/api/v1/games/teto_slots', {
 				method: 'POST',
-				body: JSON.stringify({ bet, idem_key: `teto:${crypto.randomUUID()}` })
+				body: JSON.stringify({ bet, idem_key: idemKey })
 			});
 		} catch (err) {
 			playing = false;
+			if (err instanceof ApiError && err.status > 0 && err.status < 500) {
+				// Сервер определённо ОТКАЗАЛ (ставка не проведена) — ключ не
+				// нужен; неопределённость (status 0 timeout / 5xx) ключ хранит
+				// для replay-ретрая.
+				retryIdemKey = null;
+			}
 			if (err instanceof ApiError && err.status === 429) {
 				// Троттлинг авто-спина — сообщение в тикере, не тост-ошибка.
 				throttleMsg = 'не так быстро — подожди секунду и крути снова';
 			} else {
 				error = err instanceof ApiError ? err.message : String(err ?? 'unknown_error');
 			}
-			haptic('error');
+			if (alive) haptic('error');
 			return;
 		}
+		retryIdemKey = null;
+		// Ответ авторитетен и для ставки: на replay (ретрай той же idem_key)
+		// это ставка ТОГО раунда — от неё грейдится big-win и подписывается
+		// проигрыш, а не от текущего значения контрола.
+		lastBet = res.bet;
 
 		const anim = res.animation;
 		if (anim) {
@@ -540,51 +606,68 @@
 		_autoSpinRunId += 1;
 		autoSpinsLeft = null;
 	}
+
+	// Уход с экрана (BackButton layout'а) ОБЯЗАН остановить всё живое:
+	// runAutoSpin-цикл (иначе он продолжал бы жечь реальные платные POST'ы в
+	// фоне, недосягаемый для СТОП нового инстанса), таймеры реплеера (до
+	// ~минуты wait()'ов у 20-раундового бонуса) и хаптику. skipNow + wake
+	// мгновенно будят все паузы, playOps выходит на первой же проверке, а
+	// settle()/catch-путь спина гейтятся на alive и не трогают ни стейт, ни
+	// вибромотор.
+	onDestroy(() => {
+		alive = false;
+		stopAutoSpin();
+		skipNow = true;
+		for (const wake of [...pendingWakes]) wake();
+	});
 </script>
 
 <div class="teto-screen">
-	<div class="menu-head">
+	<!-- Компактная шапка одной строкой: вертикальный бюджет 390×844 обязан
+	     вместить доску+ставку+кнопку на первом экране (чеклист §8, п.1). -->
+	<div class="menu-head teto-head">
 		<h1 class="menu-title">Тето Брейнрот</h1>
 		<div class="menu-sub">Дрель-Хант · 6×6 · 50 линий</div>
 	</div>
 
 	<!-- Шкала-вал дрели (§4 — фирменная деталь экрана): всегда видима, вне
 	     фриспинов дремлет приглушённой; насечки — из ladder_thresholds
-	     конверта (клиентской копии порогов нет). -->
+	     конверта (клиентской копии порогов нет). Sticky: на коротких экранах
+	     шкала прилипает к верху вьюпорта, чтобы взятия порогов и штамп ×N не
+	     играли за кадром, где бы ни стоял скролл. -->
 	<div class="drill-gauge" class:gauge-live={fsActive}>
-		<div class="gauge-head">
-			<span class="gauge-title">Дрель-вал</span>
-			{#key stampKey}
-				<span class="gauge-stamp" class:stamp-idle={ladderMultiplier <= 1}
-					>×{ladderMultiplier}</span
-				>
-			{/key}
-		</div>
-		<div class="gauge-track">
-			<div
-				class="gauge-fill"
-				style:width={`${ladderMaxScore ? Math.min(100, (ladderScore / ladderMaxScore) * 100) : 0}%`}
-			></div>
-			{#if ladderThresholds && ladderMaxScore}
-				{#each ladderThresholds as t (t.score)}
-					<div
-						class="gauge-notch"
-						class:notch-crossed={ladderCrossed.has(t.score)}
-						style:left={`${(t.score / ladderMaxScore) * 100}%`}
-					>
-						<span class="notch-label">×{t.multiplier}</span>
-					</div>
-				{/each}
-			{/if}
-		</div>
-		<div class="gauge-note" class:gauge-note-hot={gaugeNote !== null}>
-			{#if gaugeNote}
-				{gaugeNote}
-			{:else if fsActive}
-				очки дрели: <span class="gauge-score">{ladderScore}</span>
-			{:else}
-				множитель растёт во фриспинах
-			{/if}
+		{#key stampKey}
+			<span class="gauge-stamp" class:stamp-idle={ladderMultiplier <= 1}
+				>×{ladderMultiplier}</span
+			>
+		{/key}
+		<div class="gauge-body">
+			<div class="gauge-track">
+				<div
+					class="gauge-fill"
+					style:width={`${ladderMaxScore ? Math.min(100, (ladderScore / ladderMaxScore) * 100) : 0}%`}
+				></div>
+				{#if ladderThresholds && ladderMaxScore}
+					{#each ladderThresholds as t (t.score)}
+						<div
+							class="gauge-notch"
+							class:notch-crossed={ladderCrossed.has(t.score)}
+							style:left={`${(t.score / ladderMaxScore) * 100}%`}
+						>
+							<span class="notch-label">×{t.multiplier}</span>
+						</div>
+					{/each}
+				{/if}
+			</div>
+			<div class="gauge-note" class:gauge-note-hot={gaugeNote !== null}>
+				{#if gaugeNote}
+					{gaugeNote}
+				{:else if fsActive}
+					очки дрели: <span class="gauge-score">{ladderScore}</span>
+				{:else}
+					дрель-вал · множитель растёт во фриспинах
+				{/if}
+			</div>
 		</div>
 	</div>
 
@@ -598,14 +681,19 @@
 		class:board-win={outcomeTint === 'win'}
 		class:board-lose={outcomeTint === 'lose'}
 		role="button"
-		tabindex="0"
+		tabindex={playing ? 0 : -1}
 		aria-label="Пропустить анимацию"
+		aria-disabled={!playing}
 		onclick={requestSkip}
 		onkeydown={(e) => {
-			if (e.key === 'Enter' || e.key === ' ') requestSkip();
+			if (e.key === 'Enter' || e.key === ' ') {
+				// Пробел иначе скроллит страницу поверх скипа.
+				e.preventDefault();
+				requestSkip();
+			}
 		}}
 	>
-		{#each blocks as b (b.block_id)}
+		{#each blocks as b (`${boardEpoch}:${b.block_id}`)}
 			{@const sym = TETO_SYMBOLS[b.symbol_id]}
 			<div
 				class="teto-block"
@@ -650,12 +738,53 @@
 			</div>
 		{/if}
 
+		<!-- Деньги — оверлей на доске (не в потоке): бегущий счётчик спина во
+		     время реплея и установившийся результат после. Оверлей вместо
+		     отдельной win-area решает сразу два требования чеклиста §8:
+		     размеры тулбара стабильны (большой выигрыш ничего не сдвигает) и
+		     первый экран влезает в вертикальный бюджет телефона. -->
+		{#if playing && ((spinCounter ?? 0) > 0 || roundRaw > 0)}
+			<div class="board-money">
+				{#if (spinCounter ?? 0) > 0}
+					<div class="spin-counter" data-testid="spin-counter">
+						{spinCounter}<small>¥</small>
+					</div>
+				{/if}
+				{#if roundRaw > 0}
+					<div class="round-raw">
+						раунд: +{roundRaw}¥
+						{#if roundStamp}<span class="round-mult">×{roundStamp}</span>{/if}
+					</div>
+				{/if}
+			</div>
+		{:else if !playing && finalPayout !== null}
+			<div class="board-money">
+				<div
+					class={`teto-result ${finalPayout > 0 ? 'res-win' : 'res-lose'} ${bigWin ? 'res-big' : ''}`}
+					data-testid="final-result"
+				>
+					{#if bigWin}<span class="big-win-label">БОЛЬШОЙ ВЫИГРЫШ!</span>{/if}
+					<span class="res-amount">{finalPayout > 0 ? `+${finalPayout}` : `−${lastBet}`}<small
+							>¥</small
+						></span
+					>
+				</div>
+				{#if bankCapInfo}
+					<!-- Честная подпись про кап банком — единственное применение
+					     payout_engine_total (§5.1). -->
+					<div class="bank-cap-note" data-testid="bank-cap-note">
+						выплачено {bankCapInfo.paid} из {bankCapInfo.total}¥ — банк чата пуст
+					</div>
+				{/if}
+			</div>
+		{/if}
+
 		{#if interstitial}
 			<div class="board-interstitial"><span>{interstitial}</span></div>
 		{/if}
 	</div>
 
-	<div class="teto-ticker">
+	<div class="teto-ticker" class:with-skip={playing}>
 		{#if throttleMsg}
 			<span class="ticker-throttle">{throttleMsg}</span>
 		{:else if playing}
@@ -677,40 +806,6 @@
 			<span class="ticker-idle">не в этот раз — крути ещё</span>
 		{:else}
 			<span class="ticker-idle">жми · крути мегаблоки</span>
-		{/if}
-	</div>
-
-	<div class="win-area">
-		{#if playing}
-			{#if spinCounter !== null && spinCounter > 0}
-				<div class="spin-counter" data-testid="spin-counter">
-					{spinCounter}<small>¥</small>
-				</div>
-			{/if}
-			{#if roundRaw > 0}
-				<div class="round-raw">
-					раунд: +{roundRaw}¥
-					{#if roundStamp}<span class="round-mult">×{roundStamp}</span>{/if}
-				</div>
-			{/if}
-		{:else if finalPayout !== null}
-			<div
-				class={`teto-result ${finalPayout > 0 ? 'res-win' : 'res-lose'} ${bigWin ? 'res-big' : ''}`}
-				data-testid="final-result"
-			>
-				{#if bigWin}<span class="big-win-label">БОЛЬШОЙ ВЫИГРЫШ!</span>{/if}
-				<span class="res-amount">{finalPayout > 0 ? `+${finalPayout}` : `−${lastBet}`}<small
-						>¥</small
-					></span
-				>
-			</div>
-			{#if bankCapInfo}
-				<!-- Честная подпись про кап банком — единственное применение
-				     payout_engine_total (§5.1). -->
-				<div class="bank-cap-note" data-testid="bank-cap-note">
-					выплачено {bankCapInfo.paid} из {bankCapInfo.total}¥ — банк чата пуст
-				</div>
-			{/if}
 		{/if}
 	</div>
 
@@ -740,6 +835,10 @@
 		</div>
 	</div>
 
+	{#if error}
+		<div class="teto-error">{error}</div>
+	{/if}
+
 	<button
 		type="button"
 		class="teto-cta"
@@ -763,21 +862,24 @@
 			{/if}
 		</span>
 	</button>
-
-	{#if error}
-		<div class="teto-error">{error}</div>
-	{/if}
 </div>
 
 <style>
+	/* Вертикальный бюджет (чеклист §8, п.1): на 390×844 первый экран обязан
+	   показать доску, ставку и кнопку. Отсюда компактный однострочный
+	   заголовок, узкие межсекционные зазоры, шкала-вал в одну строку, деньги
+	   оверлеем на доске и sticky-CTA/шкала как страховка коротких экранов. */
 	.teto-screen {
-		padding: 24px 18px 32px;
+		padding: var(--space-sm) 18px var(--space-md);
 		display: flex;
 		flex-direction: column;
-		gap: var(--space-md);
+		gap: var(--space-sm);
 	}
-	.menu-head {
-		margin-bottom: var(--space-xs);
+	.teto-head {
+		display: flex;
+		align-items: baseline;
+		gap: var(--space-sm);
+		margin-bottom: 0;
 	}
 	.menu-title {
 		font-family: var(--font-chrome);
@@ -789,17 +891,20 @@
 	.menu-sub {
 		font-size: var(--font-body-size);
 		color: var(--text-muted);
-		margin-top: var(--space-xs);
 		letter-spacing: 0.04em;
 		font-family: var(--font-body);
 	}
 
 	/* ── шкала-вал дрели ─────────────────────────────────────────────────── */
 	.drill-gauge {
+		position: sticky; /* прилипает к верху — взятия порогов видны всегда */
+		top: var(--space-xs);
+		z-index: 9;
 		display: flex;
-		flex-direction: column;
-		gap: var(--space-xs);
-		padding: var(--space-sm) var(--space-md) var(--space-sm);
+		flex-direction: row;
+		align-items: center;
+		gap: var(--space-sm);
+		padding: 6px var(--space-sm) var(--space-xs) var(--space-sm);
 		background: var(--bg-secondary-2);
 		border: 2px solid var(--border-secondary);
 		border-radius: 14px;
@@ -815,17 +920,12 @@
 		border-color: var(--accent-yellow);
 		box-shadow: 0 0 18px rgba(255, 216, 74, 0.18);
 	}
-	.gauge-head {
+	.gauge-body {
+		flex: 1;
+		min-width: 0;
 		display: flex;
-		align-items: center;
-		justify-content: space-between;
-	}
-	.gauge-title {
-		font-family: var(--font-chrome);
-		font-size: var(--font-label-size);
-		letter-spacing: 0.08em;
-		text-transform: uppercase;
-		color: var(--text-muted);
+		flex-direction: column;
+		gap: 2px;
 	}
 	/* Штамп активного множителя — .chip-подпись (жёсткая рамка + смещённая
 	   тень), «клацает» на взятом пороге ({#key stampKey} пересоздаёт узел,
@@ -858,8 +958,8 @@
 	}
 	.gauge-track {
 		position: relative;
-		height: 18px;
-		margin-top: 16px; /* место для насечек-подписей над валом */
+		height: 14px;
+		margin-top: 14px; /* место для насечек-подписей над валом */
 		background: var(--bg-dominant);
 		border: 1px solid var(--border-secondary);
 		border-radius: 999px;
@@ -886,7 +986,7 @@
 	}
 	.notch-label {
 		position: absolute;
-		top: -17px;
+		top: -15px;
 		left: 50%;
 		transform: translateX(-50%);
 		font-family: var(--font-shout);
@@ -899,10 +999,14 @@
 		color: var(--accent-yellow);
 	}
 	.gauge-note {
-		min-height: 18px;
+		min-height: 16px;
 		font-family: var(--font-body);
 		font-size: var(--font-body-size);
+		line-height: 16px;
 		color: var(--text-muted);
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
 	}
 	/* Вариант Y: взятый порог — «со следующего раунда», подпись честная. */
 	.gauge-note-hot {
@@ -918,9 +1022,14 @@
 	.teto-board {
 		position: relative;
 		aspect-ratio: 1;
+		/* Кап ширины — часть вертикального бюджета: 320px доски (53px клетка)
+		   оставляют место ставке и CTA на первом экране 390×844; доска всё
+		   равно с большим отрывом крупнейший объект экрана. */
+		width: 100%;
+		max-width: 320px;
 		/* Pitfall 4 (как у Азуманги): анимированный контент не липнет к краю
 		   экрана — не конфликтует с edge-swipe-close Телеграма. */
-		margin: 0 2px;
+		margin: 0 auto;
 		background: var(--bg-secondary-2);
 		border: 2px solid var(--border-secondary);
 		border-radius: 14px;
@@ -969,7 +1078,11 @@
 	.teto-cell img {
 		width: 100%;
 		height: 100%;
-		object-fit: contain;
+		/* Чеклист §8: «мегаблок растягивает один спрайт». cover заполняет
+		   артом весь прямоугольник любой пропорции (2×3, 6×2, 6×1…) без
+		   искажения — вытянутый блок читается символом, а не пустым тинтом с
+		   маленькой картинкой в углу (contain давал ровно это). */
+		object-fit: cover;
 		padding: 5%;
 		display: block;
 	}
@@ -985,6 +1098,10 @@
 		bottom: 2px;
 		left: 2px;
 		right: 2px;
+		/* Документированное исключение из шкалы 13/17/32/64 (по образцу
+		   38px-исключения balance-card в tokens.css): бэдж живёт внутри
+		   1×1-клетки ~53px, «SCATTER» в 13px физически не помещается. Бэдж —
+		   дубль-подстраховка, основную читаемость несут рамка/тинт клетки. */
 		font-size: 8px;
 		text-align: center;
 		font-weight: 900;
@@ -1139,7 +1256,7 @@
 		font-family: var(--font-body);
 	}
 	.bonus-badge-label {
-		font-size: 11px;
+		font-size: var(--font-label-size);
 		font-weight: 900;
 		letter-spacing: 0.06em;
 	}
@@ -1149,15 +1266,19 @@
 		font-size: var(--font-heading-size);
 		font-weight: 900;
 		line-height: 1;
+		transform-origin: center bottom;
 		animation: tetoBadgeBump 0.3s ease-out;
 	}
 	.bonus-badge-win {
-		font-size: 11px;
+		font-size: var(--font-label-size);
 		font-weight: 900;
 	}
+	/* Бамп счётчика раундов: скромные 1.2 от нижней кромки — при 1.5 от
+	   центра увеличенные цифры на ~0.3s наезжали на «БОНУС» слева и на
+	   +N¥ справа. */
 	@keyframes tetoBadgeBump {
 		0% {
-			transform: scale(1.5);
+			transform: scale(1.2);
 		}
 		100% {
 			transform: scale(1);
@@ -1175,7 +1296,10 @@
 		background: rgba(10, 6, 8, 0.55);
 	}
 	.board-interstitial span {
-		font-family: var(--font-shout);
+		/* НЕ --font-shout: у Bangers нет кириллического сабсета, «БОНУС-РАУНД
+		   13» рисовался бы двумя гарнитурами (кириллица system-ui + цифры
+		   Bangers). Russo One кириллицу имеет. */
+		font-family: var(--font-chrome);
 		font-size: var(--font-display-size);
 		color: var(--accent-yellow);
 		background: #1a0f12;
@@ -1208,7 +1332,12 @@
 		text-align: center;
 		font-family: var(--font-body);
 		font-size: var(--font-body-size);
-		padding: 0 112px; /* симметричный резерв под кнопку «пропустить →» */
+		padding: 0 var(--space-sm);
+	}
+	/* Резерв под кнопку «пропустить →» — только пока она реально есть
+	   (реплей играет); в покое сообщения тикера живут во всю ширину. */
+	.teto-ticker.with-skip {
+		padding: 0 112px;
 	}
 	.ticker-win {
 		color: var(--positive-text);
@@ -1243,14 +1372,27 @@
 		border-color: var(--text-muted);
 	}
 
-	/* ── деньги ──────────────────────────────────────────────────────────── */
-	.win-area {
-		min-height: 64px;
+	/* ── деньги — оверлей на доске ───────────────────────────────────────── */
+	/* Плашка НЕ в потоке (absolute) — чеклист §8: появление результата,
+	   hero-цифр большого выигрыша и подписи капа банком не сдвигает ни
+	   сетку, ни контролы под доской. pointer-events: none — тап по доске
+	   остаётся скипом. */
+	.board-money {
+		position: absolute;
+		left: 50%;
+		bottom: var(--space-sm);
+		transform: translateX(-50%);
+		z-index: 6;
+		pointer-events: none;
 		display: flex;
 		flex-direction: column;
 		align-items: center;
-		justify-content: center;
-		gap: var(--space-xs);
+		gap: 2px;
+		background: rgba(13, 10, 24, 0.88);
+		border: 1px solid var(--border-secondary);
+		border-radius: 10px;
+		padding: var(--space-xs) var(--space-md);
+		max-width: calc(100% - 16px);
 	}
 	.spin-counter {
 		font-family: var(--font-numeric);
@@ -1267,6 +1409,7 @@
 		font-family: var(--font-body);
 		font-size: var(--font-body-size);
 		color: var(--text-muted);
+		white-space: nowrap;
 	}
 	.round-mult {
 		display: inline-block;
@@ -1286,8 +1429,6 @@
 		flex-direction: column;
 		align-items: center;
 		gap: 2px;
-		padding: 2px 16px;
-		border-radius: 10px;
 		text-align: center;
 	}
 	.res-amount {
@@ -1305,18 +1446,20 @@
 		font-size: var(--font-hero-size);
 	}
 	.big-win-label {
-		font-family: var(--font-shout);
+		/* --font-chrome, не shout: у Bangers нет кириллицы (см. интерстишл). */
+		font-family: var(--font-chrome);
 		font-size: var(--font-heading-size);
 		color: var(--accent-yellow);
 		letter-spacing: 0.06em;
+		white-space: nowrap;
 	}
+	/* Исход красит текст; заливку несёт сама плашка .board-money, а рамка
+	   доски (.board-win/.board-lose) дублирует грейд цветом. */
 	.res-win {
 		color: var(--positive-text);
-		background: var(--positive-bg);
 	}
 	.res-lose {
 		color: var(--destructive-text);
-		background: var(--destructive-bg);
 	}
 	.bank-cap-note {
 		font-family: var(--font-body);
@@ -1346,14 +1489,20 @@
 	}
 
 	.teto-cta {
+		/* Sticky-низ: на коротких экранах КРУТИТЬ/СТОП всегда под пальцем и
+		   виден вместе с доской и шкалой — не надо скроллить к кнопке и
+		   терять из виду фирменную шкалу (чеклист §8, п.1). */
+		position: sticky;
+		bottom: var(--space-sm);
+		z-index: 10;
 		background: var(--accent-pink);
 		border: none;
 		border-radius: 14px;
-		padding: var(--space-md);
+		padding: 10px var(--space-md);
 		display: flex;
 		flex-direction: column;
 		align-items: center;
-		gap: var(--space-xs);
+		gap: 2px;
 		cursor: pointer;
 		box-shadow: 4px 4px 0 #111;
 		transition: transform 0.08s;
@@ -1367,7 +1516,9 @@
 		cursor: not-allowed;
 	}
 	.teto-cta-label {
-		font-family: var(--font-shout);
+		/* --font-chrome, не shout: «КРУТИТЬ»/«СТОП» — кириллица, Bangers её
+		   не покрывает (рисовался бы system-ui фолбэк). */
+		font-family: var(--font-chrome);
 		font-size: var(--font-heading-size);
 		color: #1a0f12;
 		letter-spacing: 0.04em;
