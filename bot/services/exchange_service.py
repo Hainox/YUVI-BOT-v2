@@ -47,6 +47,17 @@ WR (форма duel_service WR-04 "ставка не заходит в chat_bank
   деньги не двигаются повторно.
 - claim_listing — тоже статус-переход-как-гард, но денег не двигает вовсе
   (см. выше) — повторный/гоночный claim на уже claimed-листинге — no-op.
+- alert_stuck_listings — фоновый visibility-job (найдено ревью 2026-08-05):
+  claimed-листинг без self-service выхода, если продавец пропал уже после
+  оффлайн-оплаты покупателя, раньше не имел ни алерта, ни aging-видимости
+  для админов. НЕ таймаут, двигающий деньги (бот не может подтвердить
+  оффлайн-оплату — наивный авто-cancel/release в любую сторону открывает
+  фрод) — только пост в чат с напоминанием про существующие
+  /exchange_admin_cancel и /exchange_admin_release, дальше решает живой
+  админ. `stuck_alert_sent_at` — отдельный timestamp-гард (не claimed_at):
+  ставится под тем же FOR UPDATE-локом, что и чтение (форма
+  tag_service.expire_due) — один и тот же листинг алертится ровно один раз,
+  повторный тик его больше не выбирает.
 
 Контракт порядка блокировок: строка ExchangeListing блокируется FOR UPDATE
 ПЕРВОЙ (замораживает status), затем двигаются деньги — та же форма, что
@@ -62,15 +73,20 @@ create_listing поднимает ExchangeError на любом item_type, кр�
 
 from __future__ import annotations
 
+import html
 import logging
 from datetime import datetime
+from datetime import timedelta
 
+from aiogram import Bot
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from bot.config import settings
 from bot.services import economy_service
+from common.db.session import SessionLocal
 from common.models.exchange_listing import ExchangeListing
 from common.models.user import User
 
@@ -515,3 +531,129 @@ async def get_my_listings(session: AsyncSession, chat_id: int, user_id: int) -> 
     ]
     result.sort(key=lambda item: item["created_at"], reverse=True)
     return result
+
+
+# --- alert_stuck_listings (visibility-only, НИКОГДА не двигает деньги) -----
+# Найдено ревью 2026-08-05: единственные выходы из claimed — seller
+# confirm_fulfillment или живой чат-админ через admin_force_cancel/
+# admin_force_release (bot/handlers/exchange.py, гейтится
+# admin_service.is_chat_admin). Если продавец пропал ПОСЛЕ того, как
+# покупатель уже заплатил вне бота, у покупателя нет self-service выхода,
+# и до этой функции — ноль автоматической видимости для админов (см.
+# модульный докстринг выше и register_stuck_alert ниже).
+#
+# Намеренно НЕ авто-таймаут, который двигает деньги (ни авто-cancel обратно
+# продавцу, ни авто-release покупателю): бот структурно не может проверить,
+# случилась ли оффлайн-оплата — наивный таймаут в любую сторону открывает
+# фрод (честный, но медленный продавец теряет продажу ПОСЛЕ реальной
+# оплаты, ИЛИ покупатель, который не заплатил, всё равно получает ювики).
+# Только человек решает, через уже существующие admin_force_cancel/
+# admin_force_release — эта функция их не трогает и не заменяет, только
+# делает зависший листинг видимым.
+
+
+async def alert_stuck_listings(
+    bot: Bot, session: AsyncSession, threshold_hours: int | None = None
+) -> int:
+    """Находит claimed-листинги старше `threshold_hours` (по умолчанию
+    `settings.exchange_stuck_alert_hours`) без ранее отправленного алерта,
+    постит предупреждение в чат листинга (продавец/покупатель/сумма/возраст
+    + напоминание про /exchange_admin_cancel и /exchange_admin_release) и
+    помечает `stuck_alert_sent_at`. Строки блокируются `FOR UPDATE` (форма
+    tag_service.expire_due) — `stuck_alert_sent_at IS NULL` в WHERE плюс
+    лок гарантируют, что конкурентный/повторный тик не пришлёт дубликат
+    алерта на тот же листинг. Один упавший `send_message` (сеть/бан бота в
+    чате/etc.) логируется и пропускается — не блокирует алерты по другим
+    листингам этого же тика. Возвращает число фактически отправленных
+    алертов. Денег НЕ двигает — см. блочный комментарий выше."""
+    hours = threshold_hours if threshold_hours is not None else settings.exchange_stuck_alert_hours
+    cutoff = datetime.utcnow() - timedelta(hours=hours)
+
+    due_rows = (
+        await session.execute(
+            select(ExchangeListing)
+            .where(
+                ExchangeListing.status == STATUS_CLAIMED,
+                ExchangeListing.claimed_at.isnot(None),
+                ExchangeListing.claimed_at <= cutoff,
+                ExchangeListing.stuck_alert_sent_at.is_(None),
+            )
+            .with_for_update()
+        )
+    ).scalars().all()
+
+    sent = 0
+    for listing in due_rows:
+        names = (
+            await session.execute(
+                select(User.id, User.first_name).where(
+                    User.id.in_([listing.seller_user_id, listing.claimed_by_user_id])
+                )
+            )
+        ).all()
+        name_by_id = {row.id: row.first_name for row in names}
+        seller_label = html.escape(name_by_id.get(listing.seller_user_id) or str(listing.seller_user_id))
+        buyer_label = html.escape(
+            name_by_id.get(listing.claimed_by_user_id) or str(listing.claimed_by_user_id)
+        )
+        age_hours = int((datetime.utcnow() - listing.claimed_at).total_seconds() // 3600)
+
+        try:
+            await bot.send_message(
+                listing.chat_id,
+                (
+                    f"⚠️ Листинг биржи #{listing.id} висит в статусе «claimed» уже "
+                    f"~{age_hours}ч.\n"
+                    f"Продавец: <b>{seller_label}</b>\n"
+                    f"Покупатель: <b>{buyer_label}</b>\n"
+                    f"Сумма: {listing.yuvik_amount} ювиков\n\n"
+                    "Если сделка не двигается сама, админ чата может разрешить спор: "
+                    f"/exchange_admin_cancel {listing.id} — вернуть ювики продавцу, "
+                    f"/exchange_admin_release {listing.id} — отдать их покупателю."
+                ),
+                parse_mode="HTML",
+            )
+        except Exception:  # noqa: BLE001 - один упавший send_message не должен блокировать остальные листинги тика
+            logger.exception(
+                "alert_stuck_listings: не удалось отправить алерт для listing_id=%s chat_id=%s",
+                listing.id,
+                listing.chat_id,
+            )
+            continue
+
+        listing.stuck_alert_sent_at = datetime.utcnow()
+        sent += 1
+
+    return sent
+
+
+_STUCK_ALERT_JOB_ID = "exchange_stuck_alert"
+
+
+def register_stuck_alert(scheduler: AsyncIOScheduler, bot: Bot) -> None:
+    """Регистрирует фоновый alert_stuck_listings как interval-job (60 минут
+    — низкая срочность, чисто visibility-фикс, НЕ таймаут денег), по образцу
+    register_title_expiry/register_auto_close: своя SessionLocal,
+    broad-except — тик обязан пережить любую ошибку и не уронить
+    планировщик."""
+
+    async def _job() -> None:
+        async with SessionLocal() as session:
+            try:
+                sent = await alert_stuck_listings(bot, session)
+                await session.commit()
+                if sent:
+                    logger.info("exchange_stuck_alert: отправлено алертов — %s", sent)
+            except Exception:  # noqa: BLE001 - job обязан пережить любую ошибку и не уронить планировщик
+                logger.exception("exchange_stuck_alert: тик упал")
+
+    scheduler.add_job(
+        _job,
+        "interval",
+        minutes=60,
+        coalesce=True,
+        max_instances=1,
+        misfire_grace_time=600,
+        id=_STUCK_ALERT_JOB_ID,
+        replace_existing=True,
+    )

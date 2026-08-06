@@ -23,6 +23,10 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+from datetime import timedelta
+from unittest.mock import AsyncMock
+
 import pytest
 from sqlalchemy import select
 
@@ -687,3 +691,206 @@ async def test_get_my_listings_shows_both_seller_and_buyer_roles(session):
 
     buyer_roles = {row["id"]: row["role"] for row in buyer_view}
     assert buyer_roles == {others_listing.id: "buyer"}
+
+
+# --- alert_stuck_listings (visibility-only job, деньги не двигает) ----------
+
+
+async def _backdate_claim(session, listing_id: int, hours_ago: int) -> None:
+    listing = await _get_listing(session, listing_id)
+    listing.claimed_at = datetime.utcnow() - timedelta(hours=hours_ago)
+    await session.flush()
+
+
+@pytest.mark.asyncio
+async def test_alert_stuck_listings_sends_alert_past_threshold(session):
+    chat_id = -100920041
+    seller_id, buyer_id = 920041, 920042
+    await _ensure_user(session, seller_id, "Продавец")
+    await _ensure_user(session, buyer_id, "Покупатель")
+    await _fund(session, chat_id, seller_id)
+    await _fund(session, chat_id, buyer_id)
+
+    listing = await exchange_service.create_listing(
+        session, chat_id, seller_id, 100, "что-то", "test_alert_create"
+    )
+    await exchange_service.claim_listing(session, chat_id, listing.id, buyer_id)
+    await _backdate_claim(session, listing.id, hours_ago=settings.exchange_stuck_alert_hours + 1)
+
+    bot = AsyncMock()
+    sent = await exchange_service.alert_stuck_listings(bot, session)
+
+    assert sent == 1
+    bot.send_message.assert_awaited_once()
+    call_args = bot.send_message.await_args
+    assert call_args.args[0] == chat_id
+    assert str(listing.id) in call_args.args[1]
+    assert "/exchange_admin_cancel" in call_args.args[1]
+    assert "/exchange_admin_release" in call_args.args[1]
+
+    listing_row = await _get_listing(session, listing.id)
+    assert listing_row.stuck_alert_sent_at is not None
+
+
+@pytest.mark.asyncio
+async def test_alert_stuck_listings_skips_listing_below_threshold(session):
+    chat_id = -100920043
+    seller_id, buyer_id = 920043, 920044
+    await _ensure_user(session, seller_id)
+    await _ensure_user(session, buyer_id)
+    await _fund(session, chat_id, seller_id)
+    await _fund(session, chat_id, buyer_id)
+
+    listing = await exchange_service.create_listing(
+        session, chat_id, seller_id, 100, "что-то", "test_alert_fresh_create"
+    )
+    await exchange_service.claim_listing(session, chat_id, listing.id, buyer_id)
+    # claimed только что — далеко от порога, алерт рано слать.
+
+    bot = AsyncMock()
+    sent = await exchange_service.alert_stuck_listings(bot, session)
+
+    assert sent == 0
+    bot.send_message.assert_not_awaited()
+    listing_row = await _get_listing(session, listing.id)
+    assert listing_row.stuck_alert_sent_at is None
+
+
+@pytest.mark.asyncio
+async def test_alert_stuck_listings_skips_open_listings(session):
+    chat_id = -100920045
+    seller_id = 920045
+    await _ensure_user(session, seller_id)
+    await _fund(session, chat_id, seller_id)
+
+    await exchange_service.create_listing(
+        session, chat_id, seller_id, 100, "что-то", "test_alert_open_create"
+    )
+    # Никогда не заклеймлен — claimed_at всё ещё NULL, даже если создан давно.
+
+    bot = AsyncMock()
+    sent = await exchange_service.alert_stuck_listings(bot, session)
+
+    assert sent == 0
+    bot.send_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_alert_stuck_listings_idempotent_second_tick_is_noop(session):
+    chat_id = -100920047
+    seller_id, buyer_id = 920047, 920048
+    await _ensure_user(session, seller_id)
+    await _ensure_user(session, buyer_id)
+    await _fund(session, chat_id, seller_id)
+    await _fund(session, chat_id, buyer_id)
+
+    listing = await exchange_service.create_listing(
+        session, chat_id, seller_id, 100, "что-то", "test_alert_idempotent_create"
+    )
+    await exchange_service.claim_listing(session, chat_id, listing.id, buyer_id)
+    await _backdate_claim(session, listing.id, hours_ago=settings.exchange_stuck_alert_hours + 1)
+
+    bot = AsyncMock()
+    first = await exchange_service.alert_stuck_listings(bot, session)
+    second = await exchange_service.alert_stuck_listings(bot, session)
+
+    assert first == 1
+    assert second == 0
+    bot.send_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_alert_stuck_listings_never_moves_money(session):
+    chat_id = -100920049
+    seller_id, buyer_id = 920049, 920050
+    await _ensure_user(session, seller_id)
+    await _ensure_user(session, buyer_id)
+    seller_before = await _fund(session, chat_id, seller_id)
+    buyer_before = await _fund(session, chat_id, buyer_id)
+    bank_before = await _get_bank_balance(session, chat_id)
+
+    listing = await exchange_service.create_listing(
+        session, chat_id, seller_id, 100, "что-то", "test_alert_no_money_create"
+    )
+    await exchange_service.claim_listing(session, chat_id, listing.id, buyer_id)
+    await _backdate_claim(session, listing.id, hours_ago=settings.exchange_stuck_alert_hours + 1)
+
+    bot = AsyncMock()
+    await exchange_service.alert_stuck_listings(bot, session)
+
+    listing_row = await _get_listing(session, listing.id)
+    assert listing_row.status == "claimed"
+    # Эскроу продавца остаётся списанным (форма create_listing), но алерт
+    # сам по себе не двигает НИЧЕГО — ни ещё раз у продавца, ни у покупателя.
+    assert await _get_user_balance(session, chat_id, seller_id) == seller_before - 100
+    assert await _get_user_balance(session, chat_id, buyer_id) == buyer_before
+    assert await _get_bank_balance(session, chat_id) == bank_before
+
+
+@pytest.mark.asyncio
+async def test_alert_stuck_listings_continues_after_one_send_failure(session):
+    chat_id_a = -100920051
+    chat_id_b = -100920052
+    seller_a, buyer_a = 920051, 920052
+    seller_b, buyer_b = 920053, 920054
+    for uid in (seller_a, buyer_a, seller_b, buyer_b):
+        await _ensure_user(session, uid)
+    await _fund(session, chat_id_a, seller_a)
+    await _fund(session, chat_id_a, buyer_a)
+    await _fund(session, chat_id_b, seller_b)
+    await _fund(session, chat_id_b, buyer_b)
+
+    listing_a = await exchange_service.create_listing(
+        session, chat_id_a, seller_a, 100, "что-то", "test_alert_fail_a_create"
+    )
+    await exchange_service.claim_listing(session, chat_id_a, listing_a.id, buyer_a)
+    await _backdate_claim(session, listing_a.id, hours_ago=settings.exchange_stuck_alert_hours + 1)
+
+    listing_b = await exchange_service.create_listing(
+        session, chat_id_b, seller_b, 100, "что-то", "test_alert_fail_b_create"
+    )
+    await exchange_service.claim_listing(session, chat_id_b, listing_b.id, buyer_b)
+    await _backdate_claim(session, listing_b.id, hours_ago=settings.exchange_stuck_alert_hours + 1)
+
+    bot = AsyncMock()
+
+    async def _send_message(chat_id, *args, **kwargs):
+        if chat_id == chat_id_a:
+            raise RuntimeError("Telegram недоступен")
+        return None
+
+    bot.send_message.side_effect = _send_message
+
+    sent = await exchange_service.alert_stuck_listings(bot, session)
+
+    assert sent == 1
+    listing_a_row = await _get_listing(session, listing_a.id)
+    listing_b_row = await _get_listing(session, listing_b.id)
+    # Упавшая отправка НЕ помечает stuck_alert_sent_at — следующий тик
+    # честно попробует снова, а не молча "забудет" про этот листинг.
+    assert listing_a_row.stuck_alert_sent_at is None
+    assert listing_b_row.stuck_alert_sent_at is not None
+
+
+@pytest.mark.asyncio
+async def test_alert_stuck_listings_custom_threshold_override(session):
+    chat_id = -100920055
+    seller_id, buyer_id = 920055, 920056
+    await _ensure_user(session, seller_id)
+    await _ensure_user(session, buyer_id)
+    await _fund(session, chat_id, seller_id)
+    await _fund(session, chat_id, buyer_id)
+
+    listing = await exchange_service.create_listing(
+        session, chat_id, seller_id, 100, "что-то", "test_alert_custom_threshold_create"
+    )
+    await exchange_service.claim_listing(session, chat_id, listing.id, buyer_id)
+    await _backdate_claim(session, listing.id, hours_ago=2)
+
+    bot = AsyncMock()
+    # Дефолтный порог (settings.exchange_stuck_alert_hours) намного больше 2ч.
+    sent_default = await exchange_service.alert_stuck_listings(bot, session)
+    assert sent_default == 0
+
+    sent_override = await exchange_service.alert_stuck_listings(bot, session, threshold_hours=1)
+    assert sent_override == 1

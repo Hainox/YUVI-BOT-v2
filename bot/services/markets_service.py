@@ -22,6 +22,23 @@ read-хелперы для просмотра.
   `sum(user_balance.balance) + chat_bank.balance` НЕ является инвариантом
   после резолюции рынка (Pitfall 3) — не "чинить" это перенаправлением пыли
   в банк, иначе комиссия BET-03 тихо вырастет сверх заявленных 5%.
+- Резолюция/отмена (`resolve_market`/`cancel_market`) требуют `actor_id` и
+  гейтят конфликт интересов (аудит HIGH): актор не может быть ни
+  `market.creator_id`, ни держателем `Bet` на этот рынок, иначе
+  `MarketResolverIsCreator`/`MarketResolverHasBet` — дополняет уже заявленный
+  в докстринге bot/handlers/markets.py контракт, который раньше проверялся
+  ТОЛЬКО is_chat_admin в хендлере (не смотрел, тот ли это админ). `actor_id=
+  None` зарезервирован для системных вызовов без человека-актора
+  (`auto_resolve_external`) — резолюция там берётся из внешнего источника,
+  конфликт интересов неприменим.
+- `place_bet`'s идемпотентность (`ref_id`) — НАМЕРЕННО скоупится сервисом
+  внутренне под `(market_id, user_id, ref_id)`, не голым клиентским `ref_id`
+  (аудит MEDIUM): DB partial-UNIQUE — `(chat_id, ref_id, kind="bet")`, БЕЗ
+  user_id/market_id, поэтому непрефиксованный клиентский ref_id был бы
+  чат-широким — два разных пользователя на двух разных рынках, случайно
+  пославшие один и тот же ref_id, гонялись бы за одним UNIQUE-слотом (второй
+  тихо считался бы "уже принятой" повторной заявкой первого). См.
+  `place_bet`'s докстринг ниже.
 """
 
 from __future__ import annotations
@@ -80,6 +97,24 @@ class DuplicateRequest(MarketError):
 class MarketAlreadyImported(MarketError):
     """Этот внешний рынок (chat_id, type, external_id) уже был импортирован
     ранее — дедуп (T-03-24), комиссия импорта повторно не списывается."""
+
+
+class MarketResolverIsCreator(MarketError):
+    """Резолвящий/отменяющий актор сам создал этот рынок — конфликт
+    интересов (аудит HIGH: докстринг bot/handlers/markets.py уже ЗАЯВЛЯЕТ,
+    что ни создатель рынка, ни любой участник резолвить/отменять не может,
+    но раньше это нигде не проверялось на уровне сервиса — гейт был ТОЛЬКО
+    is_chat_admin в хендлере, который не смотрит, является ли ЭТОТ
+    конкретный админ ещё и создателем ЭТОГО конкретного рынка, частый
+    случай в маленьких группах). Хендлер/роут обязаны показать это как явную
+    причину отказа админу (нужен ДРУГОЙ админ), не молчаливый no-op."""
+
+
+class MarketResolverHasBet(MarketError):
+    """Резолвящий/отменяющий актор сам ставил на этот рынок — тот же
+    конфликт интересов, что MarketResolverIsCreator, но для ставившего (не
+    обязательно создавшего) админа: он мог бы резолвить в свою пользу или
+    отменить рынок, чтобы уйти от проигрышной ставки."""
 
 
 # --- Лимиты D-05 (модульные константы) ----------------------------------
@@ -322,6 +357,25 @@ async def place_bet(
     `InvalidMarketArg` при сумме ниже `settings.market_min_bet` или
     несуществующем варианте, `MarketNotFound`/`MarketClosed` при проблемах
     с рынком, `economy_service.InsufficientFunds` при нехватке средств.
+
+    Идемпотентность-ref_id (аудит MEDIUM, форма exchange_service.
+    confirm_fulfillment): `ref_id`, переданный вызывающим, НЕ идёт в
+    `economy_service.debit` как есть — DB partial-UNIQUE-индекс
+    (`0004_economy_betting_markets`) на `economy_tx` скоупит идемпотентность
+    только под `(chat_id, ref_id, kind="bet")`, БЕЗ user_id/market_id. Голый
+    клиентский `ref_id` был бы поэтому ЧАТ-ШИРОКИМ слотом: два РАЗНЫХ
+    пользователя, ставящих на ДВА РАЗНЫХ рынка, но приславшие один и тот же
+    `ref_id` (коллизия в клиентской генерации, не обязательно злой умысел),
+    гонялись бы за одним UNIQUE-слотом — `debit` второго тихо возвращал бы
+    `False` (ложно распознанный "повтор" чужой ставки), деньги второго
+    пользователя не списывались бы, а вызывающий отвечал бы ему "ставка уже
+    была принята" — реальная его ставка никогда не создавалась. Здесь
+    `debit` получает НАМЕРЕННО НАМЕСПЕЙСЕННЫЙ `f"bet:{market_id}:{user_id}:
+    {ref_id}"` — коллизия теперь возможна только если ОДИН И ТОТ ЖЕ
+    пользователь повторит ОДИН И ТОТ ЖЕ `ref_id` на ОДНОМ И ТОМ ЖЕ рынке —
+    ровно корректный, безопасный сценарий идемпотентного ретрая (например,
+    сетевой таймаут ответа при уже применённом запросе), который и должен
+    возвращать `None` без повторного списания.
     """
     if amount < settings.market_min_bet:
         raise InvalidMarketArg(f"Минимальная ставка — {settings.market_min_bet} ювиков")
@@ -348,11 +402,16 @@ async def place_bet(
     if option is None:
         raise InvalidMarketArg(f"Нет варианта №{option_position} в рынке #{market_id}")
 
+    # Наменспейсенный ref_id (см. докстринг выше) — единственный способ
+    # столкнуть этот ключ дважды: тот же user_id, тот же market_id, тот же
+    # клиентский ref_id (корректный идемпотентный ретрай), а не два разных
+    # пользователей/рынков, случайно приславших один голый ref_id.
+    debit_ref_id = f"bet:{market_id}:{user_id}:{ref_id}"
     debited = await economy_service.debit(
-        session, chat_id, user_id, amount, kind="bet", ref_id=ref_id
+        session, chat_id, user_id, amount, kind="bet", ref_id=debit_ref_id
     )
     if not debited:
-        logger.info("place_bet: ref_id=%s уже обработан, пропускаем", ref_id)
+        logger.info("place_bet: ref_id=%s (namespaced=%s) уже обработан, пропускаем", ref_id, debit_ref_id)
         await session.commit()
         return None
 
@@ -488,8 +547,45 @@ async def get_user_portfolio(session: AsyncSession, chat_id: int, user_id: int) 
 # --- resolve_market (BET-03, D-01/D-03) ------------------------------------
 
 
+async def _assert_no_resolver_conflict_of_interest(
+    session: AsyncSession, market: Market, actor_id: int
+) -> None:
+    """Гейт конфликта интересов для resolve_market/cancel_market (аудит
+    HIGH) — вызывается вызывающим ТОЛЬКО когда `actor_id` не `None` (человек-
+    актор из bot/handlers/markets.py's `/market_resolve`/`/market_cancel`);
+    системный вызов `auto_resolve_external` actor_id не передаёт вовсе и
+    этот гейт не проходит вообще — резолюция там берётся из внешнего
+    источника, а не решается заинтересованным человеком, конфликт интересов
+    неприменим.
+
+    `market.creator_id` сравнивается без похода в БД (строка market уже
+    загружена вызывающим вместе с FOR UPDATE-локом); затем один SELECT —
+    держит ли актор хоть одну ставку (`Bet`) на этот рынок. Поднимает
+    `MarketResolverIsCreator`/`MarketResolverHasBet` — вызывающий обязан
+    показать это как явную, понятную причину отказа админу (нужен ДРУГОЙ
+    админ), не молчаливый no-op."""
+    if market.creator_id == actor_id:
+        raise MarketResolverIsCreator(
+            f"Ты сам создал этот рынок (#{market.id}) — резолвить/отменять его должен другой админ."
+        )
+
+    has_bet = (
+        await session.execute(
+            select(Bet.id).where(Bet.market_id == market.id, Bet.user_id == actor_id).limit(1)
+        )
+    ).scalar_one_or_none()
+    if has_bet is not None:
+        raise MarketResolverHasBet(
+            f"Ты сам ставил на этот рынок (#{market.id}) — резолвить/отменять его должен другой админ."
+        )
+
+
 async def resolve_market(
-    session: AsyncSession, chat_id: int, market_id: int, winning_option_id: int
+    session: AsyncSession,
+    chat_id: int,
+    market_id: int,
+    winning_option_id: int,
+    actor_id: int | None = None,
 ) -> dict:
     """Резолвит internal-рынок: parimutuel-выплата победителям + 5% комиссия
     в банк (BET-03), той же формулой `max(1, ceil(0.05*pool))`, что и D-04's
@@ -504,6 +600,15 @@ async def resolve_market(
     полный рефанд всем ставившим (division-by-zero иначе), отдельно от
     D-03 (которое применяется только когда winner.pool > 0). total_pool == 0
     (вообще никто не ставил) — рынок просто закрывается, выплат нет.
+
+    `actor_id` — конфликт интересов (аудит HIGH, см.
+    `_assert_no_resolver_conflict_of_interest`): актор не может быть ни
+    создателем рынка, ни держателем ставки на него, иначе
+    `MarketResolverIsCreator`/`MarketResolverHasBet`. `actor_id=None`
+    (по умолчанию) пропускает этот гейт целиком — зарезервировано ТОЛЬКО для
+    системных вызовов без человека-актора (`auto_resolve_external`); человек-
+    вызывающий (`resolve_market_by_position`, единственный путь `/market_
+    resolve`) обязан передавать реальный `actor_id`.
 
     Поднимает `MarketNotFound`, если рынка нет в этом чате; `MarketClosed`,
     если рынок уже отменён (`status == "cancelled"`).
@@ -521,6 +626,9 @@ async def resolve_market(
         return {"status": "already_resolved", "market_id": market_id}
     if market.status == "cancelled":
         raise MarketClosed(f"Рынок #{market_id} уже отменён")
+
+    if actor_id is not None:
+        await _assert_no_resolver_conflict_of_interest(session, market, actor_id)
 
     options = (
         await session.execute(
@@ -612,13 +720,19 @@ async def resolve_market(
 
 
 async def resolve_market_by_position(
-    session: AsyncSession, chat_id: int, market_id: int, winning_position: int
+    session: AsyncSession, chat_id: int, market_id: int, winning_position: int, actor_id: int
 ) -> dict:
     """Тонкая обёртка над `resolve_market` — переводит 1-based номер варианта
     (как показывает `/market <id>`, RESEARCH.md Assumption A4) в DB `option_id`.
-    Нужна отдельно от `resolve_market`, чтобы будущий `auto_resolve_external`
-    (план 03-06) мог звать `resolve_market` напрямую с уже известным option_id,
-    а админ-команда `/market_resolve` — по человекочитаемому номеру.
+    Нужна отдельно от `resolve_market`, чтобы `auto_resolve_external` (план
+    03-06) мог звать `resolve_market` напрямую с уже известным option_id (и
+    `actor_id=None`, системный вызов), а админ-команда `/market_resolve` —
+    по человекочитаемому номеру.
+
+    `actor_id` здесь ОБЯЗАТЕЛЕН (без default) — эта обёртка используется
+    ТОЛЬКО человеком-админом (`/market_resolve`), передаётся в
+    `resolve_market` как есть и включает конфликт-интересов-гейт
+    (`MarketResolverIsCreator`/`MarketResolverHasBet`, аудит HIGH).
     """
     option = (
         await session.execute(
@@ -629,16 +743,28 @@ async def resolve_market_by_position(
     ).scalar_one_or_none()
     if option is None:
         raise InvalidMarketArg(f"Нет варианта №{winning_position} в рынке #{market_id}")
-    return await resolve_market(session, chat_id, market_id, option.id)
+    return await resolve_market(session, chat_id, market_id, option.id, actor_id)
 
 
 # --- cancel_market (D-02, полный рефанд) ------------------------------------
 
 
-async def cancel_market(session: AsyncSession, chat_id: int, market_id: int) -> dict:
+async def cancel_market(
+    session: AsyncSession, chat_id: int, market_id: int, actor_id: int | None = None
+) -> dict:
     """Отменяет рынок с полным рефандом всем ставившим (D-02) — форма
     `resolve_market` без комиссии/выплаты. Статус-переход тоже служит гардом
     идемпотентности: повторная отмена уже cancelled/resolved-рынка — no-op.
+
+    `actor_id` — тот же конфликт-интересов-гейт, что у `resolve_market`
+    (аудит HIGH, симметрично: создатель рынка мог бы отменить рынок, где
+    проигрывает своя же ставка, вместо того чтобы дать ему резолвиться
+    честно) — `MarketResolverIsCreator`/`MarketResolverHasBet` при
+    совпадении с `market.creator_id`/держателем `Bet`. `actor_id=None`
+    (по умолчанию) пропускает гейт целиком; единственный текущий вызывающий,
+    `/market_cancel` (bot/handlers/markets.py), обязан передавать реальный
+    `actor_id` — default сохранён только для единообразия с `resolve_market`
+    и на случай будущего системного вызова без человека-актора.
 
     Поднимает `MarketNotFound`, если рынка нет в этом чате.
     """
@@ -651,6 +777,9 @@ async def cancel_market(session: AsyncSession, chat_id: int, market_id: int) -> 
         raise MarketNotFound(f"Рынок #{market_id} не найден")
     if market.status in ("cancelled", "resolved"):
         return {"status": f"already_{market.status}", "market_id": market_id, "refunded_count": 0, "total_refunded": 0}
+
+    if actor_id is not None:
+        await _assert_no_resolver_conflict_of_interest(session, market, actor_id)
 
     all_bets = (await session.execute(select(Bet).where(Bet.market_id == market_id))).scalars().all()
 
@@ -784,7 +913,16 @@ async def auto_resolve_external(session: AsyncSession) -> None:
             )
             continue
 
-        await resolve_market(session, market.chat_id, market.id, winner.id)
+        await resolve_market(
+            session,
+            market.chat_id,
+            market.id,
+            winner.id,
+            # Системная резолюция по внешнему источнику — нет человека-
+            # актора, конфликт-интересов-гейт (MarketResolverIsCreator/
+            # MarketResolverHasBet) здесь неприменим и намеренно пропущен.
+            actor_id=None,
+        )
 
 
 _EXTERNAL_CHECK_JOB_ID = "external_markets_check"

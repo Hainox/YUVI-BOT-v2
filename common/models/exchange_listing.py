@@ -42,3 +42,9 @@ class ExchangeListing(Base):
     claimed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Найдено ревью 2026-08-05: idempotency-гард для фонового
+    # exchange_service.alert_stuck_listings — NULL, пока алерт про зависший
+    # claimed-листинг ещё не отправлен; ставится РОВНО один раз при отправке,
+    # чтобы повторные тики job'а не дублировали алерт в чат (форма
+    # resolved_at — тоже one-way timestamp-гард, только для другого события).
+    stuck_alert_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

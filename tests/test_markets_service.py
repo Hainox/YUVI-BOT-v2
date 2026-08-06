@@ -371,6 +371,83 @@ async def test_place_bet_idempotent_on_retry(session):
     assert len(bets) == 1
 
 
+@pytest.mark.asyncio
+async def test_place_bet_ref_id_collision_different_users_same_market(session):
+    """Regression (аудит MEDIUM, griefing через chat-wide ref_id): place_bet
+    раньше передавал клиентский ref_id в economy_service.debit НАПРЯМУЮ —
+    DB partial-UNIQUE-индекс на economy_tx скоупит идемпотентность только
+    под (chat_id, ref_id, kind="bet"), БЕЗ user_id. Два РАЗНЫХ пользователя,
+    ставящих на ОДИН И ТОТ ЖЕ рынок, но приславшие один и тот же ref_id
+    (коллизия клиентской генерации, необязательно злой умысел), гонялись бы
+    за одним UNIQUE-слотом — debit второго тихо возвращал бы False (ложный
+    "повтор"), его деньги не списывались бы и place_bet возвращал бы None,
+    хотя реальная ставка второго пользователя никогда не создавалась.
+    Fixed: place_bet теперь наменспейсивает ref_id под (market_id, user_id,
+    ref_id) внутри себя — оба бетта теперь проходят независимо."""
+    chat_id = -100800018
+    creator_id, bettor_a, bettor_b = 810180, 810181, 810182
+    for uid in (creator_id, bettor_a, bettor_b):
+        await _ensure_user(session, uid)
+        await _fund(session, chat_id, uid)
+
+    market = await markets_service.create_market(
+        session, chat_id, creator_id, "Пойдёт ли дождь завтра?", ["Да", "Нет"], "7d",
+        "test_ref_collision_same_market_setup",
+    )
+
+    shared_ref_id = "client-generated-not-unique-enough"
+
+    bet_a = await markets_service.place_bet(session, chat_id, market.id, bettor_a, 1, 50, shared_ref_id)
+    bet_b = await markets_service.place_bet(session, chat_id, market.id, bettor_b, 1, 30, shared_ref_id)
+
+    assert bet_a is not None
+    assert bet_b is not None  # ДО фикса: было бы None (ложно распознано как повтор ставки bettor_a)
+
+    assert await _get_user_balance(session, chat_id, bettor_a) == settings.economy_start_bonus - 50
+    assert await _get_user_balance(session, chat_id, bettor_b) == settings.economy_start_bonus - 30
+
+    bets = (await session.execute(select(Bet).where(Bet.market_id == market.id))).scalars().all()
+    assert len(bets) == 2
+    assert {bet.user_id for bet in bets} == {bettor_a, bettor_b}
+
+
+@pytest.mark.asyncio
+async def test_place_bet_ref_id_collision_different_users_different_markets(session):
+    """Regression (аудит MEDIUM) — та же коллизия, что выше, но точный
+    сценарий из описания бага: два РАЗНЫХ пользователя ставят на ДВА РАЗНЫХ
+    рынка в одном чате с одним и тем же клиентским ref_id."""
+    chat_id = -100800019
+    creator_id, bettor_a, bettor_b = 810190, 810191, 810192
+    for uid in (creator_id, bettor_a, bettor_b):
+        await _ensure_user(session, uid)
+        await _fund(session, chat_id, uid)
+
+    market_a = await markets_service.create_market(
+        session, chat_id, creator_id, "Рынок A: пойдёт дождь?", ["Да", "Нет"], "7d",
+        "test_ref_collision_diff_markets_setup_a",
+    )
+    market_b = await markets_service.create_market(
+        session, chat_id, creator_id, "Рынок B: будет солнце?", ["Да", "Нет"], "7d",
+        "test_ref_collision_diff_markets_setup_b",
+    )
+
+    shared_ref_id = "client-generated-not-unique-enough"
+
+    bet_a = await markets_service.place_bet(session, chat_id, market_a.id, bettor_a, 1, 50, shared_ref_id)
+    bet_b = await markets_service.place_bet(session, chat_id, market_b.id, bettor_b, 1, 50, shared_ref_id)
+
+    assert bet_a is not None
+    assert bet_b is not None  # ДО фикса: было бы None
+
+    assert await _get_user_balance(session, chat_id, bettor_a) == settings.economy_start_bonus - 50
+    assert await _get_user_balance(session, chat_id, bettor_b) == settings.economy_start_bonus - 50
+
+    bets_a = (await session.execute(select(Bet).where(Bet.market_id == market_a.id))).scalars().all()
+    bets_b = (await session.execute(select(Bet).where(Bet.market_id == market_b.id))).scalars().all()
+    assert len(bets_a) == 1
+    assert len(bets_b) == 1
+
+
 # --- read-хелперы ------------------------------------------------------------
 
 
@@ -673,6 +750,125 @@ async def test_resolve_total_pool_zero(session):
     assert await _get_bank_balance(session, chat_id) == bank_before
 
 
+# --- resolve_market conflict-of-interest (аудит HIGH) ------------------------
+
+
+@pytest.mark.asyncio
+async def test_resolve_market_rejects_creator_as_actor(session):
+    """Regression (аудит HIGH): resolve_market/cancel_market раньше не
+    принимали actor identity вообще — гейт "ни создатель рынка, ни любой
+    участник резолвить/отменять не могут" (докстринг bot/handlers/
+    markets.py) существовал только на бумаге, is_chat_admin в хендлере
+    проверял ТОЛЬКО "админ ли вообще", не "тот ли это админ". Создатель
+    рынка, который ТАКЖЕ администратор чата (частый случай в маленьких
+    группах), мог зарезолвить свой же рынок. Fixed: actor_id теперь
+    обязателен для человека-вызывающего и проверяется против
+    market.creator_id ДО любого движения денег."""
+    chat_id = -100800020
+    creator_id, bettor_id = 810200, 810201
+    await _ensure_user(session, creator_id)
+    await _ensure_user(session, bettor_id)
+    await _fund(session, chat_id, creator_id)
+    await _fund(session, chat_id, bettor_id)
+
+    market = await markets_service.create_market(
+        session, chat_id, creator_id, "Создатель резолвит сам себя?", ["Да", "Нет"], "7d",
+        "test_resolver_conflict_creator_setup",
+    )
+    await markets_service.place_bet(
+        session, chat_id, market.id, bettor_id, 1, 50, "test_resolver_conflict_creator_bet"
+    )
+    opt1 = await _get_option_by_position(session, market.id, 1)
+
+    balance_before = await _get_user_balance(session, chat_id, bettor_id)
+    bank_before = await _get_bank_balance(session, chat_id)
+
+    with pytest.raises(markets_service.MarketResolverIsCreator):
+        await markets_service.resolve_market(session, chat_id, market.id, opt1.id, actor_id=creator_id)
+
+    # Отказ произошёл ДО любого движения денег — рынок остался open.
+    market_row = (await session.execute(select(Market).where(Market.id == market.id))).scalar_one()
+    assert market_row.status == "open"
+    assert await _get_user_balance(session, chat_id, bettor_id) == balance_before
+    assert await _get_bank_balance(session, chat_id) == bank_before
+
+
+@pytest.mark.asyncio
+async def test_resolve_market_rejects_bettor_as_actor(session):
+    """Regression (аудит HIGH) — тот же гейт, но для админа, который сам
+    ставил на этот рынок (не обязательно создавал его)."""
+    chat_id = -100800021
+    creator_id, admin_bettor_id = 810210, 810211
+    await _ensure_user(session, creator_id)
+    await _ensure_user(session, admin_bettor_id)
+    await _fund(session, chat_id, creator_id)
+    await _fund(session, chat_id, admin_bettor_id)
+
+    market = await markets_service.create_market(
+        session, chat_id, creator_id, "Ставивший админ резолвит сам себя?", ["Да", "Нет"], "7d",
+        "test_resolver_conflict_bettor_setup",
+    )
+    await markets_service.place_bet(
+        session, chat_id, market.id, admin_bettor_id, 1, 40, "test_resolver_conflict_bettor_bet"
+    )
+    opt1 = await _get_option_by_position(session, market.id, 1)
+
+    with pytest.raises(markets_service.MarketResolverHasBet):
+        await markets_service.resolve_market(session, chat_id, market.id, opt1.id, actor_id=admin_bettor_id)
+
+    market_row = (await session.execute(select(Market).where(Market.id == market.id))).scalar_one()
+    assert market_row.status == "open"
+
+
+@pytest.mark.asyncio
+async def test_resolve_market_allows_uninvolved_admin_actor(session):
+    """Позитивный контроль: админ, который НЕ создатель и НЕ ставил на этот
+    рынок, резолвит его без препятствий — гейт не блокирует легитимный
+    случай (иначе рынки было бы вообще некому резолвить в маленьком чате)."""
+    chat_id = -100800022
+    creator_id, bettor_id, neutral_admin_id = 810220, 810221, 810222
+    for uid in (creator_id, bettor_id, neutral_admin_id):
+        await _ensure_user(session, uid)
+        await _fund(session, chat_id, uid)
+
+    market = await markets_service.create_market(
+        session, chat_id, creator_id, "Нейтральный админ резолвит нормально?", ["Да", "Нет"], "7d",
+        "test_resolver_conflict_neutral_setup",
+    )
+    await markets_service.place_bet(
+        session, chat_id, market.id, bettor_id, 1, 50, "test_resolver_conflict_neutral_bet"
+    )
+    opt1 = await _get_option_by_position(session, market.id, 1)
+
+    result = await markets_service.resolve_market(
+        session, chat_id, market.id, opt1.id, actor_id=neutral_admin_id
+    )
+
+    assert result["status"] == "resolved"
+
+
+@pytest.mark.asyncio
+async def test_resolve_market_actor_id_none_skips_conflict_check(session):
+    """actor_id=None (системный вызов, форма auto_resolve_external) должен
+    пропускать гейт целиком — auto_resolve_external не передаёт actor_id
+    вообще, конфликт интересов неприменим к автоматической резолюции по
+    внешнему источнику, даже если бы единственный "кандидат" в чате
+    формально совпадал с creator_id."""
+    chat_id = -100800023
+    creator_id = 810230
+    await _ensure_user(session, creator_id)
+    await _fund(session, chat_id, creator_id)
+
+    market = await markets_service.create_market(
+        session, chat_id, creator_id, "Системный вызов без actor_id?", ["Да", "Нет"], "7d",
+        "test_resolver_conflict_none_setup",
+    )
+    opt1 = await _get_option_by_position(session, market.id, 1)
+
+    result = await markets_service.resolve_market(session, chat_id, market.id, opt1.id)
+    assert result["status"] == "resolved"
+
+
 # --- cancel_market (D-02) ----------------------------------------------------
 
 
@@ -710,6 +906,90 @@ async def test_cancel_market_refunds_all(session):
     bet_b = await _get_bet(session, market.id, b_id)
     assert bet_a.refunded is True
     assert bet_b.refunded is True
+
+
+# --- cancel_market conflict-of-interest (аудит HIGH, симметрично resolve) ----
+
+
+@pytest.mark.asyncio
+async def test_cancel_market_rejects_creator_as_actor(session):
+    """Symmetry regression (аудит HIGH): та же конфликт-интересов-логика,
+    что у resolve_market, применяется и к cancel_market — создатель мог бы
+    отменить рынок, где проигрывает своя же ставка, вместо того чтобы дать
+    ему честно резолвиться."""
+    chat_id = -100800024
+    creator_id, bettor_id = 810240, 810241
+    await _ensure_user(session, creator_id)
+    await _ensure_user(session, bettor_id)
+    await _fund(session, chat_id, creator_id)
+    await _fund(session, chat_id, bettor_id)
+
+    market = await markets_service.create_market(
+        session, chat_id, creator_id, "Создатель отменяет сам себя?", ["Да", "Нет"], "7d",
+        "test_cancel_conflict_creator_setup",
+    )
+    await markets_service.place_bet(
+        session, chat_id, market.id, bettor_id, 1, 50, "test_cancel_conflict_creator_bet"
+    )
+
+    balance_before = await _get_user_balance(session, chat_id, bettor_id)
+
+    with pytest.raises(markets_service.MarketResolverIsCreator):
+        await markets_service.cancel_market(session, chat_id, market.id, actor_id=creator_id)
+
+    market_row = (await session.execute(select(Market).where(Market.id == market.id))).scalar_one()
+    assert market_row.status == "open"
+    assert await _get_user_balance(session, chat_id, bettor_id) == balance_before
+
+
+@pytest.mark.asyncio
+async def test_cancel_market_rejects_bettor_as_actor(session):
+    """Symmetry regression (аудит HIGH) — админ, который сам ставил на этот
+    рынок, не может его отменить."""
+    chat_id = -100800025
+    creator_id, admin_bettor_id = 810250, 810251
+    await _ensure_user(session, creator_id)
+    await _ensure_user(session, admin_bettor_id)
+    await _fund(session, chat_id, creator_id)
+    await _fund(session, chat_id, admin_bettor_id)
+
+    market = await markets_service.create_market(
+        session, chat_id, creator_id, "Ставивший админ отменяет сам себя?", ["Да", "Нет"], "7d",
+        "test_cancel_conflict_bettor_setup",
+    )
+    await markets_service.place_bet(
+        session, chat_id, market.id, admin_bettor_id, 1, 30, "test_cancel_conflict_bettor_bet"
+    )
+
+    with pytest.raises(markets_service.MarketResolverHasBet):
+        await markets_service.cancel_market(session, chat_id, market.id, actor_id=admin_bettor_id)
+
+    market_row = (await session.execute(select(Market).where(Market.id == market.id))).scalar_one()
+    assert market_row.status == "open"
+
+
+@pytest.mark.asyncio
+async def test_cancel_market_allows_uninvolved_admin_actor(session):
+    """Позитивный контроль: нейтральный админ (не создатель, не ставивший)
+    отменяет рынок без препятствий."""
+    chat_id = -100800026
+    creator_id, bettor_id, neutral_admin_id = 810260, 810261, 810262
+    for uid in (creator_id, bettor_id, neutral_admin_id):
+        await _ensure_user(session, uid)
+        await _fund(session, chat_id, uid)
+
+    market = await markets_service.create_market(
+        session, chat_id, creator_id, "Нейтральный админ отменяет нормально?", ["Да", "Нет"], "7d",
+        "test_cancel_conflict_neutral_setup",
+    )
+    await markets_service.place_bet(
+        session, chat_id, market.id, bettor_id, 1, 50, "test_cancel_conflict_neutral_bet"
+    )
+
+    result = await markets_service.cancel_market(session, chat_id, market.id, actor_id=neutral_admin_id)
+
+    assert result["status"] == "cancelled"
+    assert result["refunded_count"] == 1
 
 
 # --- auto_close_expired -------------------------------------------------------

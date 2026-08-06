@@ -89,6 +89,18 @@
 	let upgradingTap = $state(false);
 	let upgradingAuto = $state(false);
 
+	// Сетевой ретрай апгрейдов (bugfix аудита 2026-08-05, тот же контракт,
+	// что retryIdemKey в games/slots/teto/+page.svelte): если ответ на
+	// апгрейд потерялся (timeout/обрыв/5xx), сервер, возможно, УЖЕ списал CP
+	// и поднял уровень. Повторный клик по тому же апгрейду переиспользует
+	// ТОТ ЖЕ ref_id — сервер вернёт сохранённый исход (status: 'duplicate'),
+	// а не применит апгрейд второй раз. Детерминированные отказы (клиентские
+	// 4xx — недостаточно CP/максимальный уровень/auth) ключ сбрасывают, т.к.
+	// сервер точно не применил апгрейд.
+	let retryTapRefId: string | null = null;
+	let retryAutoRefId: string | null = null;
+	let retryCharRefId: { charId: string; refId: string } | null = null;
+
 	let characters = $state<OwnedCharacter[]>([]);
 	let upgradingCharId = $state<string | null>(null);
 
@@ -252,10 +264,29 @@
 		if (kind === 'tap') upgradingTap = true;
 		else upgradingAuto = true;
 		error = null;
+		const refId =
+			(kind === 'tap' ? retryTapRefId : retryAutoRefId) ??
+			`farm_upgrade_${kind}:${crypto.randomUUID()}`;
+		if (kind === 'tap') retryTapRefId = refId;
+		else retryAutoRefId = refId;
 		try {
-			syncFarm(await apiFetch<FarmState>(`/api/v1/farm/upgrade/${kind}`, { method: 'POST' }));
+			const state = await apiFetch<FarmState>(`/api/v1/farm/upgrade/${kind}`, {
+				method: 'POST',
+				body: JSON.stringify({ ref_id: refId })
+			});
+			syncFarm(state);
+			if (kind === 'tap') retryTapRefId = null;
+			else retryAutoRefId = null;
 			haptic('win');
 		} catch (err) {
+			// Определённый клиентский отказ (400 недостаточно CP/потолок, 401/403
+			// auth, 409/429) — апгрейд точно не применён, ключ не нужен;
+			// неопределённость (status 0 timeout / 5xx) ключ хранит для
+			// replay-ретрая следующим кликом.
+			if (err instanceof ApiError && err.status > 0 && err.status < 500) {
+				if (kind === 'tap') retryTapRefId = null;
+				else retryAutoRefId = null;
+			}
 			error = describeError(err);
 			haptic('error');
 		} finally {
@@ -268,17 +299,26 @@
 		if (upgradingCharId !== null) return;
 		upgradingCharId = charId;
 		error = null;
+		const refId =
+			retryCharRefId && retryCharRefId.charId === charId
+				? retryCharRefId.refId
+				: `farm_upgrade_character:${crypto.randomUUID()}`;
+		retryCharRefId = { charId, refId };
 		try {
 			const res = await apiFetch<{ char_id: string; farm_level: number; cp: number }>(
 				'/api/v1/farm/upgrade/character',
-				{ method: 'POST', body: JSON.stringify({ char_id: charId }) }
+				{ method: 'POST', body: JSON.stringify({ char_id: charId, ref_id: refId }) }
 			);
 			cp = res.cp;
 			optimisticCp = res.cp;
 			const char = characters.find((c) => c.char_id === charId);
 			if (char) char.farm_level = res.farm_level;
+			retryCharRefId = null;
 			haptic('win');
 		} catch (err) {
+			if (err instanceof ApiError && err.status > 0 && err.status < 500) {
+				retryCharRefId = null;
+			}
 			error = describeError(err);
 			haptic('error');
 		} finally {
