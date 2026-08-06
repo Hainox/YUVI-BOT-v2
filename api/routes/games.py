@@ -36,11 +36,18 @@ D-06 (`economy_service.pay_from_bank`) урезает выплату до тек
 чата был 0, весь выигрыш ушёл на компенсацию собственной же ставки).
 Флаг вычисляется ЗДЕСЬ (роут), не в `casino_service.py` — модуль settle-ядра
 общий для всех игр казино с разными формулами мультипликатора, трогать его
-ради одного UI-флага не нужно. dice/roulette (04.2-03) повторяют тот же
-паттерн, что и coinflip (04.2-02), пересчитывая свою "честную" формулу
-выплаты по данным, уже доступным роуту (target/direction для dice,
-bet_type для roulette), а не дублируя приватную `compute()`-логику
-`casino_service`.
+ради одного UI-флага не нужно. roulette (04.2-03) повторяет тот же паттерн,
+что и coinflip (04.2-02), пересчитывая свою "честную" формулу выплаты по
+данным, уже доступным роуту (bet_type), а не дублируя приватную
+`compute()`-логику `casino_service`. dice — ИСКЛЮЧЕНИЕ из этого правила
+(bugfix аудита 2026-08-06): роут раньше держал СВОЮ копию float-формулы
+`(1 - DICE_HOUSE_EDGE) / win_prob`, независимо от `casino_service.play_dice`'s
+такой же формулы — оба места накапливали одну и ту же float-погрешность
+округления по отдельности (см. `casino_service.dice_fair_payout`'s
+докстринг), поэтому здесь она НЕ дублируется по формуле, а вызывается ОДНА
+общая точная (Fraction, не float) функция `casino_service.dice_fair_payout`
+— единственный способ гарантировать, что "честная" сумма здесь и реальный
+`payout` из settle всегда считаются identично.
 
 POST /games/dice и POST /games/roulette (04.2-03) — тот же тонкий паттерн,
 что и coinflip выше: `casino_service.play_dice`/`play_roulette` уже несут
@@ -365,10 +372,7 @@ async def post_dice(
 
         outcome = result.get("outcome") or {}
         if outcome.get("won"):
-            win_prob = (
-                (body.target - 1) / 100 if body.direction == "under" else (100 - body.target) / 100
-            )
-            fair_payout = int(result["bet"] * (1 - casino_service.DICE_HOUSE_EDGE) / win_prob)
+            fair_payout = casino_service.dice_fair_payout(result["bet"], body.target, body.direction)
             result["bank_capped"] = result["payout"] < fair_payout
 
         return result

@@ -34,6 +34,7 @@ import secrets
 import time
 from datetime import datetime
 from datetime import timedelta
+from fractions import Fraction
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import select
@@ -58,6 +59,17 @@ _rng = secrets.SystemRandom()
 
 COINFLIP_MULT = 1.98
 DICE_HOUSE_EDGE = 0.02
+# Точная рациональная форма DICE_HOUSE_EDGE (аудит-баг 2026-08-06): float
+# 0.02 не представим точно в двоичной дроби, и `int(bet * (1 -
+# DICE_HOUSE_EDGE) / win_prob)` копил ошибку округления через ДВА float-а
+# (edge и win_prob) — на ~3.5% пар (target, bet) результат расходился с
+# точным рациональным floor'ом (в обе стороны — не системная скидка в пользу
+# банка, а именно шум). `_DICE_HOUSE_EDGE_EXACT` используется ТОЛЬКО в
+# `dice_fair_payout` ниже; сам `DICE_HOUSE_EDGE` остаётся float —
+# он всё ещё читается как informational-зеркало в miniapp (games/dice/
+# +page.svelte, оценка мультипликатора ДО ставки, реальный payout всегда
+# считает сервер).
+_DICE_HOUSE_EDGE_EXACT = Fraction(2, 100)
 ROULETTE_NUMBER_MULT = 36
 ROULETTE_EVEN_MULT = 2
 ROULETTE_DOZEN_MULT = 3
@@ -242,6 +254,24 @@ async def play_coinflip(
 # --- dice (D-03: mult=(1-0.02)/win_prob) -------------------------------------
 
 
+def dice_fair_payout(bet: int, target: int, direction: str) -> int:
+    """Точная (без float-погрешности, см. `_DICE_HOUSE_EDGE_EXACT` выше)
+    выплата на выигрыш кости — `floor(bet * (1 - edge) / win_prob)` в
+    рациональной арифметике (`fractions.Fraction`), а не через float.
+    Используется и здесь (`play_dice`), и `api/routes/games.py`'s
+    `bank_capped` для dice — тот же паттерн, что `_ROULETTE_FAIR_MULT`/
+    `_BLACKJACK_FAIR_MULT` там (пересчёт "честной" выплаты по данным,
+    доступным вызывающему), но с ОБЩЕЙ функцией, а не задублированной
+    формулой: два места с одной и той же формулой без общей функции — ровно
+    как разошлись раньше (роут держал свою копию float-формулы,
+    независимо ловящую ту же ошибку округления, что и здесь)."""
+    win_prob = (
+        Fraction(target - 1, 100) if direction == "under" else Fraction(100 - target, 100)
+    )
+    payout = bet * (1 - _DICE_HOUSE_EDGE_EXACT) / win_prob
+    return payout.numerator // payout.denominator
+
+
 async def play_dice(
     session: AsyncSession,
     chat_id: int,
@@ -253,7 +283,7 @@ async def play_dice(
 ) -> dict:
     """Кости: `direction='under'` выигрывает при `roll < target`,
     `direction='over'` — при `roll > target`. `target` в диапазоне 2..99.
-    Выплата на выигрыш — `int(bet * (1 - DICE_HOUSE_EDGE) / win_prob)`."""
+    Выплата на выигрыш — `dice_fair_payout(bet, target, direction)`."""
     if direction not in ("over", "under"):
         raise InvalidBet("direction должен быть 'over' или 'under'")
     if not (2 <= target <= 99):
@@ -261,13 +291,8 @@ async def play_dice(
 
     def compute() -> tuple[int, dict]:
         roll = _rng.randint(1, 100)
-        if direction == "under":
-            win_prob = (target - 1) / 100
-            won = roll < target
-        else:
-            win_prob = (100 - target) / 100
-            won = roll > target
-        payout = int(bet * (1 - DICE_HOUSE_EDGE) / win_prob) if won else 0
+        won = roll < target if direction == "under" else roll > target
+        payout = dice_fair_payout(bet, target, direction) if won else 0
         return payout, {"roll": roll, "target": target, "direction": direction, "won": won}
 
     return await _settle(session, chat_id, user_id, "dice", bet, idem_key, compute)

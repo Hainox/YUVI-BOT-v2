@@ -19,6 +19,7 @@ SQLAlchemy 2.0 (тот же паттерн уже проверен в test_marke
 from __future__ import annotations
 
 import json
+from fractions import Fraction
 
 import pytest
 from sqlalchemy import select
@@ -227,7 +228,6 @@ async def test_dice_multiplier_matches_formula(session, monkeypatch):
 
     target = 50
     direction = "under"
-    win_prob = (target - 1) / 100
     # r < target => under wins; форсируем r=1 (гарантированный under-win)
     monkeypatch.setattr(casino_service, "_rng", _ForcedRng(randint_value=1))
 
@@ -236,9 +236,66 @@ async def test_dice_multiplier_matches_formula(session, monkeypatch):
         session, chat_id, user_id, bet, target, direction, "test_dice_win"
     )
 
-    expected_payout = int(bet * (1 - casino_service.DICE_HOUSE_EDGE) / win_prob)
+    # Fraction — независимо от продакшен-кода, а не тот же float, что и
+    # implementation (аудит-регрессия 2026-08-06: обе стороны раньше несли
+    # ОДНУ и ту же float-погрешность округления и потому не могли поймать её).
+    exact = bet * (1 - Fraction(2, 100)) / Fraction(target - 1, 100)
+    expected_payout = exact.numerator // exact.denominator
     assert result["payout"] == expected_payout
     assert await _get_user_balance(session, chat_id, user_id) == balance_before - bet + expected_payout
+
+
+@pytest.mark.asyncio
+async def test_dice_payout_matches_exact_rational_formula_not_lossy_float(session, monkeypatch):
+    """Аудит-регрессия 2026-08-06: `int(bet * (1 - DICE_HOUSE_EDGE) /
+    win_prob)` теряет точность на float DICE_HOUSE_EDGE=0.02 и float
+    win_prob=(target-1)/100 — на target=2, bet=14 старая формула давала 1371
+    вместо точного рационального floor 1372 (проверено экзостивным сравнением
+    с `fractions.Fraction` по всем target/bet — ~3.5% пар расходились, в обе
+    стороны, не системная скидка в пользу банка). Форсируем roll=1
+    (гарантированный under-win при любом target>=2)."""
+    chat_id = -100900024
+    user_id = 900024
+    await _ensure_user(session, user_id)
+    balance_before = await _fund(session, chat_id, user_id)
+    await economy_service.credit_bank(
+        session, chat_id, 1_000_000, kind="test_seed", ref_id="test_dice_exact_seed_bank"
+    )
+    await session.commit()
+
+    target = 2
+    bet = 14
+    monkeypatch.setattr(casino_service, "_rng", _ForcedRng(randint_value=1))
+
+    result = await casino_service.play_dice(
+        session, chat_id, user_id, bet, target, "under", "test_dice_exact_win"
+    )
+
+    old_lossy_formula_payout = int(bet * (1 - casino_service.DICE_HOUSE_EDGE) / ((target - 1) / 100))
+    exact = bet * (1 - Fraction(2, 100)) / Fraction(target - 1, 100)
+    exact_payout = exact.numerator // exact.denominator
+
+    assert old_lossy_formula_payout == 1371
+    assert exact_payout == 1372
+    assert result["payout"] == exact_payout
+    assert result["payout"] != old_lossy_formula_payout
+    assert await _get_user_balance(session, chat_id, user_id) == balance_before - bet + exact_payout
+
+
+@pytest.mark.asyncio
+async def test_dice_fair_payout_matches_exact_rational_formula_exhaustively():
+    """`casino_service.dice_fair_payout` — независимо проверено против
+    `fractions.Fraction` (не переиспользует ту же формулу изнутри) по ВСЕМ
+    98 target x 2 direction x репрезентативному набору ставок — включая
+    маленькие (1..50) и большие (до 2**31-1) значения bet."""
+    bets = list(range(1, 51)) + [999, 100_000, 999_999_999, 2**31 - 1]
+    for target in range(2, 100):
+        for direction, denom in (("under", target - 1), ("over", 100 - target)):
+            win_prob = Fraction(denom, 100)
+            for bet in bets:
+                exact = bet * (1 - Fraction(2, 100)) / win_prob
+                expected = exact.numerator // exact.denominator
+                assert casino_service.dice_fair_payout(bet, target, direction) == expected
 
 
 # --- Рулетка (D-03: number 36x / color-parity-half 2x / dozen 3x) -----------
@@ -1156,7 +1213,6 @@ async def test_dice_over_direction_multiplier_matches_formula(session, monkeypat
 
     target = 99
     direction = "over"
-    win_prob = (100 - target) / 100
     monkeypatch.setattr(casino_service, "_rng", _ForcedRng(randint_value=100))
 
     bet = 100
@@ -1164,7 +1220,10 @@ async def test_dice_over_direction_multiplier_matches_formula(session, monkeypat
         session, chat_id, user_id, bet, target, direction, "test_dice_over_win"
     )
 
-    expected_payout = int(bet * (1 - casino_service.DICE_HOUSE_EDGE) / win_prob)
+    # Fraction — независимо от продакшен-кода (см. комментарий в
+    # test_dice_multiplier_matches_formula выше).
+    exact = bet * (1 - Fraction(2, 100)) / Fraction(100 - target, 100)
+    expected_payout = exact.numerator // exact.denominator
     assert result["outcome"]["won"] is True
     assert result["payout"] == expected_payout
     assert await _get_user_balance(session, chat_id, user_id) == balance_before - bet + expected_payout
