@@ -21,7 +21,9 @@
 	// visually settle, followed by a timed reveal of the payout panel — the
 	// same "swap to true state, then timed reveal" idiom as games/slots'
 	// SPIN_BASE_MS/REVEAL_DELAY_MS.
+	import { onDestroy } from 'svelte';
 	import { apiFetch, ApiError } from '$lib/api';
+	import { holdBalanceUpdates } from '$lib/balance';
 	import { haptic } from '$lib/tg';
 	import BetControl from '$lib/components/BetControl.svelte';
 
@@ -96,6 +98,13 @@
 			}, SEEK_INTERVAL_MS);
 		}
 
+		// Held until this screen's own reveal below (needle settle + payout
+		// panel) actually finishes — otherwise the header balance jumps to the
+		// new total via api.ts's sniff the instant the response resolves,
+		// spoiling the result before SETTLE_MS's delayed reveal shows it. See
+		// lib/balance.ts.
+		holdBalanceUpdates(true);
+
 		let res: DiceResult;
 		try {
 			res = await apiFetch<DiceResult>('/api/v1/games/dice', {
@@ -108,6 +117,7 @@
 				})
 			});
 		} catch (err) {
+			holdBalanceUpdates(false);
 			if (seekTimer !== null) window.clearInterval(seekTimer);
 			phase = 'idle';
 			rolling = false;
@@ -127,6 +137,9 @@
 			result = res;
 			rolling = false;
 			haptic(res.outcome.won ? 'win' : 'lose');
+			// Reveal is immediate here (no SETTLE_MS delay) — release the hold
+			// the moment it actually happens, see holdBalanceUpdates(true) above.
+			holdBalanceUpdates(false);
 			return;
 		}
 
@@ -136,8 +149,16 @@
 			result = res;
 			rolling = false;
 			haptic(res.outcome.won ? 'win' : 'lose');
+			// The delayed local reveal (payout panel) just actually happened —
+			// now it's safe to let the header balance catch up.
+			holdBalanceUpdates(false);
 		}, SETTLE_MS);
 	}
+
+	// Если экран размонтировали посреди броска/settle-паузы — код внутри
+	// window.setTimeout выше никогда не выполнится, значит холд баланса
+	// больше некому отпустить, кроме как здесь.
+	onDestroy(() => holdBalanceUpdates(false));
 </script>
 
 <div class="dice-screen">

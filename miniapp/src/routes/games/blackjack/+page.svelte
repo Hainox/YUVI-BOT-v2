@@ -13,6 +13,7 @@
 	// (D-07/D-08, resolve_blackjack_timeouts) settles it for the player.
 	import { onDestroy } from 'svelte';
 	import { apiFetch, ApiError } from '$lib/api';
+	import { holdBalanceUpdates } from '$lib/balance';
 	import { haptic } from '$lib/tg';
 	import { parseCard, cardImage, SUIT_THEME } from '$lib/blackjackTheme';
 	import BetControl from '$lib/components/BetControl.svelte';
@@ -45,6 +46,10 @@
 		dealer?: string[];
 		payout?: number;
 		outcome?: BjOutcome;
+		// D-06: chat_bank couldn't cover the full fair payout (win/natural, or
+		// even a push's stake refund), so the payout was capped — see
+		// api/routes/games.py's post_blackjack_start/post_blackjack_action.
+		bank_capped?: boolean;
 	};
 
 	const OUTCOME_LABEL: Record<BjOutcome['result'], string> = {
@@ -76,6 +81,7 @@
 	let dealer = $state<string[] | null>(null);
 	let outcome = $state<BjOutcome | null>(null);
 	let payout = $state<number | null>(null);
+	let bankCapped = $state(false);
 
 	// Motion-only state (T-motion-pass) — never read/written by anything
 	// that talks to the server, purely sequences the reveal animation.
@@ -96,6 +102,14 @@
 	// --flip-delay/animation-duration set on .bj-flip-inner below (see
 	// DEALER_FLIP_* / RESULT_REVEAL_GAP_MS), and both are skipped for
 	// prefers-reduced-motion.
+	//
+	// Held until resultVisible actually flips (see holdBalanceUpdates below) —
+	// otherwise the header balance jumps to the new total via api.ts's sniff
+	// the instant deal()/act()'s own apiFetch resolves, spoiling the dealer's
+	// hole card while it's still shown face-down. See lib/balance.ts. deal()/
+	// act() release the hold immediately instead whenever their own result
+	// leaves phase 'active' (no settle/reveal pending for that action), so
+	// this effect only ever needs to release it on the settle path.
 	$effect(() => {
 		_clearRevealTimers();
 		if (phase !== 'settled') {
@@ -108,10 +122,23 @@
 		const revealDelay = reduced ? 0 : DEALER_FLIP_DELAY_MS + DEALER_FLIP_DURATION_MS + extraDealerCards * DEALER_EXTRA_CARD_STAGGER_MS;
 		const resultDelay = reduced ? 0 : revealDelay + RESULT_REVEAL_GAP_MS;
 		revealTimers.push(setTimeout(() => (dealerRevealed = true), revealDelay));
-		revealTimers.push(setTimeout(() => (resultVisible = true), resultDelay));
+		revealTimers.push(
+			setTimeout(() => {
+				resultVisible = true;
+				// The payoff beat (hole card flip + result badge) has actually
+				// landed on screen now — safe to let the header catch up.
+				holdBalanceUpdates(false);
+			}, resultDelay)
+		);
 	});
 
-	onDestroy(_clearRevealTimers);
+	onDestroy(() => {
+		_clearRevealTimers();
+		// Screen navigated away from mid-hand (between an action's response
+		// and its own reveal finishing) — don't leave the hold stuck forever
+		// for other screens that read the shared balance store.
+		holdBalanceUpdates(false);
+	});
 
 	function _rankValue(rank: string): number {
 		if (rank === 'A') return 11;
@@ -143,11 +170,13 @@
 			dealer = null;
 			outcome = null;
 			payout = null;
+			bankCapped = false;
 		} else {
 			phase = 'settled';
 			dealer = v.dealer ?? null;
 			outcome = v.outcome ?? null;
 			payout = v.payout ?? 0;
+			bankCapped = v.bank_capped ?? false;
 			if (outcome) {
 				if (outcome.result === 'natural' || outcome.result === 'win') haptic('win');
 				else if (outcome.result === 'push') haptic('tap');
@@ -161,13 +190,23 @@
 		busy = true;
 		error = null;
 		haptic('spin');
+		// Held until this action's own visible reveal lands — deal() can settle
+		// the hand outright (natural blackjack), which flips the dealer's hole
+		// card same as any other settle. See the $effect above and
+		// lib/balance.ts for why this matters.
+		holdBalanceUpdates(true);
 		try {
 			const res = await apiFetch<BjView>('/api/v1/games/blackjack', {
 				method: 'POST',
 				body: JSON.stringify({ bet, idem_key: `blackjack:${crypto.randomUUID()}` })
 			});
 			_applyView(res);
+			// Player's turn is still live (no natural) — no settle/reveal is
+			// pending for this action, so nothing to hold for. Don't leave the
+			// header frozen across the rest of the hand's hits/stand.
+			if (phase === 'active') holdBalanceUpdates(false);
 		} catch (err) {
+			holdBalanceUpdates(false);
 			error = err instanceof ApiError ? err.message : String(err ?? 'unknown_error');
 			haptic('error');
 		} finally {
@@ -182,6 +221,11 @@
 		haptic('tap');
 		const wasDouble = action === 'double';
 		const prevPlayerLen = player.length;
+		// Held until THIS action's own visible reveal lands — hit/stand/double
+		// can each be the terminal action that settles the hand (bust, stand,
+		// or double's single extra card), which flips the dealer's hole card.
+		// See the $effect above and lib/balance.ts for why this matters.
+		holdBalanceUpdates(true);
 		try {
 			const res = await apiFetch<BjView>(`/api/v1/games/blackjack/${gameId}/action`, {
 				method: 'POST',
@@ -193,7 +237,12 @@
 			// subtle gold pulse instead of (well, in addition to) the normal
 			// deal animation. Set only on confirmed success, never optimistically.
 			if (wasDouble) doubledCardIndex = prevPlayerLen;
+			// A plain hit that didn't bust/end the hand — the player's turn is
+			// still live, no settle/reveal is pending for this action, so
+			// don't leave the header frozen across the rest of the hand.
+			if (phase === 'active') holdBalanceUpdates(false);
 		} catch (err) {
+			holdBalanceUpdates(false);
 			error = err instanceof ApiError ? err.message : String(err ?? 'unknown_error');
 			haptic('error');
 		} finally {
@@ -209,6 +258,7 @@
 		dealer = null;
 		outcome = null;
 		payout = null;
+		bankCapped = false;
 		error = null;
 		doubledCardIndex = null;
 	}
@@ -316,6 +366,11 @@
 			<div class="bj-result-amount">
 				{(payout ?? 0) > 0 ? `+${payout}¥` : outcome.result === 'push' ? '±0¥' : `−${bet}¥`}
 			</div>
+			{#if bankCapped}
+				<div class="bj-capped-note">
+					банк чата почти пуст — выплата урезана до {payout ?? 0}¥ (не по полному множителю).
+				</div>
+			{/if}
 		</div>
 	{/if}
 
@@ -681,6 +736,13 @@
 	}
 	.bj-result-push .bj-result-amount {
 		color: var(--text-muted);
+	}
+	.bj-capped-note {
+		margin-top: var(--space-sm);
+		font-size: 12px;
+		line-height: 1.4;
+		color: var(--accent-yellow);
+		font-family: var(--font-body);
 	}
 
 	.bj-error {

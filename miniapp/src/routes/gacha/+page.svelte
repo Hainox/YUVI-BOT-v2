@@ -22,6 +22,7 @@
 	// be owned=true in the roster.
 	import { onMount, onDestroy } from 'svelte';
 	import { apiFetch, ApiError } from '$lib/api';
+	import { holdBalanceUpdates } from '$lib/balance';
 	import { haptic } from '$lib/tg';
 
 	const ROLL_COST = 300;
@@ -276,6 +277,13 @@
 			// ОБА условия — Promise.all ждёт более медленное из двух: минимальную
 			// длительность анимации (таймеры выше) и реальный ответ API. Ни разу
 			// не показываем локально угаданный результат раньше настоящего.
+			//
+			// Held until the reveal below actually sets `reveal` — otherwise the
+			// header balance jumps to the new total via api.ts's sniff of
+			// `user_balance_after` (this endpoint carries exactly that field)
+			// before the charge->rift->flash->card-flip sequence even finishes,
+			// spoiling whether the roll was a win/rare pull. See lib/balance.ts.
+			holdBalanceUpdates(true);
 			const fetchPromise = apiFetch<RollResult>('/api/v1/gacha/roll', {
 				method: 'POST',
 				body: JSON.stringify({ count, ref_id: 'gacha_roll:' + crypto.randomUUID() })
@@ -295,9 +303,13 @@
 			rollPhase = 'reveal';
 			await loadCollection();
 			reveal = res.results;
+			// Карточки реально видны игроку — теперь можно отпустить холд
+			// шапки-баланса, см. holdBalanceUpdates(true) выше.
+			holdBalanceUpdates(false);
 			const hasUur = res.results.some((r) => r.tier === 'UUR');
 			haptic(hasUur ? 'big-win' : 'win');
 		} catch (err) {
+			holdBalanceUpdates(false);
 			clearRollTimers();
 			rollPhase = 'idle';
 			error = describeError(err);
@@ -340,6 +352,10 @@
 
 	onDestroy(() => {
 		clearRollTimers();
+		// Если экран размонтировали посреди ролла/анимации — код после
+		// Promise.all выше никогда не выполнится, значит холд баланса больше
+		// некому отпустить, кроме как здесь (см. holdBalanceUpdates(true) в roll()).
+		holdBalanceUpdates(false);
 	});
 </script>
 

@@ -17,7 +17,9 @@
 	// that already-known number (same "informational reveal" spirit as the
 	// blackjack card-flip work) — nothing about the round outcome is decided
 	// or guessed client-side.
+	import { onDestroy } from 'svelte';
 	import { apiFetch, ApiError } from '$lib/api';
+	import { holdBalanceUpdates } from '$lib/balance';
 	import { haptic } from '$lib/tg';
 	import BetControl from '$lib/components/BetControl.svelte';
 
@@ -169,6 +171,12 @@
 		error = null;
 		result = null;
 		haptic('spin');
+		// Held until the wheel actually finishes spinning below — otherwise the
+		// header balance jumps to the new total via api.ts's sniff the instant
+		// the fetch resolves, long before the wheel visually stops (this
+		// screen's reveal is gated behind SPIN_DURATION_MS + REVEAL_BUFFER_MS
+		// ≈ 3.55s). See lib/balance.ts.
+		holdBalanceUpdates(true);
 		try {
 			const res = await apiFetch<RouletteResult>('/api/v1/games/roulette', {
 				method: 'POST',
@@ -184,13 +192,21 @@
 				result = res;
 				spinning = false;
 				haptic(res.outcome.won ? 'win' : 'lose');
+				// Wheel has actually landed and the result is revealed — now it's
+				// safe to let the header balance update.
+				holdBalanceUpdates(false);
 			}, SPIN_DURATION_MS + REVEAL_BUFFER_MS);
 		} catch (err) {
+			holdBalanceUpdates(false);
 			error = err instanceof ApiError ? err.message : String(err ?? 'unknown_error');
 			haptic('error');
 			spinning = false;
 		}
 	}
+
+	// If the screen is unmounted mid-spin — the setTimeout callback above will
+	// never run, so nothing else would release the hold.
+	onDestroy(() => holdBalanceUpdates(false));
 </script>
 
 <div class="rl-screen">

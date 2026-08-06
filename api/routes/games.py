@@ -193,6 +193,21 @@ POST /games/blackjack (start) + POST /games/blackjack/{game_id}/action
 в `04.1-03-SUMMARY.md`): статус-переход "active"->"settled" сам служит
 гардом идемпотентности, `blackjack_action` возвращает сохранённый исход
 200-м ответом (повторный no-op) — роут это поведение не переопределяет.
+
+`bank_capped` У БЛЭКДЖЕКА (оба роута выше) — тот же D-06-инцидент, что и у
+coinflip/dice/roulette/teto_slots (см. выше), но вычисляется БЕЗУСЛОВНО, как
+у teto_slots, а не только "если выиграл", как у coinflip/dice/roulette: у
+блэкджека нет единого признака "won" — пять исходов (`natural`/`win`/`push`/
+`lose`/`bust`), и даже `push` (честный возврат ставки, mult=1.0) идёт через
+тот же `_finalize_blackjack` -> `economy_service.pay_from_bank` и может быть
+урезан на пустом банке ровно как выигрыш — без безусловного вычисления кап
+push'а остался бы недокументированной дырой. "Честная" выплата здесь не лежит
+готовым числом в ответе (в отличие от Тето `outcome.total_payout`) — роут
+восстанавливает её сам по `outcome.result` (см. `_BLACKJACK_FAIR_MULT`) и
+ставке, той же дисциплиной, что и coinflip/dice/roulette выше (пересчёт по
+уже доступным роуту данным, без правок settle-ядра). На ещё активной раздаче
+(натурала не было, ход не завершён) `bank_capped` — честный `False`, а не
+пропущенный ключ, той же логикой, что "total_payout == 0" у Тето.
 """
 
 from __future__ import annotations
@@ -269,6 +284,22 @@ _ROULETTE_FAIR_MULT: dict[str, int] = {
     "parity": casino_service.ROULETTE_EVEN_MULT,
     "half": casino_service.ROULETTE_EVEN_MULT,
     "dozen": casino_service.ROULETTE_DOZEN_MULT,
+}
+
+# outcome.result -> "честный" (без D-06 капа) множитель выплаты блэкджека,
+# для bank_capped у post_blackjack_start/post_blackjack_action ниже. Держится
+# рядом с роутом, та же причина, что у _ROULETTE_FAIR_MULT выше — не общее
+# settle-ядро ради одного UI-флага. Зеркалит blackjack_engine.settle_outcome()
+# и BLACKJACK_NATURAL_MULT: "lose"/"bust" честно платят 0. Отсутствующий ключ
+# (раздача ещё "active", settle не случился) через `.get(..., 0.0)` тоже даёт
+# мультипликатор 0 — не отдельная ветка, а тот же путь, что и настоящий
+# проигрыш (см. комментарий у post_blackjack_start).
+_BLACKJACK_FAIR_MULT: dict[str, float] = {
+    "natural": casino_service.BLACKJACK_NATURAL_MULT,
+    "win": casino_service.BLACKJACK_WIN_MULT,
+    "push": casino_service.BLACKJACK_PUSH_MULT,
+    "lose": 0.0,
+    "bust": 0.0,
 }
 
 
@@ -579,6 +610,23 @@ async def post_blackjack_start(
         )
         result["user_balance_after"] = balance
 
+        # bank_capped (D-06, см. модульный докстринг) — считается БЕЗУСЛОВНО,
+        # не только на выигрыше: у блэкджека нет отдельного признака "won",
+        # как у coinflip/dice/roulette, — пять исходов ("natural"/"win"/
+        # "push"/"lose"/"bust"), и даже "push" (mult=1.0, честный возврат
+        # ставки) идёт через тот же `_finalize_blackjack` -> `pay_from_bank`
+        # и может быть урезан на пустом банке (тот же класс инцидента, что и
+        # у выигрыша) — тот же паттерн, что у teto_slots ниже, а не у
+        # coinflip/dice/roulette выше (см. их докстринг-обоснование). Раздача
+        # ещё "active" (натурала не было, `_blackjack_view` не кладёт ключи
+        # "outcome"/"payout" вовсе) не требует отдельной ветки: `.get(None,
+        # 0.0)` даёт fair_mult=0, `result.get("payout", 0)` — 0, `0 < 0` ->
+        # честный `False`.
+        outcome = result.get("outcome") or {}
+        fair_mult = _BLACKJACK_FAIR_MULT.get(outcome.get("result"), 0.0)
+        fair_payout = int(result["bet"] * fair_mult)
+        result["bank_capped"] = result.get("payout", 0) < fair_payout
+
         return result
 
 
@@ -616,5 +664,26 @@ async def post_blackjack_action(
             request.app.state.redis, auth.chat_id, auth.user_id, balance
         )
         result["user_balance_after"] = balance
+
+        # bank_capped — тот же паттерн, что и post_blackjack_start выше (см.
+        # его комментарий и модульный докстринг): считается БЕЗУСЛОВНО, а не
+        # только на "win"/"natural" (push тоже платит через pay_from_bank и
+        # тоже может быть урезан). Единственное отличие от start: `double`
+        # удваивает СТАВКУ в деньгах, но `game_row.bet` (=`result["bet"]`)
+        # остаётся исходным (`blackjack_action` его не переписывает, см.
+        # casino_service) — честный payout удвоенной раздачи считаем по
+        # ставке этого запроса ×2, используя `body.action` ТЕКУЩЕГО вызова
+        # (тот же контракт, что у body.bet_type/target для roulette/dice
+        # выше: предполагается, что клиент шлёт тот же action, которым
+        # раздача была реально settled — верно для обычного UI-флоу "нажал ->
+        # получил ответ"). Не переживает гипотетический no-op replay
+        # (T-04.1-09) с ДРУГИМ action на уже settled раздаче, чем той, что её
+        # реально settled'ила — тот же класс документированного, а не тихого
+        # пробела, что и bank_capped-разрыв слотов в модульном докстринге.
+        outcome = result.get("outcome") or {}
+        fair_mult = _BLACKJACK_FAIR_MULT.get(outcome.get("result"), 0.0)
+        effective_bet = result["bet"] * (2 if body.action == "double" else 1)
+        fair_payout = int(effective_bet * fair_mult)
+        result["bank_capped"] = result.get("payout", 0) < fair_payout
 
         return result

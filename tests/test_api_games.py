@@ -103,6 +103,15 @@ TETO_SLOTS_CHAT_ID = -900311
 # и кап просто не наступил бы).
 TETO_DRAINED_BANK_CHAT_ID = -900312
 
+# Отдельные chat_id ТОЛЬКО под bank_capped-регрессию блэкджека (D-06) — та же
+# изоляция, что FRESH_BANK_CHAT_ID у coinflip: банк каждого из этих чатов не
+# делится ни с BLACKJACK_CHAT_ID (остальные блэкджек-тесты выше), ни друг с
+# другом, иначе накопленные ставки соседей случайно покрыли бы выигрыш и кап
+# не наступил бы (или наоборот — "богатый банк" тест смешался бы со свежим).
+BLACKJACK_FRESH_BANK_CHAT_ID = -900313  # свежий (нулевой) банк, натурал через /start
+BLACKJACK_ACTION_FRESH_BANK_CHAT_ID = -900314  # свежий банк, выигрыш через /action (stand)
+BLACKJACK_FUNDED_BANK_CHAT_ID = -900315  # заведомо богатый банк, double через /action
+
 
 class _ForcedWinRng:
     """Форсирует детерминированный выигрыш coinflip (см. test_casino_service.py::
@@ -1458,6 +1467,10 @@ async def test_blackjack_start_valid_bet_returns_200_with_active_hand(monkeypatc
     assert body["player"] == ["8♠", "4♠"]
     assert "dealer_upcard" in body
     assert "id" in body
+    # Раздача ещё не settle'илась (не натурал) — bank_capped обязан быть
+    # честным False, а не отсутствующим ключом (см. bank_capped-комментарий
+    # post_blackjack_start в api/routes/games.py).
+    assert body["bank_capped"] is False
 
     await _force_settle_leftover_game(body["id"])
 
@@ -1632,6 +1645,9 @@ async def test_blackjack_action_stand_settles_hand(monkeypatch):
     assert body["dealer"] == ["7♠", "5♠", "9♠"]
     assert body["outcome"]["result"] == "lose"
     assert body["payout"] == 0
+    # Честный payout проигрыша — тоже 0 (fair_mult=0.0 для "lose"), поэтому
+    # bank_capped обязан остаться False, а не стать True из-за "0 < 0".
+    assert body["bank_capped"] is False
 
 
 @pytest.mark.asyncio
@@ -1887,3 +1903,131 @@ async def test_blackjack_action_on_settled_game_replays_stored_result(monkeypatc
 
     balance_after_replay = await _get_balance(BLACKJACK_CHAT_ID, user_id)
     assert balance_after_replay == balance_after_settle  # деньги не двинулись повторно
+
+
+@pytest.mark.asyncio
+async def test_blackjack_start_natural_win_on_empty_bank_reports_bank_capped(monkeypatch):
+    """Регрессия по тому же классу инцидента, что и `test_coinflip_win_on_
+    empty_bank_reports_bank_capped` выше (см. модульный докстринг
+    api/routes/games.py) — только для блэкджека и через немедленный settle
+    натурала внутри `post_blackjack_start` (не /action). Свежий (нулевой)
+    chat_bank чата пополняется РОВНО ставкой самой же раздачей (`_debit_stake`)
+    до выплаты — честный натурал (bet * 2.5) не влезает, capped-выплата
+    урезается до размера самой ставки. `casino_service.start_blackjack`'ы
+    тест-эквивалент — `tests/test_blackjack_service.py::
+    test_payout_capped_to_bank` (та же форсированная колода)."""
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    # player=[A,K]=21 (натурал), dealer=[8,4]=12 (не натурал) -> "natural", 2.5x.
+    monkeypatch.setattr(casino_service, "_rng", _FixedDeckRng(["A♠", "K♠", "8♠", "4♠"]))
+    user_id = 300513
+    await _ensure_user(user_id)
+    init_data = _build_init_data(user_id=user_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/games/blackjack",
+            params={"chat_id": BLACKJACK_FRESH_BANK_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={"bet": 100, "idem_key": str(uuid.uuid4())},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "settled"
+    assert body["outcome"]["result"] == "natural"
+    # Честный натурал — 250 (100 * 2.5); банк стартовал с 0, пополнился
+    # только ставкой (100) до выплаты — capped-payout == ставке.
+    assert body["payout"] == 100
+    assert body["payout"] < int(100 * casino_service.BLACKJACK_NATURAL_MULT)
+    assert body["bank_capped"] is True
+
+
+@pytest.mark.asyncio
+async def test_blackjack_action_stand_win_on_empty_bank_reports_bank_capped(monkeypatch):
+    """Тот же D-06-инцидент, что и в тесте выше, но через POST /blackjack/
+    {game_id}/action ("stand"), не немедленный settle натурала на /start —
+    покрывает bank_capped-вычисление именно в post_blackjack_action."""
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    user_id = 300514
+    await _ensure_user(user_id)
+    init_data = _build_init_data(user_id=user_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # player=[10,9]=19 (не натурал), dealer=[10,6]=16 -> stand доигрывает:
+        # +"2" -> 18 (>=17, стоп). player(19) > dealer(18) -> "win", 2x.
+        monkeypatch.setattr(
+            casino_service, "_rng", _FixedDeckRng(["10♠", "9♣", "10♥", "6♦", "2♠"])
+        )
+        game_id = await _start_fixed_hand(client, init_data, BLACKJACK_ACTION_FRESH_BANK_CHAT_ID, [])
+
+        resp = await client.post(
+            f"/api/v1/games/blackjack/{game_id}/action",
+            params={"chat_id": BLACKJACK_ACTION_FRESH_BANK_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={"action": "stand"},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "settled"
+    assert body["outcome"]["result"] == "win"
+    # Честный выигрыш — 200 (100 * 2.0); банк стартовал с 0, пополнился
+    # только ставкой (100) до выплаты — capped-payout == ставке.
+    assert body["payout"] == 100
+    assert body["payout"] < int(100 * casino_service.BLACKJACK_WIN_MULT)
+    assert body["bank_capped"] is True
+
+
+@pytest.mark.asyncio
+async def test_blackjack_action_double_win_on_funded_bank_reports_bank_capped_false(monkeypatch):
+    """Обратная сторона двух тестов выше: тот же класс выигрыша, но через
+    `double` (эффективная ставка х2, см. bank_capped-комментарий
+    post_blackjack_action в api/routes/games.py — `game_row.bet`/`result["bet"]`
+    остаётся ОДИНАРНЫМ даже после double, роут обязан сам удвоить его для
+    честной формулы) и на заведомо богатом банке — `bank_capped: false`,
+    выплата равна честному итогу ПОЛНОСТЬЮ (bet * 2 удвоения * 2.0 множителя
+    win). Без этой половины `bank_capped: true` было бы неотличимо от
+    константы (тот же аргумент, что у `test_teto_slots_win_on_funded_bank_
+    reports_bank_capped_false`)."""
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    user_id = 300515
+    await _ensure_user(user_id)
+    await _topup(BLACKJACK_FUNDED_BANK_CHAT_ID, user_id)
+    init_data = _build_init_data(user_id=user_id)
+
+    async with SessionLocal() as db_session:
+        await economy_service.credit_bank(
+            db_session, BLACKJACK_FUNDED_BANK_CHAT_ID, 1_000_000,
+            kind="test_seed", ref_id=f"test_bj_funded_bank:{uuid.uuid4()}",
+        )
+        await db_session.commit()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # player=[8,4]=12, dealer=[7,5]=12 (оба не натурал); double добирает
+        # РОВНО одну карту "9" -> player=21, затем дилер доигрывает "5♥"
+        # (12+5=17, стоп). player(21) > dealer(17) -> "win", 2x на удвоенной
+        # ставке (bet_effective = bet*2).
+        monkeypatch.setattr(
+            casino_service, "_rng", _FixedDeckRng(["8♠", "4♠", "7♠", "5♠", "9♠", "5♥"])
+        )
+        game_id = await _start_fixed_hand(client, init_data, BLACKJACK_FUNDED_BANK_CHAT_ID, [])
+
+        resp = await client.post(
+            f"/api/v1/games/blackjack/{game_id}/action",
+            params={"chat_id": BLACKJACK_FUNDED_BANK_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={"action": "double"},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "settled"
+    assert body["outcome"]["result"] == "win"
+    assert body["bet"] == 100  # game_row.bet остаётся одинарным даже после double
+    # Честный итог удвоенной раздачи — 400 (100 * 2 удвоения * 2.0 множителя
+    # win); богатый банк платит его целиком, без капа.
+    assert body["payout"] == 400
+    assert body["bank_capped"] is False
