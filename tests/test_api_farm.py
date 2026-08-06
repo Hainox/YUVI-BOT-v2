@@ -226,6 +226,7 @@ async def test_upgrade_tap_insufficient_cp_returns_400(monkeypatch):
             "/api/v1/farm/upgrade/tap",
             params={"chat_id": UPGRADE_CHAT_ID},
             headers={"X-Telegram-Init-Data": init_data},
+            json={"ref_id": str(uuid.uuid4())},
         )
 
     assert resp.status_code == 400
@@ -244,6 +245,7 @@ async def test_upgrade_auto_insufficient_cp_returns_400(monkeypatch):
             "/api/v1/farm/upgrade/auto",
             params={"chat_id": UPGRADE_CHAT_ID},
             headers={"X-Telegram-Init-Data": init_data},
+            json={"ref_id": str(uuid.uuid4())},
         )
 
     assert resp.status_code == 400
@@ -263,11 +265,119 @@ async def test_upgrade_tap_succeeds_with_enough_cp(monkeypatch):
             "/api/v1/farm/upgrade/tap",
             params={"chat_id": UPGRADE_CHAT_ID},
             headers={"X-Telegram-Init-Data": init_data},
+            json={"ref_id": str(uuid.uuid4())},
         )
 
     assert resp.status_code == 200
     body = resp.json()
     assert body["tap_level"] == 2
+
+
+# --- Идемпотентность апгрейдов (bugfix аудита 2026-08-05) ------------------
+
+
+@pytest.mark.asyncio
+async def test_upgrade_tap_is_idempotent_on_ref_id(monkeypatch):
+    """Сетевой ретрай POST /farm/upgrade/tap с тем же ref_id не должен
+    списать CP и поднять tap_level дважды."""
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    user_id = 400112
+    await _ensure_user(user_id)
+    await _seed_farm_cp(UPGRADE_CHAT_ID, user_id, 100_000)
+    init_data = _build_init_data(user_id=user_id)
+    ref_id = str(uuid.uuid4())
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        first = await client.post(
+            "/api/v1/farm/upgrade/tap",
+            params={"chat_id": UPGRADE_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={"ref_id": ref_id},
+        )
+        second = await client.post(
+            "/api/v1/farm/upgrade/tap",
+            params={"chat_id": UPGRADE_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={"ref_id": ref_id},
+        )
+
+    assert first.status_code == 200
+    assert first.json()["tap_level"] == 2
+    assert first.json()["cp"] == 100_000 - clicker_service._upgrade_cost(
+        clicker_service.TAP_UPGRADE_BASE, 1
+    )
+
+    assert second.status_code == 200
+    body_second = second.json()
+    assert body_second.get("status") == "duplicate"
+    # Повтор — CP и уровень НЕ двигаются повторно, состояние то же, что после первого запроса.
+    assert body_second["tap_level"] == 2
+    assert body_second["cp"] == first.json()["cp"]
+
+
+@pytest.mark.asyncio
+async def test_upgrade_character_is_idempotent_on_ref_id(monkeypatch):
+    """Сетевой ретрай POST /farm/upgrade/character с тем же ref_id не должен
+    списать CP и поднять farm_level героини дважды."""
+    from bot.services import gacha_catalog
+    from common.models.gacha_collection import GachaCollection
+
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    user_id = 400113
+    char_chat_id = -900404
+    await _ensure_user(user_id)
+
+    char = next(c for c in gacha_catalog.CATALOG.values() if c.tier == "S")
+    async with SessionLocal() as db_session:
+        await clicker_service.get_farm_state(db_session, char_chat_id, user_id)
+        # Идемпотентный upsert (не голый add()) — та же причина, что у
+        # _ensure_user/_seed_farm_cp в этом файле: этот тест коммитит в
+        # реальный Postgres напрямую, повторный прогон без пересоздания БД
+        # иначе упал бы на UNIQUE(user_id, chat_id, char_id) вместо того,
+        # чтобы детерминированно пересеять farm_level=1 перед апгрейдом.
+        gacha_stmt = (
+            pg_insert(GachaCollection)
+            .values(chat_id=char_chat_id, user_id=user_id, char_id=char.char_id, stars=1, copies=1)
+            .on_conflict_do_update(
+                index_elements=["user_id", "chat_id", "char_id"],
+                set_={"farm_level": 1, "stars": 1, "copies": 1},
+            )
+        )
+        await db_session.execute(gacha_stmt)
+        await db_session.execute(
+            update(ClickerFarm)
+            .where(ClickerFarm.chat_id == char_chat_id, ClickerFarm.user_id == user_id)
+            .values(cp=1_000_000, tap_level=1, auto_level=0)
+        )
+        await db_session.commit()
+
+    init_data = _build_init_data(user_id=user_id)
+    ref_id = str(uuid.uuid4())
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        first = await client.post(
+            "/api/v1/farm/upgrade/character",
+            params={"chat_id": char_chat_id},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={"char_id": char.char_id, "ref_id": ref_id},
+        )
+        second = await client.post(
+            "/api/v1/farm/upgrade/character",
+            params={"chat_id": char_chat_id},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={"char_id": char.char_id, "ref_id": ref_id},
+        )
+
+    assert first.status_code == 200
+    assert first.json()["farm_level"] == 2
+
+    assert second.status_code == 200
+    body_second = second.json()
+    assert body_second.get("status") == "duplicate"
+    assert body_second["farm_level"] == 2
+    assert body_second["cp"] == first.json()["cp"]
 
 
 # --- POST /farm/convert (100 CP = 1 ювик direction, FARM-01) -------------

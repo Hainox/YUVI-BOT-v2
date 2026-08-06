@@ -132,6 +132,19 @@ class Settings(BaseSettings):
     market_resolution_fee_pct: float = Field(default=0.05, alias="MARKET_RESOLUTION_FEE_PCT")
     market_import_fee: int = Field(default=50, alias="MARKET_IMPORT_FEE")
 
+    # --- Биржа ювиков (EXCHANGE-01) ---
+    # Найдено ревью 2026-08-05: claimed-листинг без self-service выхода, если
+    # продавец пропал уже после того, как покупатель заплатил вне бота (см.
+    # докстринг bot/services/exchange_service.py и
+    # exchange_service.alert_stuck_listings). НЕ таймаут, двигающий деньги —
+    # бот не может подтвердить оффлайн-оплату, наивный авто-cancel/release в
+    # любую сторону открывает фрод — только порог для visibility-алерта в
+    # чат, дальше решает живой админ через уже существующие
+    # /exchange_admin_cancel и /exchange_admin_release. 24ч — разумный
+    # дефолт (сутки на живую переписку продавца с покупателем до того, как
+    # это становится поводом для тревоги).
+    exchange_stuck_alert_hours: int = Field(default=24, alias="EXCHANGE_STUCK_ALERT_HOURS")
+
     # --- Казино (04.1, D-04/D-05) ---
     # Единая минимальная ставка для ВСЕХ игр казино и дуэлей (не разная по играм).
     casino_min_bet: int = Field(default=10, alias="CASINO_MIN_BET")

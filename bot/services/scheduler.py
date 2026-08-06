@@ -33,7 +33,14 @@ lurker_service.register_daily_roast (запрошено пользователе
 вероятностный тик "дневного двойника" (daily_twin_tick, interval 15м, окно
 9:00-23:00 МСК, TWIN-03) через daily_twin_service.register_daily_twin_tick
 (запрошено пользователем 2026-07-27) — interval, а не cron, потому что нужно
-несколько попыток поста за день, а не одна точка времени.
+несколько попыток поста за день, а не одна точка времени), и visibility-
+алерт зависших claimed-листингов биржи ювиков (exchange_stuck_alert,
+interval 60м, найдено ревью 2026-08-05) через
+exchange_service.register_stuck_alert — НЕ таймаут, двигающий деньги (бот
+не может подтвердить оффлайн-оплату между продавцом и покупателем), только
+пост в чат листинга с напоминанием про /exchange_admin_cancel и
+/exchange_admin_release, чтобы зависший спор не был невидим для админов
+(до этого — единственная stateful-сущность бота вообще без фонового job'а).
 Импорты ленивые (внутри функции), чтобы модули, ещё не существующие на
 момент плана 01 (пустой setup_jobs), не ломали import bot.main до их
 появления.
@@ -87,6 +94,7 @@ def setup_jobs(bot: Bot) -> None:
     from bot.services import daily_twin_service
     from bot.services import digest_service
     from bot.services import embed_worker
+    from bot.services import exchange_service
     from bot.services import lottery_service
     from bot.services import lurker_service
     from bot.services import markets_service
@@ -107,6 +115,7 @@ def setup_jobs(bot: Bot) -> None:
     victim_service.register_daily_autopost(scheduler, bot)
     lurker_service.register_daily_roast(scheduler, bot)
     daily_twin_service.register_daily_twin_tick(scheduler, bot)
+    exchange_service.register_stuck_alert(scheduler, bot)
 
     async def _digest_job() -> None:
         await digest_service.run_daily_digest(bot)
