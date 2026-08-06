@@ -19,7 +19,9 @@
 	// `result` assigned, which is what reveals the existing text/payout panel
 	// below. `flipping` still gates the whole sequence exactly like before,
 	// it just now spans toss+spin+land instead of a single instant fetch.
+	import { onDestroy } from 'svelte';
 	import { apiFetch, ApiError } from '$lib/api';
+	import { holdBalanceUpdates } from '$lib/balance';
 	import { haptic } from '$lib/tg';
 	import BetControl from '$lib/components/BetControl.svelte';
 
@@ -89,6 +91,12 @@
 			// coin left your hand" cue, does not depend on the server.
 			await sleep(reduced ? 0 : TOSS_MS);
 
+			// Held until this screen's own delayed reveal (below) actually
+			// happens — otherwise the header balance jumps to the new total via
+			// api.ts's sniff (or an SSE broadcast, published server-side at the
+			// same settle moment) before the coin even lands, spoiling the
+			// result. See lib/balance.ts.
+			holdBalanceUpdates(true);
 			const res = await apiFetch<CoinflipResult>('/api/v1/games/coinflip', {
 				method: 'POST',
 				body: JSON.stringify({
@@ -106,9 +114,14 @@
 
 			phase = 'land';
 			result = res;
+			// Реплей (тосс + спин) реально закончен, результат уже показан на
+			// экране — теперь можно отпустить шапку-баланс, см.
+			// holdBalanceUpdates(true) выше.
+			holdBalanceUpdates(false);
 			haptic(res.outcome.won ? 'win' : 'lose');
 			await sleep(reduced ? 0 : LAND_MS);
 		} catch (err) {
+			holdBalanceUpdates(false);
 			error = err instanceof ApiError ? err.message : String(err ?? 'unknown_error');
 			haptic('error');
 		} finally {
@@ -116,6 +129,12 @@
 			flipping = false;
 		}
 	}
+
+	// Если экран размонтировали посреди тосса/спина — код после
+	// holdBalanceUpdates(true) выше мог не успеть выполнить парный
+	// holdBalanceUpdates(false), значит холд баланса больше некому
+	// отпустить, кроме как здесь.
+	onDestroy(() => holdBalanceUpdates(false));
 </script>
 
 <div class="cf-screen">
