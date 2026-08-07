@@ -60,6 +60,7 @@
 	const baseTiles: Tile[] = [
 		{ title: 'Гача', desc: 'крути баннер, собирай коллекцию героинь', accent: 'pink', href: '/gacha' },
 		{ title: 'Игры', desc: 'слоты · рулетка · блэкджек · кости · монетка', accent: 'pink', href: '/games' },
+		{ title: 'Арена', desc: 'PvP-бои, ставки и честный реванш', accent: 'yellow', href: '/arena' },
 		{ title: 'Ферма', desc: 'тапай, копи CP, качай апгрейды', accent: 'cyan', href: '/farm' },
 		{ title: 'Квесты', desc: 'ежедневные задания и достижения', accent: 'yellow', href: '/quests' },
 		{ title: 'Дуэль', desc: 'вызови кого-нибудь на бабки', accent: 'pink', href: '/duel' },

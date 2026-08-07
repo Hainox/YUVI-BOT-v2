@@ -1,6 +1,24 @@
 # Yuvi Arena — план разработки
 
 **Связанный документ:** `FIGHTING_SPEC.md`
+**Статус на 2026-08-07:** Фазы 0–4 и базовый Mini App lobby-срез частично реализованы; текущие изменения в коде покрывают Arena hub/lobby, а не полный боевой релиз.
+
+## Фактическая карта текущей реализации
+
+| Область | Сейчас в репозитории |
+|---|---|
+| Mini App entry | `/arena` и плитка в `miniapp/src/routes/+page.svelte` |
+| Lobby list | `GET /api/v1/arena/matches` |
+| Own match recovery | `GET /api/v1/arena/my-matches` |
+| Match lifecycle | `POST /api/v1/arena/matches`, `/accept`, `/confirm`, `/cancel` |
+| Fighter selection | 4 бойца, данные из `common/arena/fighters.py` |
+| Money safety | `economy_service`, idempotency keys, transaction rollback |
+| Privacy | чужой fighter скрыт до active; runtime API проверяет участника |
+| Runtime | backend API/session service есть; полноценный `/arena/match/[id]` Mini App экран ещё не подключён |
+| Settlement/rating/XP | целевая часть ТЗ, следующий этап |
+
+Фактические API-маршруты lobby являются источником истины для текущего среза. В старом плане ниже `GET /api/v1/arena/lobby` следует читать как целевой агрегированный endpoint; он пока не реализован и не используется Mini App.
+
 **Репозиторий-цель:** `YUVI-BOT-v2`
 **Подход:** вертикальные срезы, сначала серверная безопасность и деньги, затем визуальный слой
 
@@ -156,7 +174,8 @@ bot/handlers/arena.py
 ### API
 
 ```text
-GET  /api/v1/arena/lobby
+GET  /api/v1/arena/matches
+GET  /api/v1/arena/my-matches
 POST /api/v1/arena/matches
 POST /api/v1/arena/matches/{id}/accept
 POST /api/v1/arena/matches/{id}/confirm
@@ -308,7 +327,9 @@ POST /api/v1/arena/matches/{id}/forfeit
 
 ### Задачи
 
-- плитка Arena в `miniapp/src/routes/+page.svelte`;
+- плитка Arena в `miniapp/src/routes/+page.svelte` — **готово**;
+- базовый lobby `/arena`: создание, принятие, подтверждение, отмена и восстановление собственного матча — **готово**;
+- полный экран боя `/arena/match/[id]`, пять action-кнопок и runtime/SSE UI — **следующий этап**;
 - 2.5D неоновая сцена;
 - выбор бойца с полными характеристиками;
 - свободная ставка с подтверждением;

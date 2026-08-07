@@ -102,6 +102,16 @@ async def get_arena_matches(
     return [_serialize_match(match) for match in matches]
 
 
+@router.get("/api/v1/arena/my-matches")
+async def get_my_arena_matches(
+    auth: AuthContext = Depends(require_membership),
+) -> list[dict]:
+    """Return only the authenticated user's unfinished matches."""
+    async with SessionLocal() as session:
+        matches = await arena_service.list_user_matches(session, auth.chat_id, auth.user_id)
+    return [_serialize_match(match, viewer_id=auth.user_id) for match in matches]
+
+
 @router.post("/api/v1/arena/matches", response_model=ArenaMatchResponse, status_code=201)
 async def post_create_arena_match(
     body: CreateArenaMatchBody,

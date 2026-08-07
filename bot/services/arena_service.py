@@ -162,6 +162,25 @@ async def list_open_matches(
     return list(result.scalars().all())
 
 
+async def list_user_matches(
+    session: AsyncSession, chat_id: int, user_id: int, *, limit: int = 20
+) -> list[ArenaMatch]:
+    """Return the viewer's own lifecycle matches for lobby recovery."""
+    if not 1 <= limit <= 100:
+        raise InvalidMatch("limit должен быть от 1 до 100")
+    result = await session.execute(
+        select(ArenaMatch)
+        .where(
+            ArenaMatch.chat_id == chat_id,
+            (ArenaMatch.creator_id == user_id) | (ArenaMatch.opponent_id == user_id),
+            ArenaMatch.status.in_(["waiting", "accepting", "active"]),
+        )
+        .order_by(ArenaMatch.created_at.desc())
+        .limit(limit)
+    )
+    return list(result.scalars().all())
+
+
 async def accept_match(
     session: AsyncSession,
     chat_id: int,

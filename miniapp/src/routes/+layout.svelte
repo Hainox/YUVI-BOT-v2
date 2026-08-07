@@ -39,7 +39,7 @@
 		try {
 			await navigator.clipboard.writeText(String(userId));
 			idCopied = true;
-			tg.haptic('light');
+			tg.haptic('tap');
 			setTimeout(() => (idCopied = false), 1500);
 		} catch {
 			// Clipboard API недоступен (старый WebView) — тихо игнорируем,
