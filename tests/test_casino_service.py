@@ -1701,3 +1701,135 @@ async def test_resolve_crash_timeouts_leaves_fresh_active_round_untouched(sessio
         await session.execute(select(CasinoGame).where(CasinoGame.id == started["id"]))
     ).scalar_one()
     assert game.status == "active"
+
+
+# --- peek_crash (read-only polling, баг-репорт 2026-08-07: Михаил) -----------
+#
+# Косметический тикер на клиенте не знает о реальном crash_point (тот
+# намеренно скрыт, пока раунд активен) — без этого опроса игрок узнавал, что
+# раунд давно лопнул, только по факту нажатия ЗАБРАТЬ, наблюдался разрыв в
+# ~10с между "экран показывает ×8" и "реально лопнуло на ×1.4". `peek_crash`
+# должен НИКОГДА не платить/не settle'ить сам — только сообщать `pending_bust`.
+
+
+@pytest.mark.asyncio
+async def test_peek_crash_still_genuinely_active_reveals_nothing(session, monkeypatch):
+    chat_id = -100900040
+    user_id = 900040
+    await _ensure_user(session, user_id)
+    await _fund(session, chat_id, user_id)
+
+    # crash_point 9.80 — заведомо выше множителя, набранного за 1с ниже.
+    monkeypatch.setattr(casino_service, "_rng", _ForcedCrashRng(0.9))
+    t0 = datetime(2026, 1, 1, 12, 0, 0)
+    t1 = t0 + timedelta(seconds=1)
+    monkeypatch.setattr(casino_service, "datetime", _FixedUtcNow(t0, t1))
+
+    started = await casino_service.start_crash(session, chat_id, user_id, 100, "test_peek_active")
+
+    view = await casino_service.peek_crash(session, chat_id, started["id"], user_id)
+
+    assert view["status"] == "active"
+    assert "pending_bust" not in view
+    assert "crash_point" not in view
+    assert "outcome" not in view
+
+    # Раунд остаётся нетронутым в БД — peek не settle'ит и не платит.
+    game = await _get_casino_game(session, user_id, "test_peek_active")
+    assert game.status == "active"
+    assert game.payout == 0
+    assert game.outcome is None
+
+
+@pytest.mark.asyncio
+async def test_peek_crash_reports_pending_bust_without_settling_or_paying(session, monkeypatch):
+    chat_id = -100900041
+    user_id = 900041
+    await _ensure_user(session, user_id)
+    balance_before = await _fund(session, chat_id, user_id)
+    await economy_service.credit_bank(
+        session, chat_id, 100_000, kind="test_seed", ref_id="test_peek_bust_seed_bank"
+    )
+    await session.commit()
+
+    # r=0.5 -> crash_point 1.96; elapsed 60с гарантированно уже давно за ним.
+    monkeypatch.setattr(casino_service, "_rng", _ForcedCrashRng(0.5))
+    t0 = datetime(2026, 1, 1, 12, 0, 0)
+    t1 = t0 + timedelta(seconds=60)
+    monkeypatch.setattr(casino_service, "datetime", _FixedUtcNow(t0, t1))
+
+    started = await casino_service.start_crash(session, chat_id, user_id, 100, "test_peek_bust")
+
+    view = await casino_service.peek_crash(session, chat_id, started["id"], user_id)
+
+    assert view["status"] == "active"  # БД-статус не поменялся — peek не settle'ит
+    assert view["pending_bust"] is True
+    # Сам crash_point/outcome peek намеренно НЕ раскрывает — единственный
+    # путь реального раскрытия/settle это crash_cash_out.
+    assert "crash_point" not in view
+    assert "outcome" not in view
+
+    game = await _get_casino_game(session, user_id, "test_peek_bust")
+    assert game.status == "active"
+    assert game.payout == 0
+    assert game.outcome is None
+    assert await _get_user_balance(session, chat_id, user_id) == balance_before - 100  # только ставка списана
+
+
+@pytest.mark.asyncio
+async def test_peek_crash_on_already_settled_round_returns_full_outcome(session, monkeypatch):
+    """Раунд, уже settled кем-то другим (живым кэшаутом здесь, в реальности
+    — тоже таймаут-джобой) — peek просто отражает тот же `_crash_view`, что
+    и cashout вернул, никакой отдельной логики раскрытия не заводит."""
+    chat_id = -100900042
+    user_id = 900042
+    await _ensure_user(session, user_id)
+    await _fund(session, chat_id, user_id)
+    await economy_service.credit_bank(
+        session, chat_id, 100_000, kind="test_seed", ref_id="test_peek_settled_seed_bank"
+    )
+    await session.commit()
+
+    monkeypatch.setattr(casino_service, "_rng", _ForcedCrashRng(0.9))
+    t0 = datetime(2026, 1, 1, 12, 0, 0)
+    t1 = t0 + timedelta(seconds=4)
+    monkeypatch.setattr(casino_service, "datetime", _FixedUtcNow(t0, t1))
+
+    started = await casino_service.start_crash(session, chat_id, user_id, 100, "test_peek_settled")
+    settled = await casino_service.crash_cash_out(session, chat_id, started["id"], user_id)
+
+    view = await casino_service.peek_crash(session, chat_id, started["id"], user_id)
+
+    assert view["status"] == "settled"
+    assert view["outcome"] == settled["outcome"]
+    assert view["payout"] == settled["payout"]
+    assert view["crash_point"] == settled["crash_point"]
+    assert "pending_bust" not in view
+
+
+@pytest.mark.asyncio
+async def test_peek_crash_on_foreign_chat_is_rejected_idor(session, monkeypatch):
+    """Тот же 4-way SELECT-фильтр, что `crash_cash_out` — читай его IDOR-тест
+    за полным разбором сценария атаки."""
+    chat_id = -100900043
+    foreign_chat_id = -100900044
+    user_id = 900043
+    await _ensure_user(session, user_id)
+    await _fund(session, chat_id, user_id)
+    await _fund(session, foreign_chat_id, user_id)
+
+    monkeypatch.setattr(casino_service, "_rng", _ForcedCrashRng(0.9))
+    started = await casino_service.start_crash(session, chat_id, user_id, 100, "test_peek_idor")
+
+    with pytest.raises(casino_service.CasinoError):
+        await casino_service.peek_crash(session, foreign_chat_id, started["id"], user_id)
+
+
+@pytest.mark.asyncio
+async def test_peek_crash_on_nonexistent_game_raises(session):
+    chat_id = -100900045
+    user_id = 900044
+    await _ensure_user(session, user_id)
+
+    with pytest.raises(casino_service.CasinoError):
+        await casino_service.peek_crash(session, chat_id, 999999999, user_id)
