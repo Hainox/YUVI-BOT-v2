@@ -2550,3 +2550,147 @@ async def test_crash_cashout_win_on_empty_bank_reports_bank_capped(monkeypatch):
     assert body["payout"] == 100
     assert body["payout"] < fair_payout
     assert body["bank_capped"] is True
+
+
+# --- GET /api/v1/games/crash/{id} (peek, read-only polling) ------------------
+#
+# Баг-репорт 2026-08-07 (Михаил): клиентский тикер не мог узнать, что раунд
+# уже реально лопнул на сервере, и рисовал растущий множитель ещё долго
+# ПОСЛЕ настоящего краша — casino_service.peek_crash закрывает эту дыру.
+# Единственный роут этой секции, который НИКОГДА не платит и не settle'ит —
+# тесты ниже отдельно проверяют именно это (баланс/статус в БД не меняются).
+
+
+@pytest.mark.asyncio
+async def test_crash_peek_get_returns_active_without_pending_bust_when_not_yet_crashed(monkeypatch):
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    user_id = 300532
+    await _ensure_user(user_id)
+    await _topup(CRASH_CHAT_ID, user_id)
+    init_data = _build_init_data(user_id=user_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        monkeypatch.setattr(casino_service, "_rng", _ForcedCrashRng(0.99))  # высокая точка краша
+        game_id = await _start_crash_round(client, init_data, CRASH_CHAT_ID, 0.99)
+
+        resp = await client.get(
+            f"/api/v1/games/crash/{game_id}",
+            params={"chat_id": CRASH_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "active"
+    assert "pending_bust" not in body
+    assert "crash_point" not in body
+    assert "outcome" not in body
+    # GET peek никогда не двигает деньги — в отличие от start/cashout, тут
+    # нет ни balance_events, ни user_balance_after в ответе вовсе.
+    assert "user_balance_after" not in body
+
+    await _force_settle_leftover_game(game_id)
+
+
+@pytest.mark.asyncio
+async def test_crash_peek_get_returns_pending_bust_for_overdue_round_without_settling(monkeypatch):
+    """Точка краша форсирована низкой (1.96x), `started_at` отодвинут далеко
+    в прошлое — сервер по реальному времени уже давно бы посчитал раунд
+    лопнувшим, но пока никто не вызвал cashout, БД-статус остаётся
+    "active". Peek обязан честно сообщить `pending_bust: true`, но НЕ
+    settle'ить и НЕ платить сам (это по-прежнему исключительно работа
+    cashout)."""
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    user_id = 300533
+    await _ensure_user(user_id)
+    await _topup(CRASH_CHAT_ID, user_id)
+    init_data = _build_init_data(user_id=user_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        monkeypatch.setattr(casino_service, "_rng", _ForcedCrashRng(0.5))  # crash_point 1.96
+        game_id = await _start_crash_round(client, init_data, CRASH_CHAT_ID, 0.5)
+        await _backdate_crash_started_at(game_id, seconds_ago=60.0)
+        balance_before_peek = await _get_balance(CRASH_CHAT_ID, user_id)
+
+        resp = await client.get(
+            f"/api/v1/games/crash/{game_id}",
+            params={"chat_id": CRASH_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "active"  # БД не тронута — peek не settle'ит
+    assert body["pending_bust"] is True
+    assert "crash_point" not in body
+    assert "outcome" not in body
+
+    async with SessionLocal() as verify_session:
+        game_row = (
+            await verify_session.execute(select(CasinoGame).where(CasinoGame.id == game_id))
+        ).scalar_one()
+    assert game_row.status == "active"
+    assert game_row.payout == 0
+    assert game_row.outcome is None
+    assert await _get_balance(CRASH_CHAT_ID, user_id) == balance_before_peek
+
+    await _force_settle_leftover_game(game_id)
+
+
+@pytest.mark.asyncio
+async def test_crash_peek_get_missing_init_data_returns_401():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(
+            "/api/v1/games/crash/999999",
+            params={"chat_id": CRASH_CHAT_ID},
+        )
+
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_crash_peek_get_on_foreign_chat_returns_404_idor(monkeypatch):
+    """Тот же 4-way SELECT-фильтр, что cashout — читай
+    `test_crash_cashout_with_foreign_chat_id_returns_404` за полным разбором
+    сценария атаки; peek обязан быть защищён тем же способом."""
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    user_id = 300534
+    await _ensure_user(user_id)
+    await _topup(CRASH_CHAT_ID, user_id)
+    init_data = _build_init_data(user_id=user_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        monkeypatch.setattr(casino_service, "_rng", _ForcedCrashRng(0.99))
+        game_id = await _start_crash_round(client, init_data, CRASH_CHAT_ID, 0.99)
+
+        resp = await client.get(
+            f"/api/v1/games/crash/{game_id}",
+            params={"chat_id": CRASH_FUNDED_BANK_CHAT_ID},  # чужой чат
+            headers={"X-Telegram-Init-Data": init_data},
+        )
+
+    assert resp.status_code == 404
+
+    await _force_settle_leftover_game(game_id)
+
+
+@pytest.mark.asyncio
+async def test_crash_peek_get_on_nonexistent_game_id_returns_404(monkeypatch):
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    user_id = 300535
+    await _ensure_user(user_id)
+    init_data = _build_init_data(user_id=user_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(
+            "/api/v1/games/crash/999999999",
+            params={"chat_id": CRASH_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+        )
+
+    assert resp.status_code == 404

@@ -1106,6 +1106,84 @@ async def start_crash(
     return _crash_view(game_row)
 
 
+def _crash_live_mult(state: dict) -> tuple[Decimal, Decimal]:
+    """elapsed -> live_mult, вынесено из `crash_cash_out`, чтобы `peek_crash`
+    (см. ниже) считал по ТОМУ ЖЕ Decimal-пути, а не отдельной чуть
+    отличающейся копией (урок dice_fair_payout про дублирующуюся денежную
+    арифметику, см. докстринг секции выше). Возвращает `(live_mult,
+    crash_point)`, обе Decimal."""
+    started_at = datetime.fromisoformat(state["started_at"])
+    delta = datetime.utcnow() - started_at
+    # Аудит-находка: timedelta.total_seconds() возвращает float — единственная
+    # оставшаяся float-щель в цепочке "точка краша -> прошедшее время ->
+    # множитель -> выплата", которую crash_engine.py's докстринг заявляет
+    # полностью Decimal-чистой (D-06-класса урок дайса). days/seconds/
+    # microseconds — все целые int по контракту timedelta, поэтому их сумма
+    # в Decimal точна, без единого промежуточного float.
+    elapsed = (
+        Decimal(delta.days) * 86400 + Decimal(delta.seconds) + Decimal(delta.microseconds) / 1_000_000
+    )
+    if elapsed < 0:
+        # Защита от отрицательного elapsed (напр. сдвиг системных часов между
+        # двумя utcnow()) — multiplier_at(elapsed<0) поднял бы ValueError на
+        # легитимном запросе; defense in depth, в норме не должно случаться.
+        elapsed = Decimal(0)
+
+    live_mult = crash_engine.multiplier_at(elapsed)
+    crash_point = Decimal(state["crash_point"])
+    return live_mult, crash_point
+
+
+async def peek_crash(session: AsyncSession, chat_id: int, game_id: int, user_id: int) -> dict:
+    """Read-only опрос текущего раунда Crash для клиентского polling —
+    НИКОГДА не пишет в БД (нет `FOR UPDATE`, нет `commit`, нет
+    `pay_from_bank`), можно дёргать часто без риска случайно кэшаутить
+    активный раунд самому.
+
+    Баг-репорт 2026-08-07 (Михаил): косметический тикер на клиенте не имел
+    НИКАКОГО способа узнать, что раунд уже реально лопнул на сервере —
+    `crash_point` намеренно скрыт, пока раунд активен (см. докстринг
+    `_crash_view`), поэтому клиент рисовал растущий множитель ЕЩЁ ДОЛГО
+    ПОСЛЕ настоящего краша (наблюдался разрыв ~10с — экран показывал ×8,
+    хотя раунд реально лопнул на ×1.4 секунды спустя старта), и игрок
+    узнавал правду только по факту нажатия ЗАБРАТЬ. `peek_crash` даёт
+    клиенту дешёвый способ раз в несколько сотен мс спросить "уже лопнуло?"
+    без изменения состояния — если да, клиент сам вызывает настоящий
+    `crash_cash_out` (тот единственный код, который реально settle'ит и
+    платит; идемпотентен при гонке с ручным нажатием ЗАБРАТЬ — статус-гард
+    "active"->"settled" тот же самый).
+
+    Раскрывает `crash_point`/`outcome` ТОЛЬКО если раунд УЖЕ реально settled
+    в БД (кем-то другим — живым кэшаутом или таймаут-джобой, тот же путь,
+    что `_crash_view`). Если раунд всё ещё формально "active", но
+    `elapsed` уже прошёл точку краша — возвращает `pending_bust: true` и
+    БОЛЬШЕ НИЧЕГО (сам `crash_point` этим путём не раскрывается, чтобы не
+    заводить второй источник правды о его значении — единственное место,
+    которое реально его раскрывает, это `_crash_view` после настоящего
+    settle через `crash_cash_out`)."""
+    game_row = (
+        await session.execute(
+            select(CasinoGame).where(
+                CasinoGame.id == game_id,
+                CasinoGame.user_id == user_id,
+                CasinoGame.chat_id == chat_id,
+                CasinoGame.game == "crash",
+            )
+        )
+    ).scalar_one_or_none()
+    if game_row is None:
+        raise CasinoError(f"Раунд Crash #{game_id} не найден")
+
+    view = _crash_view(game_row)
+    if game_row.status != "active":
+        return view
+
+    live_mult, crash_point = _crash_live_mult(dict(game_row.state))
+    if live_mult >= crash_point:
+        view["pending_bust"] = True
+    return view
+
+
 async def crash_cash_out(session: AsyncSession, chat_id: int, game_id: int, user_id: int) -> dict:
     """Кэшаут активного раунда Crash. `SELECT ... FOR UPDATE` фильтрует по
     ВСЕМ ЧЕТЫРЁМ — `id`/`user_id`/`chat_id`/`game` (то же самое IDOR-
@@ -1160,25 +1238,7 @@ async def crash_cash_out(session: AsyncSession, chat_id: int, game_id: int, user
         return _crash_view(game_row)
 
     state = dict(game_row.state)
-    started_at = datetime.fromisoformat(state["started_at"])
-    delta = datetime.utcnow() - started_at
-    # Аудит-находка: timedelta.total_seconds() возвращает float — единственная
-    # оставшаяся float-щель в цепочке "точка краша -> прошедшее время ->
-    # множитель -> выплата", которую crash_engine.py's докстринг заявляет
-    # полностью Decimal-чистой (D-06-класса урок дайса). days/seconds/
-    # microseconds — все целые int по контракту timedelta, поэтому их сумма
-    # в Decimal точна, без единого промежуточного float.
-    elapsed = (
-        Decimal(delta.days) * 86400 + Decimal(delta.seconds) + Decimal(delta.microseconds) / 1_000_000
-    )
-    if elapsed < 0:
-        # Защита от отрицательного elapsed (напр. сдвиг системных часов между
-        # двумя utcnow()) — multiplier_at(elapsed<0) поднял бы ValueError на
-        # легитимном запросе; defense in depth, в норме не должно случаться.
-        elapsed = Decimal(0)
-
-    live_mult = crash_engine.multiplier_at(elapsed)
-    crash_point = Decimal(state["crash_point"])
+    live_mult, crash_point = _crash_live_mult(state)
 
     if live_mult < crash_point:
         payout = int(Decimal(game_row.bet) * live_mult)
