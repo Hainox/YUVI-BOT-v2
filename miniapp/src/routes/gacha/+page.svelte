@@ -590,8 +590,9 @@
 									class:gacha-region-pill-locked={!char.owned}
 									style="border-color: {group.color}"
 								>
-									<span class={`gacha-region-pill-dot gacha-tier-wash-${char.tier.toLowerCase()}`}
-									></span>
+									<span class={`gacha-region-pill-tier gacha-tier-pill-${char.tier.toLowerCase()}`}
+										>{char.tier}</span
+									>
 									<span class="gacha-region-pill-name">{char.owned ? char.name : '???'}</span>
 								</div>
 							{/each}
@@ -1502,11 +1503,21 @@
 	.gacha-region-pill-locked {
 		opacity: 0.55;
 	}
-	.gacha-region-pill-dot {
-		width: 18px;
-		height: 18px;
-		border-radius: 50%;
-		display: block;
+	/* Текстовая метка тира вместо простой цветной точки (было слишком мелко
+	   отличить визуально, особенно в "Легендах" — там тиры намеренно
+	   смешаны, а не идут по одному на регион, см. mapGroups) — переиспользует
+	   те же .gacha-tier-pill-{tier} цвета фона, что и групповая шапка
+	   тир-листа выше, просто мельче. */
+	.gacha-region-pill-tier {
+		font-family: var(--font-numeric);
+		font-size: 9px;
+		font-weight: 900;
+		letter-spacing: 0.02em;
+		padding: 2px 5px;
+		border-radius: 5px;
+		color: #0d0a18;
+		line-height: 1.3;
+		white-space: nowrap;
 	}
 	.gacha-region-pill-name {
 		font-family: var(--font-chrome);
