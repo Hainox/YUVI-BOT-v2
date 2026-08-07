@@ -19,6 +19,9 @@ SQLAlchemy 2.0 (тот же паттерн уже проверен в test_marke
 from __future__ import annotations
 
 import json
+from datetime import datetime
+from datetime import timedelta
+from decimal import Decimal
 from fractions import Fraction
 
 import pytest
@@ -28,6 +31,7 @@ from sqlalchemy import text
 from bot.config import settings
 from bot.services import blackjack_engine
 from bot.services import casino_service
+from bot.services import crash_engine
 from bot.services import economy_service
 from bot.services import teto_slot_engine
 from common.models.casino_game import CasinoGame
@@ -1330,3 +1334,370 @@ async def test_settle_payout_failure_after_rng_does_not_fabricate_or_double_char
         )
     ).scalars().all()
     assert games == []
+
+
+# --- Crash (стейтфул real-time раунд, D-03: RTP=1-house_edge независимо ------
+# --- от точки кэшаута; вся точка-краша/множитель-математика — crash_engine) --
+#
+# Прошедшее время в crash_cash_out считается СЕРВЕРОМ через
+# `casino_service.datetime.utcnow()` — чтобы тесты были детерминированными
+# (без реальной задержки/флаки от скорости машины), monkeypatch подменяет
+# сам module-level символ `datetime` в casino_service на `_FixedUtcNow` —
+# очередь фиксированных значений `.utcnow()` (по одному на вызов, FIFO), та
+# же форма, что `_FixedDatetime` в tests/test_daily_twin_service.py.
+
+
+class _ForcedCrashRng:
+    """Тестовый RNG-стаб для crash — `.random()` возвращает фиксированное
+    значение вместо реальной случайности `secrets.SystemRandom()`
+    (crash_engine.generate_crash_point вызывает только `.random()`)."""
+
+    def __init__(self, value: float):
+        self._value = value
+
+    def random(self) -> float:
+        return self._value
+
+
+class _FixedUtcNow:
+    """Подмена module-level `datetime` в casino_service — очередь
+    фиксированных значений `.utcnow()` (по одному на вызов, FIFO),
+    детерминированно контролирует `elapsed` в crash-раунде без реальной
+    задержки в тесте. `.fromisoformat` проксируется на настоящий `datetime`
+    (crash_cash_out/resolve_crash_timeouts вызывают его на уже
+    сериализованном `state["started_at"]`)."""
+
+    def __init__(self, *values: datetime):
+        self._values = list(values)
+
+    def utcnow(self) -> datetime:
+        return self._values.pop(0)
+
+    def fromisoformat(self, value: str) -> datetime:
+        return datetime.fromisoformat(value)
+
+
+# --- start_crash: эскроу ставки + crash_point никогда не раскрывается -------
+
+
+@pytest.mark.asyncio
+async def test_start_crash_escrows_bet_and_hides_crash_point_while_active(session, monkeypatch):
+    chat_id = -100900030
+    user_id = 900030
+    await _ensure_user(session, user_id)
+    balance_before = await _fund(session, chat_id, user_id)
+
+    monkeypatch.setattr(casino_service, "_rng", _ForcedCrashRng(0.5))
+    t0 = datetime(2026, 1, 1, 12, 0, 0)
+    monkeypatch.setattr(casino_service, "datetime", _FixedUtcNow(t0))
+
+    bet = 100
+    result = await casino_service.start_crash(session, chat_id, user_id, bet, "test_crash_start")
+
+    assert result["status"] == "active"
+    assert result["bet"] == bet
+    assert "crash_point" not in result
+    assert "outcome" not in result
+    assert "payout" not in result
+    assert await _get_user_balance(session, chat_id, user_id) == balance_before - bet
+
+    game = await _get_casino_game(session, user_id, "test_crash_start")
+    assert game.game == "crash"
+    assert game.status == "active"
+    assert isinstance(game.state["crash_point"], str)
+    # r=0.5 -> (1-0.02)/(1-0.5) = 1.96 ровно (уже 2 знака, ROUND_DOWN не режет).
+    assert Decimal(game.state["crash_point"]) == Decimal("1.96")
+
+
+@pytest.mark.asyncio
+async def test_start_crash_idempotent_on_idem_key(session, monkeypatch):
+    chat_id = -100900038
+    user_id = 900038
+    await _ensure_user(session, user_id)
+    balance_before = await _fund(session, chat_id, user_id)
+
+    monkeypatch.setattr(casino_service, "_rng", _ForcedCrashRng(0.5))
+    t0 = datetime(2026, 1, 1, 12, 0, 0)
+    monkeypatch.setattr(casino_service, "datetime", _FixedUtcNow(t0))
+
+    bet = 100
+    idem_key = "test_crash_start_idem"
+    first = await casino_service.start_crash(session, chat_id, user_id, bet, idem_key)
+    balance_after_first = await _get_user_balance(session, chat_id, user_id)
+
+    second = await casino_service.start_crash(session, chat_id, user_id, bet, idem_key)
+
+    assert second == first
+    assert await _get_user_balance(session, chat_id, user_id) == balance_after_first
+    assert balance_after_first == balance_before - bet
+
+    games = (
+        await session.execute(
+            select(CasinoGame).where(CasinoGame.user_id == user_id, CasinoGame.idem_key == idem_key)
+        )
+    ).scalars().all()
+    assert len(games) == 1
+
+
+# --- crash_cash_out: выигрыш до краша ----------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_crash_cash_out_before_crash_point_pays_floor_bet_times_multiplier(session, monkeypatch):
+    chat_id = -100900031
+    user_id = 900031
+    await _ensure_user(session, user_id)
+    balance_before = await _fund(session, chat_id, user_id)
+    await economy_service.credit_bank(
+        session, chat_id, 100_000, kind="test_seed", ref_id="test_crash_win_seed_bank"
+    )
+    await session.commit()
+
+    # r=0.9 -> crash_point=(1-0.02)/(1-0.9)=9.80 — заведомо выше любого
+    # множителя, который наберётся за несколько секунд forced-elapsed ниже.
+    monkeypatch.setattr(casino_service, "_rng", _ForcedCrashRng(0.9))
+    t0 = datetime(2026, 1, 1, 12, 0, 0)
+    elapsed_seconds = 4
+    t1 = t0 + timedelta(seconds=elapsed_seconds)
+    monkeypatch.setattr(casino_service, "datetime", _FixedUtcNow(t0, t1))
+
+    bet = 100
+    started = await casino_service.start_crash(session, chat_id, user_id, bet, "test_crash_win")
+    assert started["status"] == "active"
+
+    result = await casino_service.crash_cash_out(session, chat_id, started["id"], user_id)
+
+    expected_mult = crash_engine.multiplier_at(Decimal(elapsed_seconds))
+    expected_payout = int(bet * expected_mult)
+    assert result["status"] == "settled"
+    assert result["outcome"]["result"] == "cashed_out"
+    assert result["outcome"]["multiplier"] == str(expected_mult)
+    assert result["cashed_out_multiplier"] == str(expected_mult)
+    assert result["payout"] == expected_payout
+    assert result["crash_point"] == "9.80"
+    assert await _get_user_balance(session, chat_id, user_id) == balance_before - bet + expected_payout
+
+    game = await _get_casino_game(session, user_id, "test_crash_win")
+    assert game.status == "settled"
+    assert game.payout == expected_payout
+
+
+# --- crash_cash_out: мгновенный краш на 1.00x --------------------------------
+
+
+@pytest.mark.asyncio
+async def test_crash_cash_out_after_instant_bust_pays_zero(session, monkeypatch):
+    chat_id = -100900032
+    user_id = 900032
+    await _ensure_user(session, user_id)
+    balance_before = await _fund(session, chat_id, user_id)
+    await economy_service.credit_bank(
+        session, chat_id, 100_000, kind="test_seed", ref_id="test_crash_bust_seed_bank"
+    )
+    await session.commit()
+
+    # r=0.0 < CRASH_HOUSE_EDGE -> мгновенный краш, crash_point == 1.00.
+    monkeypatch.setattr(casino_service, "_rng", _ForcedCrashRng(0.0))
+    t0 = datetime(2026, 1, 1, 12, 0, 0)
+    # elapsed == 0 (та же t0 дважды) — multiplier_at(0)==1.00, а 1.00<1.00
+    # ложно, значит раунд уже "лопнул" в самый первый же момент.
+    monkeypatch.setattr(casino_service, "datetime", _FixedUtcNow(t0, t0))
+
+    bet = 100
+    started = await casino_service.start_crash(session, chat_id, user_id, bet, "test_crash_bust")
+    assert started["status"] == "active"
+
+    result = await casino_service.crash_cash_out(session, chat_id, started["id"], user_id)
+
+    assert result["status"] == "settled"
+    assert result["outcome"]["result"] == "busted"
+    assert result["outcome"]["multiplier"] == "1.00"
+    assert result["cashed_out_multiplier"] is None
+    assert result["payout"] == 0
+    assert result["crash_point"] == "1.00"
+    assert await _get_user_balance(session, chat_id, user_id) == balance_before - bet
+
+    game = await _get_casino_game(session, user_id, "test_crash_bust")
+    assert game.status == "settled"
+    assert game.payout == 0
+
+
+# --- crash_cash_out: идемпотентный повтор ------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_crash_cash_out_idempotent_second_call_is_noop(session, monkeypatch):
+    chat_id = -100900033
+    user_id = 900033
+    await _ensure_user(session, user_id)
+    await _fund(session, chat_id, user_id)
+    await economy_service.credit_bank(
+        session, chat_id, 100_000, kind="test_seed", ref_id="test_crash_idem_seed_bank"
+    )
+    await session.commit()
+
+    monkeypatch.setattr(casino_service, "_rng", _ForcedCrashRng(0.9))
+    t0 = datetime(2026, 1, 1, 12, 0, 0)
+    t1 = t0 + timedelta(seconds=2)
+    # Только 2 значения в очереди: start_crash (1) + первый cash_out (1) —
+    # второй (replay) cash_out на уже settled раунде НЕ зовёт datetime.utcnow()
+    # вовсе (гард идемпотентности коммитит и возвращает раньше), так что
+    # очередь не должна опустошиться преждевременно.
+    monkeypatch.setattr(casino_service, "datetime", _FixedUtcNow(t0, t1))
+
+    bet = 100
+    started = await casino_service.start_crash(session, chat_id, user_id, bet, "test_crash_idem")
+    first = await casino_service.crash_cash_out(session, chat_id, started["id"], user_id)
+    balance_after_first = await _get_user_balance(session, chat_id, user_id)
+
+    second = await casino_service.crash_cash_out(session, chat_id, started["id"], user_id)
+
+    assert second["payout"] == first["payout"]
+    assert second["outcome"] == first["outcome"]
+    assert await _get_user_balance(session, chat_id, user_id) == balance_after_first
+
+    games = (
+        await session.execute(
+            select(CasinoGame).where(CasinoGame.user_id == user_id, CasinoGame.idem_key == "test_crash_idem")
+        )
+    ).scalars().all()
+    assert len(games) == 1
+
+
+# --- crash_cash_out: IDOR (чужой chat_id) ------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_crash_cash_out_on_foreign_chat_is_rejected_idor(session, monkeypatch):
+    """Та же IDOR-защита и то же обоснование, что у `blackjack_action`
+    (читай его докстринг): `SELECT ... FOR UPDATE` фильтрует и по `chat_id`,
+    не только по `id`/`user_id` — запрос с ЧУЖИМ `chat_id` (раунд начат в
+    чате A, запрос выдаёт себя за чат B) обязан не найти раунд вовсе, а не
+    молча кэшаутить чужой по контексту раунд."""
+    chat_id = -100900034
+    foreign_chat_id = -100900035
+    user_id = 900034
+    await _ensure_user(session, user_id)
+    balance_before = await _fund(session, chat_id, user_id)
+    await economy_service.credit_bank(
+        session, chat_id, 100_000, kind="test_seed", ref_id="test_crash_idor_seed_bank"
+    )
+    await session.commit()
+
+    monkeypatch.setattr(casino_service, "_rng", _ForcedCrashRng(0.9))
+    t0 = datetime(2026, 1, 1, 12, 0, 0)
+    monkeypatch.setattr(casino_service, "datetime", _FixedUtcNow(t0))
+
+    bet = 100
+    started = await casino_service.start_crash(session, chat_id, user_id, bet, "test_crash_idor")
+    assert started["status"] == "active"
+
+    with pytest.raises(casino_service.CasinoError):
+        await casino_service.crash_cash_out(session, foreign_chat_id, started["id"], user_id)
+
+    game = (
+        await session.execute(select(CasinoGame).where(CasinoGame.id == started["id"]))
+    ).scalar_one()
+    assert game.status == "active"
+    assert await _get_user_balance(session, chat_id, user_id) == balance_before - bet
+
+
+# --- Bank cap (D-06) ----------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_crash_payout_capped_to_bank_balance(session, monkeypatch):
+    chat_id = -100900037
+    user_id = 900037
+    await _ensure_user(session, user_id)
+    await _fund(session, chat_id, user_id)
+
+    small_bank = 5
+    await economy_service.credit_bank(
+        session, chat_id, small_bank, kind="test_seed", ref_id="test_crash_bank_cap_seed_bank"
+    )
+    await session.commit()
+
+    monkeypatch.setattr(casino_service, "_rng", _ForcedCrashRng(0.9))  # crash_point 9.80
+    t0 = datetime(2026, 1, 1, 12, 0, 0)
+    elapsed_seconds = 4
+    t1 = t0 + timedelta(seconds=elapsed_seconds)
+    monkeypatch.setattr(casino_service, "datetime", _FixedUtcNow(t0, t1))
+
+    bet = 1000
+    started = await casino_service.start_crash(session, chat_id, user_id, bet, "test_crash_bank_cap")
+    result = await casino_service.crash_cash_out(session, chat_id, started["id"], user_id)
+
+    bank_balance_after = await _get_bank_balance(session, chat_id)
+    assert bank_balance_after >= 0
+
+    game = await _get_casino_game(session, user_id, "test_crash_bank_cap")
+    assert result["payout"] == game.payout
+
+    expected_uncapped = int(Decimal(bet) * crash_engine.multiplier_at(Decimal(elapsed_seconds)))
+    assert result["payout"] < expected_uncapped
+
+
+# --- Таймаут-резолвер (D-07/D-08-класса: ставка не замораживается навсегда) --
+
+
+@pytest.mark.asyncio
+async def test_resolve_crash_timeouts_force_settles_overdue_round(session, monkeypatch):
+    chat_id = -100900036
+    user_id = 900036
+    await _ensure_user(session, user_id)
+    balance_before = await _fund(session, chat_id, user_id)
+
+    # Реальный (не monkeypatched) datetime — resolve_crash_timeouts ниже
+    # тоже читает `casino_service.datetime.utcnow()` для "now", а очередь
+    # _FixedUtcNow держать синхронизированной с обоими вызовами (start_crash
+    # + resolve_crash_timeouts) не нужно, раз started_at сдвигается на 1000с
+    # в прошлое (заведомо просрочен при любом разумном "now").
+    monkeypatch.setattr(casino_service, "_rng", _ForcedCrashRng(0.5))  # crash_point 1.96
+
+    started = await casino_service.start_crash(session, chat_id, user_id, 100, "test_crash_timeout")
+    assert started["status"] == "active"
+
+    # Сдвигаем started_at далеко в прошлое — точка краша 1.96x давно пройдена.
+    game = (
+        await session.execute(select(CasinoGame).where(CasinoGame.id == started["id"]))
+    ).scalar_one()
+    state = dict(game.state)
+    state["started_at"] = (datetime.utcnow() - timedelta(seconds=1000)).isoformat()
+    game.state = state
+    await session.commit()
+
+    resolved_count = await casino_service.resolve_crash_timeouts(session)
+    assert resolved_count >= 1
+
+    reloaded = (
+        await session.execute(select(CasinoGame).where(CasinoGame.id == started["id"]))
+    ).scalar_one()
+    assert reloaded.status == "settled"
+    assert reloaded.payout == 0
+    assert reloaded.outcome["result"] == "busted"
+    assert reloaded.outcome["multiplier"] == "1.96"
+    assert await _get_user_balance(session, chat_id, user_id) == balance_before - 100
+
+
+@pytest.mark.asyncio
+async def test_resolve_crash_timeouts_leaves_fresh_active_round_untouched(session, monkeypatch):
+    """Раунд, стартовавший только что (started_at ~ now), НЕ должен
+    форс-settle'иться — точка краша ещё не могла быть пройдена по реальному
+    времени."""
+    chat_id = -100900039
+    user_id = 900039
+    await _ensure_user(session, user_id)
+    await _fund(session, chat_id, user_id)
+
+    monkeypatch.setattr(casino_service, "_rng", _ForcedCrashRng(0.9))  # crash_point 9.80
+    started = await casino_service.start_crash(session, chat_id, user_id, 100, "test_crash_no_timeout")
+    assert started["status"] == "active"
+
+    resolved_count = await casino_service.resolve_crash_timeouts(session)
+    assert resolved_count == 0
+
+    game = (
+        await session.execute(select(CasinoGame).where(CasinoGame.id == started["id"]))
+    ).scalar_one()
+    assert game.status == "active"

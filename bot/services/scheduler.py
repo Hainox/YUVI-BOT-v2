@@ -13,8 +13,11 @@ digest_service.run_daily_digest, auto-close просроченных рынко�
 (external_markets_check, interval 30м) через
 markets_service.register_external_check (план 03-06), авто-стенд
 просроченных раздач блэкджека (blackjack_timeouts, interval 30с, D-07/D-08)
-через casino_service.register_blackjack_timeouts (план 04.1-03),
-mean-reversion тик AMM-пула фермы CP<->ювик (amm_mean_reversion, interval
+через casino_service.register_blackjack_timeouts (план 04.1-03), форс-settle
+просроченных раундов Crash (crash_timeouts, interval 15с — игрок не вернулся
+кэшаутиться, тот же дух, что blackjack_timeouts: ставка никогда не
+замораживается навсегда) через casino_service.register_crash_timeouts
+(план 04.1-XX), mean-reversion тик AMM-пула фермы CP<->ювик (amm_mean_reversion, interval
 10м, D-03) через clicker_service.register_amm_tick (план 04.1-05), демот
 просроченных Telegram custom_title + восстановление подвешенной аренды
 (active_titles_expire, interval 5м, D-07/D-10) через
@@ -78,7 +81,8 @@ def setup_jobs(bot: Bot) -> None:
     5м), сверку/авторезолюцию внешних рынков (план 03-06,
     external_markets_check, interval 30м), авто-стенд просроченных раздач
     блэкджека (план 04.1-03, blackjack_timeouts, interval 30с, D-07/D-08),
-    mean-reversion тик AMM-пула фермы (план 04.1-05, amm_mean_reversion,
+    форс-settle просроченных раундов Crash (план 04.1-XX, crash_timeouts,
+    interval 15с), mean-reversion тик AMM-пула фермы (план 04.1-05, amm_mean_reversion,
     interval 10м, D-03), демот просроченных Telegram custom_title +
     восстановление подвешенной аренды (план 05-03, active_titles_expire,
     interval 5м, D-07/D-10), автопост /awards (план 05-06,
@@ -108,6 +112,7 @@ def setup_jobs(bot: Bot) -> None:
     markets_service.register_auto_close(scheduler)
     markets_service.register_external_check(scheduler)
     casino_service.register_blackjack_timeouts(scheduler)
+    casino_service.register_crash_timeouts(scheduler)
     clicker_service.register_amm_tick(scheduler)
     tag_service.register_title_expiry(scheduler, bot)
     awards_service.register_daily_autopost(scheduler, bot)

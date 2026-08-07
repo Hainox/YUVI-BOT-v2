@@ -38,6 +38,9 @@ import json
 import random
 import time
 import uuid
+from datetime import datetime
+from datetime import timedelta
+from decimal import Decimal
 from unittest.mock import AsyncMock
 from urllib.parse import urlencode
 
@@ -52,6 +55,7 @@ from api import telegram_client
 from api.main import app
 from bot.config import settings
 from bot.services import casino_service
+from bot.services import crash_engine
 from bot.services import economy_service
 from bot.services import slot_engine
 from bot.services import teto_slot_engine
@@ -111,6 +115,17 @@ TETO_DRAINED_BANK_CHAT_ID = -900312
 BLACKJACK_FRESH_BANK_CHAT_ID = -900313  # свежий (нулевой) банк, натурал через /start
 BLACKJACK_ACTION_FRESH_BANK_CHAT_ID = -900314  # свежий банк, выигрыш через /action (stand)
 BLACKJACK_FUNDED_BANK_CHAT_ID = -900315  # заведомо богатый банк, double через /action
+
+# Отдельные chat_id для POST /games/crash + /games/crash/{id}/cashout — та же
+# изоляция, что у остальных игр этого файла, новый диапазон.
+CRASH_CHAT_ID = -900316
+# Заведомо богатый банк — полный старт-кэшаут раунд-трип не должен упереться
+# в D-06-кап (та же роль, что BLACKJACK_FUNDED_BANK_CHAT_ID выше).
+CRASH_FUNDED_BANK_CHAT_ID = -900317
+# Свежий (нулевой) банк ТОЛЬКО под bank_capped-регрессию кэшаута — та же
+# изоляция, что FRESH_BANK_CHAT_ID у coinflip/BLACKJACK_FRESH_BANK_CHAT_ID
+# выше: банк этого чата не делится ни с одним другим тестом файла.
+CRASH_FRESH_BANK_CHAT_ID = -900318
 
 
 class _ForcedWinRng:
@@ -174,6 +189,24 @@ class _FixedDeckRng:
         for card in self._pop_sequence:
             remaining.remove(card)
         deck[:] = remaining + list(reversed(self._pop_sequence))
+
+
+class _ForcedCrashRng:
+    """Форсирует детерминированную (скрытую) точку краша — `_rng.random()`
+    внутри `crash_engine.generate_crash_point` всегда возвращает фиксированное
+    `forced_r` (см. его докстринг: `r < CRASH_HOUSE_EDGE` (0.02) -> мгновенный
+    краш на 1.00x, иначе `crash_point = (1-edge)/(1-r)`). `forced_r=0.99` даёт
+    `crash_point=98.00` (заведомо "долгоживущий" раунд — любой кэшаут в первые
+    секунды реального времени — выигрыш); `forced_r=0.0` даёт мгновенный краш
+    1.00x (гарантированный проигрыш даже при кэшауте в саму первую миллисекунду,
+    тот же форсированный instant-bust, что `tests/test_casino_service.py`'s
+    crash-секция использует на уровне сервиса)."""
+
+    def __init__(self, forced_r: float):
+        self._forced_r = forced_r
+
+    def random(self) -> float:
+        return self._forced_r
 
 
 def _build_init_data(*, user_id: int, bot_token: str | None = None, tamper: bool = False) -> str:
@@ -2031,3 +2064,480 @@ async def test_blackjack_action_double_win_on_funded_bank_reports_bank_capped_fa
     # win); богатый банк платит его целиком, без капа.
     assert body["payout"] == 400
     assert body["bank_capped"] is False
+
+
+# --- POST /api/v1/games/crash (start) + /crash/{id}/cashout ------------------
+#
+# Стейтфул real-time раунд (D-03) — та же форма, что блэкджек выше (game_id
+# из start-ответа переиспользуется в cashout), но БЕЗ тела запроса у cashout
+# вовсе (никакого "action"/"current multiplier" клиент прислать не может —
+# сервер сам считает elapsed по `datetime.utcnow()`, см. модульный докстринг
+# api/routes/games.py). `_ForcedCrashRng` форсирует точку краша так же, как
+# `_FixedDeckRng` форсирует колоду блэкджека; `_backdate_crash_started_at`
+# отодвигает `state.started_at` раунда напрямую в БД (тот же приём сетапа,
+# что `_drain_bank`/`_force_settle_leftover_game` выше), чтобы тесты не
+# зависели от реального времени выполнения самого теста.
+
+
+async def _backdate_crash_started_at(game_id: int, seconds_ago: float) -> None:
+    """Отодвигает `state["started_at"]` активного раунда Crash на
+    `seconds_ago` секунд в прошлое напрямую через ORM — гарантирует, что
+    следующий `crash_cash_out` увидит заведомо большой `elapsed`, без
+    зависимости от того, сколько реального wall-clock времени тест-раннер
+    фактически потратил между HTTP-вызовами start/cashout (сетап окружения,
+    не денежная операция — та же дисциплина, что `_drain_bank` выше)."""
+    new_started_at = (datetime.utcnow() - timedelta(seconds=seconds_ago)).isoformat()
+    async with SessionLocal() as db_session:
+        game_row = (
+            await db_session.execute(select(CasinoGame).where(CasinoGame.id == game_id))
+        ).scalar_one()
+        state = dict(game_row.state)
+        state["started_at"] = new_started_at
+        game_row.state = state
+        await db_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_crash_start_valid_bet_returns_200_with_active_round(monkeypatch):
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    monkeypatch.setattr(casino_service, "_rng", _ForcedCrashRng(0.99))
+    user_id = 300520
+    await _ensure_user(user_id)
+    await _topup(CRASH_CHAT_ID, user_id)
+    init_data = _build_init_data(user_id=user_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/games/crash",
+            params={"chat_id": CRASH_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={"bet": 100, "idem_key": str(uuid.uuid4())},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "active"
+    assert body["bet"] == 100
+    assert "id" in body
+    assert "started_at" in body
+    # Раунд ещё активен — точка краша НИКОГДА не раскрывается заранее (иначе
+    # клиент мог бы кэшаутиться за миллисекунду до неё без всякого риска).
+    assert "crash_point" not in body
+    assert "outcome" not in body
+    assert "payout" not in body
+    # bank_capped — честный False, не отсутствующий ключ (см. bank_capped-
+    # комментарий post_crash_start в api/routes/games.py).
+    assert body["bank_capped"] is False
+
+    await _force_settle_leftover_game(body["id"])
+
+
+@pytest.mark.asyncio
+async def test_crash_start_missing_init_data_returns_401():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/games/crash",
+            params={"chat_id": CRASH_CHAT_ID},
+            json={"bet": 100, "idem_key": str(uuid.uuid4())},
+        )
+
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_crash_start_bet_below_minimum_returns_400(monkeypatch):
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    user_id = 300521
+    await _ensure_user(user_id)
+    await _topup(CRASH_CHAT_ID, user_id)
+    init_data = _build_init_data(user_id=user_id)
+    assert 1 < settings.casino_min_bet
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/games/crash",
+            params={"chat_id": CRASH_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={"bet": 1, "idem_key": str(uuid.uuid4())},
+        )
+
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_crash_start_ignores_foreign_user_id_in_body_idor(monkeypatch):
+    """T-04.2-02: та же IDOR-защита, что и у остальных игр этого файла —
+    `user_id` в теле запроса просто отсутствует в `CrashBet`, лишнее поле
+    молча игнорируется FastAPI/Pydantic."""
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    monkeypatch.setattr(casino_service, "_rng", _ForcedCrashRng(0.99))
+    attacker_id = 300522
+    victim_id = 300523
+    await _ensure_user(attacker_id)
+    await _topup(CRASH_CHAT_ID, attacker_id)
+    await _ensure_user(victim_id)
+    await _topup(CRASH_CHAT_ID, victim_id)
+    init_data = _build_init_data(user_id=attacker_id)
+    idem_key = str(uuid.uuid4())
+
+    victim_before = await _get_balance(CRASH_CHAT_ID, victim_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/games/crash",
+            params={"chat_id": CRASH_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={
+                "bet": 100,
+                "idem_key": idem_key,
+                "user_id": victim_id,  # атакующий пытается подставить чужой user_id
+            },
+        )
+
+    assert resp.status_code == 200
+
+    async with SessionLocal() as verify_session:
+        game_row = (
+            await verify_session.execute(select(CasinoGame).where(CasinoGame.idem_key == idem_key))
+        ).scalar_one()
+    assert game_row.user_id == attacker_id
+
+    victim_after = await _get_balance(CRASH_CHAT_ID, victim_id)
+    assert victim_after == victim_before
+
+    await _force_settle_leftover_game(game_row.id)
+
+
+async def _start_crash_round(client, init_data: str, chat_id: int, forced_r: float, bet: int = 100):
+    """Хелпер: стартует Crash-раунд через реальный HTTP start-роут с
+    форсированной точкой краша, возвращает `game_id` из ответа.
+    `casino_service._rng` ДОЛЖЕН быть замонкипатчен `_ForcedCrashRng(forced_r)`
+    ДО вызова (та же форма, что `_start_fixed_hand` у блэкджека)."""
+    resp = await client.post(
+        "/api/v1/games/crash",
+        params={"chat_id": chat_id},
+        headers={"X-Telegram-Init-Data": init_data},
+        json={"bet": bet, "idem_key": str(uuid.uuid4())},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "active"
+    return body["id"]
+
+
+@pytest.mark.asyncio
+async def test_crash_cashout_full_round_trip_returns_200_with_sane_balances(monkeypatch):
+    """Полный старт -> кэшаут раунд-трип на заведомо богатом банке: 200,
+    `status=="settled"`, `outcome.result=="cashed_out"`, payout совпадает с
+    "честной" формулой (`bet * outcome.multiplier`, Decimal), баланс игрока
+    после кэшаута равен балансу после старта плюс payout — без капа (богатый
+    банк). Точка краша форсирована высокой (98.00x), реальное elapsed-время
+    между HTTP-вызовами start/cashout остаётся крошечным по сравнению с ней,
+    так что раунд гарантированно застаёт кэшаут ДО краша."""
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    user_id = 300524
+    await _ensure_user(user_id)
+    await _topup(CRASH_FUNDED_BANK_CHAT_ID, user_id, min_balance=10_000)
+    init_data = _build_init_data(user_id=user_id)
+
+    async with SessionLocal() as db_session:
+        await economy_service.credit_bank(
+            db_session, CRASH_FUNDED_BANK_CHAT_ID, 1_000_000,
+            kind="test_seed", ref_id=f"test_crash_funded_bank:{uuid.uuid4()}",
+        )
+        await db_session.commit()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        monkeypatch.setattr(casino_service, "_rng", _ForcedCrashRng(0.99))
+        game_id = await _start_crash_round(client, init_data, CRASH_FUNDED_BANK_CHAT_ID, 0.99)
+        balance_after_start = await _get_balance(CRASH_FUNDED_BANK_CHAT_ID, user_id)
+
+        resp = await client.post(
+            f"/api/v1/games/crash/{game_id}/cashout",
+            params={"chat_id": CRASH_FUNDED_BANK_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "settled"
+    assert body["id"] == game_id
+    assert body["outcome"]["result"] == "cashed_out"
+    assert body["cashed_out_multiplier"] == body["outcome"]["multiplier"]
+    # Точка краша форсирована `forced_r=0.99` (~98.00x — не РОВНО 98.00:
+    # `Decimal(0.99)` идёт через двоичное float-представление 0.99, не через
+    # точную десятичную "0.99", см. `crash_engine.generate_crash_point`'s
+    # докстринг про единственную float-точку входа), в любом случае никогда
+    # не совпадёт со скромным live-множителем почти-мгновенного кэшаута.
+    assert Decimal("90.00") < Decimal(body["crash_point"]) <= Decimal("100.00")
+    assert Decimal(body["outcome"]["multiplier"]) < Decimal(body["crash_point"])
+
+    # "Честная" выплата — та же Decimal-арифметика, что и route/casino_service
+    # (bet * live_mult, floor через int()) от УЖЕ возвращённого множителя.
+    fair_payout = int(Decimal(body["bet"]) * Decimal(body["outcome"]["multiplier"]))
+    assert body["payout"] == fair_payout
+    assert body["bank_capped"] is False
+
+    balance_after_cashout = body["user_balance_after"]
+    assert balance_after_cashout == balance_after_start + body["payout"]
+    assert await _get_balance(CRASH_FUNDED_BANK_CHAT_ID, user_id) == balance_after_cashout
+
+
+@pytest.mark.asyncio
+async def test_crash_cashout_on_foreign_user_returns_404_idor(monkeypatch):
+    """T-04.2-02 (crash): та же IDOR-проверка, что и
+    `test_blackjack_action_on_foreign_game_returns_404_idor` — attacker не
+    может кэшаутить game_id ЖЕРТВЫ, используя СВОЙ initData. SELECT в
+    `crash_cash_out` фильтрует по user_id (среди прочего) -> чужой раунд
+    структурно неотличим от несуществующего -> CasinoError -> 404. Раунд
+    жертвы и её баланс должны остаться нетронутыми (раунд остаётся
+    "active" — атака не смогла его даже settle'ить)."""
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    attacker_id = 300525
+    victim_id = 300526
+    await _ensure_user(attacker_id)
+    await _topup(CRASH_CHAT_ID, attacker_id)
+    await _ensure_user(victim_id)
+    await _topup(CRASH_CHAT_ID, victim_id)
+    attacker_init_data = _build_init_data(user_id=attacker_id)
+    victim_init_data = _build_init_data(user_id=victim_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        monkeypatch.setattr(casino_service, "_rng", _ForcedCrashRng(0.99))
+        victim_game_id = await _start_crash_round(client, victim_init_data, CRASH_CHAT_ID, 0.99)
+        victim_balance_before = await _get_balance(CRASH_CHAT_ID, victim_id)
+
+        resp = await client.post(
+            f"/api/v1/games/crash/{victim_game_id}/cashout",
+            params={"chat_id": CRASH_CHAT_ID},
+            headers={"X-Telegram-Init-Data": attacker_init_data},
+        )
+
+    assert resp.status_code == 404
+
+    async with SessionLocal() as verify_session:
+        victim_game = (
+            await verify_session.execute(
+                select(CasinoGame).where(CasinoGame.id == victim_game_id)
+            )
+        ).scalar_one()
+    assert victim_game.status == "active"  # жертва не задета вовсе
+    assert victim_game.user_id == victim_id
+
+    victim_balance_after = await _get_balance(CRASH_CHAT_ID, victim_id)
+    assert victim_balance_after == victim_balance_before
+
+    await _force_settle_leftover_game(victim_game_id)
+
+
+@pytest.mark.asyncio
+async def test_crash_cashout_with_foreign_chat_id_returns_404(monkeypatch):
+    """Тот же 4-way SELECT-фильтр `crash_cash_out` (`id`/`user_id`/`chat_id`/
+    `game`), что и `test_blackjack_action_double_with_foreign_chat_id_returns_404`
+    — раунд открыт в CRASH_CHAT_ID (чат A); тот же игрок пытается кэшаутить,
+    подставив chat_id ДРУГОГО чата (B), где он тоже участник. Без chat_id в
+    фильтре запрос из чата B "нашёл" бы раунд чата A по одному user_id —
+    структурный IDOR даже без прямой денежной дыры (выплата всё равно ушла
+    бы в реальный `game_row.chat_id`). Теперь такой раунд структурно
+    неотличим от несуществующего -> 404, ни раунд, ни балансы обоих чатов не
+    меняются."""
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    other_chat_id = -900556
+    user_id = 300527
+    await _ensure_user(user_id)
+    await _topup(CRASH_CHAT_ID, user_id)
+    await _topup(other_chat_id, user_id)
+    init_data = _build_init_data(user_id=user_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        monkeypatch.setattr(casino_service, "_rng", _ForcedCrashRng(0.99))
+        game_id = await _start_crash_round(client, init_data, CRASH_CHAT_ID, 0.99)
+        balance_a_before = await _get_balance(CRASH_CHAT_ID, user_id)
+        balance_b_before = await _get_balance(other_chat_id, user_id)
+
+        resp = await client.post(
+            f"/api/v1/games/crash/{game_id}/cashout",
+            params={"chat_id": other_chat_id},
+            headers={"X-Telegram-Init-Data": init_data},
+        )
+
+    assert resp.status_code == 404
+
+    async with SessionLocal() as verify_session:
+        game_row = (
+            await verify_session.execute(select(CasinoGame).where(CasinoGame.id == game_id))
+        ).scalar_one()
+    assert game_row.status == "active"
+    assert game_row.chat_id == CRASH_CHAT_ID
+
+    assert await _get_balance(CRASH_CHAT_ID, user_id) == balance_a_before
+    assert await _get_balance(other_chat_id, user_id) == balance_b_before
+
+    await _force_settle_leftover_game(game_id)
+
+
+@pytest.mark.asyncio
+async def test_crash_cashout_missing_init_data_returns_401():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/games/crash/999999/cashout",
+            params={"chat_id": CRASH_CHAT_ID},
+        )
+
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_crash_cashout_on_nonexistent_game_id_returns_404(monkeypatch):
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    user_id = 300528
+    await _ensure_user(user_id)
+    init_data = _build_init_data(user_id=user_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/games/crash/999999999/cashout",
+            params={"chat_id": CRASH_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+        )
+
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_crash_cashout_on_settled_round_replays_stored_result(monkeypatch):
+    """T-04.1-09-форма (crash): повторный кэшаут на уже settled раунде —
+    идемпотентный no-op, роут возвращает 200 с сохранённым исходом, а не
+    ошибку. Деньги не двигаются повторно."""
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    user_id = 300529
+    await _ensure_user(user_id)
+    await _topup(CRASH_CHAT_ID, user_id)
+    init_data = _build_init_data(user_id=user_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        monkeypatch.setattr(casino_service, "_rng", _ForcedCrashRng(0.99))
+        game_id = await _start_crash_round(client, init_data, CRASH_CHAT_ID, 0.99)
+
+        first = await client.post(
+            f"/api/v1/games/crash/{game_id}/cashout",
+            params={"chat_id": CRASH_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+        )
+        assert first.status_code == 200
+        assert first.json()["status"] == "settled"
+        balance_after_settle = await _get_balance(CRASH_CHAT_ID, user_id)
+
+        second = await client.post(
+            f"/api/v1/games/crash/{game_id}/cashout",
+            params={"chat_id": CRASH_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+        )
+
+    assert second.status_code == 200
+    body = second.json()
+    assert body["status"] == "settled"
+    assert body["outcome"] == first.json()["outcome"]
+    assert body["payout"] == first.json()["payout"]
+    assert body["bank_capped"] == first.json()["bank_capped"]
+
+    balance_after_replay = await _get_balance(CRASH_CHAT_ID, user_id)
+    assert balance_after_replay == balance_after_settle  # деньги не двинулись повторно
+
+
+@pytest.mark.asyncio
+async def test_crash_cashout_instant_bust_reports_payout_zero_and_bank_capped_false(monkeypatch):
+    """Мгновенный краш (`forced_r=0.0` -> `crash_point==1.00x`, см.
+    `crash_engine.generate_crash_point`): `multiplier_at(elapsed) >= 1.00`
+    ВСЕГДА (растёт от 1.00 при `elapsed==0`), так что `live_mult <
+    crash_point(1.00)` структурно НИКОГДА не может быть true — раунд
+    гарантированно busted при любом elapsed, полностью детерминированно, без
+    зависимости от реального времени выполнения теста (в отличие от
+    "выигрышных" тестов выше, где точка краша высокая, а не низкая)."""
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    user_id = 300530
+    await _ensure_user(user_id)
+    await _topup(CRASH_CHAT_ID, user_id)
+    init_data = _build_init_data(user_id=user_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        monkeypatch.setattr(casino_service, "_rng", _ForcedCrashRng(0.0))
+        game_id = await _start_crash_round(client, init_data, CRASH_CHAT_ID, 0.0)
+        balance_before_cashout = await _get_balance(CRASH_CHAT_ID, user_id)
+
+        resp = await client.post(
+            f"/api/v1/games/crash/{game_id}/cashout",
+            params={"chat_id": CRASH_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "settled"
+    assert body["outcome"]["result"] == "busted"
+    assert Decimal(body["crash_point"]) == Decimal("1.00")
+    assert body["cashed_out_multiplier"] is None
+    assert body["payout"] == 0
+    # Честная выплата проигрыша тоже 0 (см. _crash_fair_payout) — bank_capped
+    # обязан остаться False, а не стать True из-за "0 < 0".
+    assert body["bank_capped"] is False
+
+    balance_after_cashout = await _get_balance(CRASH_CHAT_ID, user_id)
+    assert balance_after_cashout == balance_before_cashout  # проигрыш не платит ничего
+
+
+@pytest.mark.asyncio
+async def test_crash_cashout_win_on_empty_bank_reports_bank_capped(monkeypatch):
+    """Регрессия по тому же классу D-06-инцидента, что и
+    `test_blackjack_action_stand_win_on_empty_bank_reports_bank_capped`, для
+    Crash. Свежий (нулевой) chat_bank пополняется РОВНО ставкой самой же
+    ставкой (`_debit_stake`) до выплаты — точка краша форсирована высокой
+    (98.00x), `started_at` отодвинут на 5с в прошлое напрямую в БД, чтобы
+    live-множитель кэшаута гарантированно оказался заметно выше 1.00x (не
+    зависит от реальной скорости выполнения самого теста) — честная выплата
+    (bet * live_mult) не влезает в банк из одной лишь ставки, capped-payout
+    урезается до размера самой ставки, банк возвращается к 0 (self-cleaning
+    для повторных прогонов, та же дисциплина, что у blackjack-эквивалента)."""
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    user_id = 300531
+    await _ensure_user(user_id)
+    await _topup(CRASH_FRESH_BANK_CHAT_ID, user_id)
+    init_data = _build_init_data(user_id=user_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        monkeypatch.setattr(casino_service, "_rng", _ForcedCrashRng(0.99))
+        game_id = await _start_crash_round(client, init_data, CRASH_FRESH_BANK_CHAT_ID, 0.99)
+        await _backdate_crash_started_at(game_id, seconds_ago=5.0)
+
+        resp = await client.post(
+            f"/api/v1/games/crash/{game_id}/cashout",
+            params={"chat_id": CRASH_FRESH_BANK_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "settled"
+    assert body["outcome"]["result"] == "cashed_out"
+    # Живой множитель после ~5с реального роста ГАРАНТИРОВАННО выше 1.00x —
+    # честная выплата больше самой ставки, банк не может её покрыть целиком.
+    assert Decimal(body["outcome"]["multiplier"]) > Decimal("1.00")
+    fair_payout = int(Decimal(body["bet"]) * Decimal(body["outcome"]["multiplier"]))
+    assert fair_payout > 100
+    # Банк стартовал с 0, пополнился только ставкой (100) до выплаты —
+    # capped-payout == ставке.
+    assert body["payout"] == 100
+    assert body["payout"] < fair_payout
+    assert body["bank_capped"] is True

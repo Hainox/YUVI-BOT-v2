@@ -215,12 +215,75 @@ push'а остался бы недокументированной дырой. "
 уже доступным роуту данным, без правок settle-ядра). На ещё активной раздаче
 (натурала не было, ход не завершён) `bank_capped` — честный `False`, а не
 пропущенный ключ, той же логикой, что "total_payout == 0" у Тето.
+
+POST /games/crash (start) + POST /games/crash/{game_id}/cashout — стейтфул
+real-time раунд (D-03, `casino_service`'s crash-секция): живой множитель
+считается ТОЛЬКО сервером по прошедшему wall-clock времени
+(`crash_engine.multiplier_at`), поэтому у cashout НЕТ тела запроса вовсе —
+единственные входы `chat_id`/`game_id`/`user_id`, все auth-derived (path +
+`AuthContext`), никакого клиентского поля "текущий множитель"/"сколько
+секунд прошло" не существует НИ В МОДЕЛИ (у cashout вообще нет Pydantic-
+тела), ни в обработке — денежно-небезопасный вход, который эти роуты
+структурно не могут принять, а не просто игнорируют (D-03 жёстче обычного
+IDOR: не "чужой user_id в JSON", а "клиент вообще не может подсказать
+исход"). `game_id` из start-ответа переиспользуется в cashout;
+`casino_service.crash_cash_out` фильтрует SELECT по ВСЕМ ЧЕТЫРЁМ
+`(id, user_id, chat_id, game)` (тот же IDOR-паттерн, что блэкджек, читай
+докстринг `crash_cash_out`) — `CasinoError` -> 404 (не 403, не палим
+существование чужого раунда). Кэшаут уже `settled` раунда — НЕ ошибка
+(переход "active"->"settled" сам служит гардом идемпотентности,
+T-04.1-09-форма), `crash_cash_out` возвращает сохранённый исход 200-м
+ответом (повторный no-op), роут это поведение не переопределяет.
+
+`bank_capped` У CRASH (оба роута) — тот же D-06-инцидент, что и у остальных
+игр этого файла, вычисляется БЕЗУСЛОВНО (как у блэкджека/тето), не только
+"если выиграл": crash не имеет ФИКСИРОВАННОГО мультипликатора выплаты, как
+coinflip/roulette/блэкджек, — множитель ЖИВОЙ и известен только на момент
+кэшаута/краша, поэтому "честная" выплата здесь не из статичной таблицы
+константного стиля `_ROULETTE_FAIR_MULT`/`_BLACKJACK_FAIR_MULT`, а
+пересчитывается локально (`_crash_fair_payout`) из `outcome["multiplier"]`,
+УЖЕ лежащего в ответе (тот же Тето-паттерн "честное число уже в данных
+ответа", не settle-ядро): `int(Decimal(bet) * Decimal(outcome["multiplier"]))`
+для `outcome.result == "cashed_out"`, `0` для `"busted"`/ещё активного
+раунда (нет ключа "outcome" вовсе). ЦЕЛИКОМ `Decimal`, не float — этот файл
+уже наступал на float-погрешность в /games/dice в тот же день (см.
+`casino_service.dice_fair_payout`'s докстринг про `_DICE_HOUSE_EDGE_EXACT`);
+новый Decimal-путь crash не должен повторить тот же класс бага, поэтому
+`_crash_fair_payout` строит `Decimal` из СТРОКИ `outcome["multiplier"]`
+(`state`/`outcome` в БД и так хранят множитель только как `str(Decimal(...))`,
+JSONB-готча — см. докстринг crash-секции `casino_service.py`), никогда не
+проходя через float на этом пути.
+
+`start_crash` НЕ имеет мгновенного settle-пути наподобие блэкджекова
+натурала — свежий раунд ВСЕГДА стартует `status="active"` (растущий
+множитель только начал жить с этой секунды; даже мгновенный краш
+`crash_point==1.00x` не settle'ит раунд ПРИ старте — он лишь гарантирует
+проигрыш при первом же кэшауте, раунд остаётся "active" до тех пор, пока
+клиент/таймаут-джоба его не settle'ят). Тем не менее ответ
+`post_crash_start` МОЖЕТ нести `status=="settled"` — НЕ из-за самого старта,
+а из идемпотентного replay по `idem_key`: сетевой ретрай исходного
+start-запроса, попавший на строку УЖЕ форс-settled `resolve_crash_timeouts`
+осиротевшего раунда (клиент не увидел исходный успешный ответ и не мог
+кэшаутиться — раунд дожил до дедлайна и был форс-settled как `"busted"`,
+единственный исход, реально достижимый в этой ветке: `"cashed_out"`
+недостижим, потому что у клиента физически нет `game_id` для вызова
+cashout, пока он не получил исходный start-ответ, а тот как раз и
+потерялся). Раз ветка теоретически достижима — `bank_capped` вычисляется
+здесь ТЕМ ЖЕ безусловным путём, что и у блэкджека, не отдельным "особым
+случаем": на активном раунде `outcome` отсутствует -> `_crash_fair_payout`
+даёт `0`, `result.get("payout", 0)` тоже `0` -> честный `False`; на редкой
+settled-replay ветке (всегда `"busted"`, честная выплата тоже `0`) — тот же
+`False`. Ради ОДНОЙ формы ответа (ключ `bank_capped` есть всегда, что на
+активном, что на settled старте), а не ради того, чтобы эта ветка когда-то
+дала `True` (она не может — единственный достижимый settled-исход здесь
+уже честно платит 0).
 """
 
 from __future__ import annotations
 
 import html
 import logging
+from decimal import Decimal
 
 from fastapi import APIRouter
 from fastapi import Depends
@@ -282,6 +345,18 @@ class BlackjackActionBody(BaseModel):
     action: str  # 'hit' | 'stand' | 'double' — валидируется casino_service.blackjack_action
 
 
+class CrashBet(BaseModel):
+    bet: int = Field(ge=1)
+    idem_key: str
+
+
+# POST /games/crash/{game_id}/cashout НАМЕРЕННО не имеет Pydantic-модели
+# тела вовсе (не пустая модель — ОТСУТСТВУЮЩАЯ) — D-03: живой множитель/
+# прошедшее время может сообщить ТОЛЬКО сервер (`crash_engine.multiplier_at`
+# по `datetime.utcnow() - state["started_at"]`), клиентского поля для этого
+# структурно не существует, см. модульный докстринг.
+
+
 # bet_type -> "честный" (без D-06 капа) множитель выплаты, для bank_capped
 # (см. модульный докстринг выше). Держится рядом с роутом, не в
 # casino_service.py — та же причина, что у coinflip's fair_payout ниже.
@@ -308,6 +383,31 @@ _BLACKJACK_FAIR_MULT: dict[str, float] = {
     "lose": 0.0,
     "bust": 0.0,
 }
+
+
+def _crash_fair_payout(bet: int, outcome: dict) -> int:
+    """"Честная" (без D-06 капа) выплата Crash для `bank_capped` у
+    post_crash_start/post_crash_cashout ниже. В отличие от
+    `_ROULETTE_FAIR_MULT`/`_BLACKJACK_FAIR_MULT` выше — не статичная таблица
+    константных мультипликаторов: у Crash множитель ЖИВОЙ, известен только
+    на момент кэшаута/краша и уже лежит в самом ответе как
+    `outcome["multiplier"]` (тот же Тето-паттерн "честное число уже в
+    данных", см. модульный докстринг). `outcome.get("result") !=
+    "cashed_out"` покрывает СРАЗУ три случая честным нулём: обычный проигрыш
+    (`"busted"`), ещё активный раунд (`outcome` вообще отсутствует, `.get`
+    на `{}` -> `None`) и settled-replay `post_crash_start`'а (см. его
+    комментарий ниже) — там единственный достижимый исход тоже `"busted"`.
+
+    ЦЕЛИКОМ `Decimal`, не float (аудит-урок `dice_fair_payout`, см. его
+    докстринг и модульный докстринг этого файла) — `Decimal(str(...))`, а не
+    прямое деление/умножение через float, и строится из ТОЙ ЖЕ строки
+    `outcome["multiplier"]`, что `casino_service.crash_cash_out` сохранил в
+    БД (`str(live_mult)`) и использовал для реального `payout` — идентичная
+    арифметика, а не независимая копия формулы, которая могла бы разойтись
+    с ней в последнем знаке."""
+    if outcome.get("result") != "cashed_out":
+        return 0
+    return int(Decimal(bet) * Decimal(outcome["multiplier"]))
 
 
 @router.post("/api/v1/games/coinflip")
@@ -688,6 +788,94 @@ async def post_blackjack_action(
         fair_mult = _BLACKJACK_FAIR_MULT.get(outcome.get("result"), 0.0)
         effective_bet = result["bet"] * (2 if body.action == "double" else 1)
         fair_payout = int(effective_bet * fair_mult)
+        result["bank_capped"] = result.get("payout", 0) < fair_payout
+
+        return result
+
+
+@router.post("/api/v1/games/crash")
+async def post_crash_start(
+    body: CrashBet, request: Request, auth: AuthContext = Depends(require_membership)
+) -> dict:
+    async with SessionLocal() as session:
+        try:
+            result = await _start_crash(session, auth, body)
+        except casino_service.DuplicateRound:
+            try:
+                result = await _start_crash(session, auth, body)
+            except casino_service.DuplicateRound as exc:
+                raise HTTPException(status_code=409, detail="round in progress, retry") from exc
+        except casino_service.GameNotActive as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except (casino_service.InvalidBet, economy_service.InsufficientFunds) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        balance = await economy_service.get_balance(session, auth.chat_id, auth.user_id)
+        await balance_events.publish_balance(
+            request.app.state.redis, auth.chat_id, auth.user_id, balance
+        )
+        result["user_balance_after"] = balance
+
+        # bank_capped (D-06, см. модульный докстринг) — считается БЕЗУСЛОВНО,
+        # тем же безопасным путём, что у блэкджека: свежий раунд всегда
+        # "active" (нет ключа "outcome" вовсе) -> `_crash_fair_payout` даёт
+        # 0, `result.get("payout", 0)` — тоже 0 -> честный `False`. Ветка
+        # "status=='settled'" здесь ТЕОРЕТИЧЕСКИ достижима (идемпотентный
+        # replay `idem_key`, попавший на уже форс-settled таймаутом раунд —
+        # см. модульный докстринг), но не как отдельный branch: тот же
+        # безусловный код её покрывает, и единственный реально достижимый
+        # там исход ("busted") тоже честно даёт `False`.
+        outcome = result.get("outcome") or {}
+        fair_payout = _crash_fair_payout(result["bet"], outcome)
+        result["bank_capped"] = result.get("payout", 0) < fair_payout
+
+        return result
+
+
+async def _start_crash(session, auth: AuthContext, body: CrashBet) -> dict:
+    return await casino_service.start_crash(
+        session, auth.chat_id, auth.user_id, body.bet, body.idem_key
+    )
+
+
+@router.post("/api/v1/games/crash/{game_id}/cashout")
+async def post_crash_cashout(
+    game_id: int,
+    request: Request,
+    auth: AuthContext = Depends(require_membership),
+) -> dict:
+    """НЕТ Pydantic-тела запроса вовсе (см. модульный докстринг и комментарий
+    у `CrashBet` выше) — D-03: единственные входы `chat_id`/`game_id`/
+    `user_id`, все auth-derived, elapsed-время считает ТОЛЬКО
+    `casino_service.crash_cash_out` по `datetime.utcnow()`."""
+    async with SessionLocal() as session:
+        try:
+            result = await casino_service.crash_cash_out(session, auth.chat_id, game_id, auth.user_id)
+        except casino_service.GameNotActive as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except (casino_service.InvalidBet, economy_service.InsufficientFunds) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except casino_service.CasinoError as exc:
+            # game_id не найден ДЛЯ ЭТОЙ (id, user_id, chat_id, game)-четвёрки
+            # (T-04.2-02 IDOR — тот же паттерн, что post_blackjack_action) —
+            # 404, не 403 (не палим факт существования чужого раунда).
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        balance = await economy_service.get_balance(session, auth.chat_id, auth.user_id)
+        await balance_events.publish_balance(
+            request.app.state.redis, auth.chat_id, auth.user_id, balance
+        )
+        result["user_balance_after"] = balance
+
+        # bank_capped — тот же безусловный паттерн, что у post_crash_start
+        # выше (см. его комментарий и модульный докстринг): `crash_cash_out`
+        # ВСЕГДА возвращает settled-раунд (либо только что settled этим самым
+        # вызовом, либо сохранённый исход idempotent-replay уже settled
+        # раунда) — `outcome` здесь есть всегда, но `.get("outcome") or {}`
+        # остаётся тем же generic-путём, что и в start, ради одного и того же
+        # кода на обоих роутах.
+        outcome = result.get("outcome") or {}
+        fair_payout = _crash_fair_payout(result["bet"], outcome)
         result["bank_capped"] = result.get("payout", 0) < fair_payout
 
         return result

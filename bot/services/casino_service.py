@@ -1,6 +1,11 @@
 """Идемпотентное денежное ядро казино (04.1) — settle-раунд, поверх которого
 построены coinflip/dice/roulette (слоты и блэкджек — 04.1-02/03, переиспользуют
-`_settle`/`pay_from_bank` отсюда).
+`_settle`/`pay_from_bank` отсюда). Crash (04.1-XX) — стейтфул real-time раунд
+той же формы, что блэкджек (тот же `CasinoGame`/`state` JSONB/переход
+"active"->"settled" как гард идемпотентности), но крутится не клиентским
+действием, а чистым прошедшим wall-clock временем — вся точка краша/
+живой-множитель арифметика вынесена в отдельный чистый `crash_engine.py`
+(см. его докстринг за RTP-инвариантом и Decimal-дисциплиной).
 
 Деньги двигает ТОЛЬКО через `bot.services.economy_service` (`debit`+
 `credit_bank` для ставки, `pay_from_bank` для выплаты) — этот модуль
@@ -34,6 +39,7 @@ import secrets
 import time
 from datetime import datetime
 from datetime import timedelta
+from decimal import Decimal
 from fractions import Fraction
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -44,6 +50,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
 from bot.services import blackjack_engine
+from bot.services import crash_engine
 from bot.services import economy_service
 from bot.services import jackpot_service
 from bot.services import slot_engine
@@ -971,5 +978,340 @@ def register_blackjack_timeouts(scheduler: AsyncIOScheduler) -> None:
         max_instances=1,
         misfire_grace_time=120,
         id=_BLACKJACK_TIMEOUTS_JOB_ID,
+        replace_existing=True,
+    )
+
+
+# --- crash (real-time раунд: живой множитель по wall-clock времени, D-03) ----
+#
+# Провably-fair распределение точки краша + вся денежная арифметика от неё —
+# `crash_engine.py` (чистый модуль, см. его докстринг: RTP-инвариант
+# 1-CRASH_HOUSE_EDGE независимо от того, на каком множителе кэшаутится
+# игрок, и почему ВСЯ цепочка "точка краша -> прошедшее время -> текущий
+# множитель -> выплата" обязана оставаться Decimal от первого до последнего
+# шага — аудит-урок dice_fair_payout, 2026-08-06).
+#
+# Стейтфул-раунд устроен буквально "по образцу" блэкджека (см. секцию выше):
+# тот же CasinoGame (game="crash"), тот же state JSONB, тот же переход
+# status "active"->"settled" как гард идемпотентности, тот же 4-way SELECT
+# ... FOR UPDATE фильтр (id/user_id/chat_id/game) в crash_cash_out, что и
+# blackjack_action, по той же IDOR-причине (см. её докстринг). Единственная
+# структурная разница — крутится не через клиентское действие ("hit"/
+# "stand"), а через ЧИСТОЕ ПРОШЕДШЕЕ ВРЕМЯ, посчитанное сервером, поэтому у
+# crash нет ветвлений по action и нет client-supplied данных о ходе раунда
+# вообще: единственные входы crash_cash_out — chat_id/game_id/user_id
+# (auth-derived).
+#
+# JSONB-готча (повторяется на каждое чтение/запись ниже, будь внимателен):
+# `state["crash_point"]` хранится ТОЛЬКО как `str(Decimal(...))` — JSONB не
+# может сериализовать Decimal напрямую — и восстанавливается обратно через
+# `Decimal(state["crash_point"])` на каждом чтении.
+
+
+def _crash_view(game_row: CasinoGame) -> dict:
+    """Публичный вид раунда: пока `status=="active"` — ТОЛЬКО id/status/
+    bet/started_at, `crash_point` НИКОГДА не раскрывается, пока раунд
+    активен (та же дисциплина "спрятать правду до settle", что скрытая
+    вторая карта дилера в `_blackjack_view` — иначе клиент мог бы просто
+    прочитать точку краша и кэшаутиться за миллисекунду до неё без всякого
+    риска, что убивает саму игру). После settle — добавляются
+    `crash_point`/`cashed_out_multiplier`/`payout`/`outcome`.
+
+    `crash_point`/`cashed_out_multiplier` — JSON-safe строки (не Decimal,
+    JSONB и так уже хранит их как str, но `str(...)` здесь идёт явно и
+    защищённо от вызывающего)."""
+    state = game_row.state or {}
+    view: dict = {
+        "id": game_row.id,
+        "status": game_row.status,
+        "bet": game_row.bet,
+        "started_at": state.get("started_at"),
+    }
+    if game_row.status != "active":
+        outcome = game_row.outcome or {}
+        view["crash_point"] = str(state["crash_point"])
+        view["cashed_out_multiplier"] = (
+            outcome.get("multiplier") if outcome.get("result") == "cashed_out" else None
+        )
+        view["payout"] = game_row.payout
+        view["outcome"] = outcome
+    return view
+
+
+async def start_crash(
+    session: AsyncSession, chat_id: int, user_id: int, bet: int, idem_key: str
+) -> dict:
+    """Запускает раунд Crash (стейтфул, буквально "по образцу"
+    `start_blackjack` — читай его докстринг за полным разбором формы):
+    списывает ставку в банк (общий `_debit_stake`), тянет точку краша через
+    `crash_engine.generate_crash_point(_rng)` — сразу `Decimal`, никогда
+    `float` — и кладёт её в `CasinoGame.state` ТОЛЬКО как `str(...)` (JSONB-
+    готча, см. докстринг секции выше). Раунд остаётся `status="active"` до
+    `crash_cash_out` (или до `resolve_crash_timeouts`, если игрок не
+    вернулся) — в отличие от блэкджека, тут нет мгновенного settle-пути
+    (нет аналога "натурала"): любая новая ставка стартует активный раунд,
+    множитель которого уже пошёл расти с этой самой секунды.
+
+    Идемпотентна по `idem_key` — повторный вызов возвращает сохранённый
+    раунд без повторного движения денег (та же двухуровневая
+    идемпотентность, что у `_settle`/`start_blackjack`)."""
+    existing = await _find_existing(session, user_id, idem_key)
+    if existing is not None:
+        logger.info(
+            "start_crash: idem_key=%s уже обработан, возвращаем сохранённый раунд",
+            idem_key,
+        )
+        return _crash_view(existing)
+
+    balance = await economy_service.get_balance(session, chat_id, user_id)
+    _validate_bet(bet, balance)
+
+    debited = await _debit_stake(session, chat_id, user_id, bet, idem_key)
+    if not debited:
+        existing = await _find_existing(session, user_id, idem_key)
+        if existing is not None:
+            return _crash_view(existing)
+        raise DuplicateRound(f"Раунд уже обрабатывается конкурентным запросом (idem_key={idem_key})")
+
+    crash_point = crash_engine.generate_crash_point(_rng)
+    state = {
+        "crash_point": str(crash_point),
+        "started_at": datetime.utcnow().isoformat(),
+    }
+
+    game_row = CasinoGame(
+        chat_id=chat_id,
+        user_id=user_id,
+        game="crash",
+        bet=bet,
+        payout=0,
+        outcome=None,
+        state=state,
+        status="active",
+        idem_key=idem_key,
+    )
+    try:
+        session.add(game_row)
+        await session.flush()
+    except IntegrityError:
+        # Партиал-UNIQUE (user_id, idem_key) — backstop против гонки между
+        # SELECT-проверкой выше и flush здесь (форма _settle/start_blackjack).
+        await session.rollback()
+        existing = await _find_existing(session, user_id, idem_key)
+        if existing is None:
+            raise
+        return _crash_view(existing)
+
+    await session.commit()
+    return _crash_view(game_row)
+
+
+async def crash_cash_out(session: AsyncSession, chat_id: int, game_id: int, user_id: int) -> dict:
+    """Кэшаут активного раунда Crash. `SELECT ... FOR UPDATE` фильтрует по
+    ВСЕМ ЧЕТЫРЁМ — `id`/`user_id`/`chat_id`/`game` (то же самое IDOR-
+    обоснование, что `blackjack_action`, читай его докстринг за полным
+    разбором: без `chat_id` в фильтре игрок с активным раундом в чате A мог
+    бы подставить `chat_id` чата B, где он тоже участник, и кэшаутить (со
+    своим же `user_id`, но чужим `chat_id`) раунд — выплата всё равно ушла
+    бы в РЕАЛЬНЫЙ `game_row.chat_id` (чат A), так что прямой денежной дыры
+    тут нет, но фильтр всё равно обязателен: без него запрос из чата B
+    просто "нашёл" бы чужую по контексту строку по одному user_id, что уже
+    само по себе IDOR — раунд обязан быть виден/управляем только из ТОГО
+    чата, где он был начат).
+
+    Статус-переход "active"->"settled" сам служит гардом идемпотентности
+    (T-04.1-09-форма, как в `blackjack_action`): повторный вызов на уже
+    settled раунде — no-op, возвращает сохранённый исход, деньги не
+    двигаются повторно.
+
+    Прошедшее время считается ТОЛЬКО СЕРВЕРОМ: `elapsed = utcnow() -
+    state["started_at"]`. Никакой параметр запроса не может сообщить
+    elapsed/текущий множитель/что-либо о прогрессе раунда — единственные
+    входы этой функции — `chat_id`/`game_id`/`user_id` (все auth-derived),
+    в точности как блэкджек никогда не доверяет клиентскому состоянию карт
+    (T-04.1-08/D-03).
+
+    Если live-множитель (`crash_engine.multiplier_at(elapsed)`) СТРОГО
+    меньше сохранённой точки краша — игрок успел кэшаутиться до краша,
+    `payout = int(bet * live_mult)` (Decimal-арифметика вплоть до самого
+    `int()`, D-06 через `pay_from_bank`). Иначе (в т.ч. равенство — на
+    мгновенном краше `multiplier_at(0) == crash_point == 1.00`, а
+    `1.00 < 1.00` ложно) раунд уже лопнул к моменту запроса — `payout=0`,
+    `pay_from_bank` не вызывается вовсе (нечего платить)."""
+    game_row = (
+        await session.execute(
+            select(CasinoGame)
+            .where(
+                CasinoGame.id == game_id,
+                CasinoGame.user_id == user_id,
+                CasinoGame.chat_id == chat_id,
+                CasinoGame.game == "crash",
+            )
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if game_row is None:
+        raise CasinoError(f"Раунд Crash #{game_id} не найден")
+
+    if game_row.status != "active":
+        # Гард идемпотентности: повторный кэшаут на уже settled раунде —
+        # no-op, возвращаем сохранённый исход.
+        await session.commit()
+        return _crash_view(game_row)
+
+    state = dict(game_row.state)
+    started_at = datetime.fromisoformat(state["started_at"])
+    delta = datetime.utcnow() - started_at
+    # Аудит-находка: timedelta.total_seconds() возвращает float — единственная
+    # оставшаяся float-щель в цепочке "точка краша -> прошедшее время ->
+    # множитель -> выплата", которую crash_engine.py's докстринг заявляет
+    # полностью Decimal-чистой (D-06-класса урок дайса). days/seconds/
+    # microseconds — все целые int по контракту timedelta, поэтому их сумма
+    # в Decimal точна, без единого промежуточного float.
+    elapsed = (
+        Decimal(delta.days) * 86400 + Decimal(delta.seconds) + Decimal(delta.microseconds) / 1_000_000
+    )
+    if elapsed < 0:
+        # Защита от отрицательного elapsed (напр. сдвиг системных часов между
+        # двумя utcnow()) — multiplier_at(elapsed<0) поднял бы ValueError на
+        # легитимном запросе; defense in depth, в норме не должно случаться.
+        elapsed = Decimal(0)
+
+    live_mult = crash_engine.multiplier_at(elapsed)
+    crash_point = Decimal(state["crash_point"])
+
+    if live_mult < crash_point:
+        payout = int(Decimal(game_row.bet) * live_mult)
+        paid = await economy_service.pay_from_bank(
+            session,
+            game_row.chat_id,
+            game_row.user_id,
+            payout,
+            kind="casino_payout",
+            ref_id=f"casino:crash:{game_row.id}",
+        )
+        game_row.payout = paid
+        game_row.outcome = {"result": "cashed_out", "multiplier": str(live_mult)}
+    else:
+        game_row.payout = 0
+        game_row.outcome = {"result": "busted", "multiplier": str(crash_point)}
+
+    game_row.status = "settled"
+    await session.commit()
+    return _crash_view(game_row)
+
+
+# --- Таймаут-резолвер crash (игрок не вернулся кэшаутиться) + APScheduler ----
+
+
+async def resolve_crash_timeouts(session: AsyncSession) -> int:
+    """Сканирует активные раунды Crash, чья точка краша по РЕАЛЬНОМУ
+    wall-clock времени точно уже пройдена (`now() > started_at +
+    seconds_to_reach(crash_point) + 3с буфер`), и форс-settle'ит их как
+    busted (`payout=0`) — игрок, который не вернулся кэшаутиться (закрыл
+    мини-апп/уронил сеть), теряет ставку так же, как если бы дождался
+    краша сам; ставка никогда не замораживается навсегда (тот же дух, что
+    авто-стенд блэкджека на таймауте, D-07/D-08).
+
+    3-секундный буфер защищает легитимный кэшаут-запрос, летящий В МОМЕНТ
+    краша, от гонки с этим джобом — раунд форс-settleится только когда
+    реально пройдена не только сама точка краша, но и запас времени сверху.
+
+    Кандидаты на форс-settle отбираются В ДВА ШАГА (в отличие от
+    `resolve_blackjack_timeouts`, где готовый `state.turn_deadline` уже
+    лежит в state и сравнивается прямо в SQL WHERE): здесь такого
+    предвычисленного дедлайна нет, только `crash_point`, из которого
+    дедлайн ещё нужно посчитать через `crash_engine.seconds_to_reach` —
+    проще и надёжнее сделать это ОДИН РАЗ в Python, тем же самым кодом
+    движка, что считает и сам множитель, чем задваивать формулу набором
+    сырого SQL-текста. Шаг 1 (без лока) читает ВСЕ активные раунды Crash и
+    Python-ом решает, какие реально просрочены. Шаг 2 — для каждого
+    просроченного id: свежий `SELECT ... FOR UPDATE` + ПЕРЕПРОВЕРКА статуса
+    ПОСЛЕ лока (раунд мог уже settle'иться живым `crash_cash_out` между
+    шагом 1 и этим моментом) — та же per-row try/except-continue
+    резилентность и та же защита от гонки батч-commit'ов, что
+    `resolve_blackjack_timeouts` (читай его докстринг за полным разбором,
+    почему батч-wide `FOR UPDATE` здесь намеренно не используется).
+    Возвращает число реально форс-settled раундов."""
+    rows = (
+        await session.execute(
+            select(CasinoGame.id, CasinoGame.state).where(
+                CasinoGame.game == "crash",
+                CasinoGame.status == "active",
+            )
+        )
+    ).all()
+
+    now = datetime.utcnow()
+    overdue_ids: list[int] = []
+    for game_id, state in rows:
+        crash_point = Decimal(state["crash_point"])
+        started_at = datetime.fromisoformat(state["started_at"])
+        deadline = started_at + timedelta(
+            seconds=float(crash_engine.seconds_to_reach(crash_point)) + 3
+        )
+        if now > deadline:
+            overdue_ids.append(game_id)
+
+    resolved_count = 0
+    for game_id in overdue_ids:
+        try:
+            game_row = (
+                await session.execute(
+                    select(CasinoGame).where(CasinoGame.id == game_id).with_for_update()
+                )
+            ).scalar_one_or_none()
+            if game_row is None or game_row.status != "active":
+                # Уже settle'ился (live-кэшаут игрока) между шагом 1 и этим
+                # моментом — не наш случай, no-op.
+                await session.commit()
+                continue
+
+            state = dict(game_row.state)
+            crash_point = Decimal(state["crash_point"])
+
+            game_row.payout = 0
+            game_row.outcome = {"result": "busted", "multiplier": str(crash_point)}
+            game_row.status = "settled"
+            await session.commit()
+            resolved_count += 1
+        except Exception:  # noqa: BLE001 - один застрявший раунд не должен ронять весь тик
+            logger.exception(
+                "resolve_crash_timeouts: не удалось форс-settle'ить game_id=%s", game_id
+            )
+            await session.rollback()
+
+    return resolved_count
+
+
+_CRASH_TIMEOUTS_JOB_ID = "crash_timeouts"
+
+
+def register_crash_timeouts(scheduler: AsyncIOScheduler) -> None:
+    """Регистрирует форс-settle просроченных раундов Crash как interval-job
+    (15с — раунды короткоживущие, до `CRASH_MAX_MULTIPLIER` естественный
+    максимум ожидания ~26.6с + 3с буфер, частый скан оправдан), по образцу
+    `register_blackjack_timeouts`: своя сессия, broad-except — тик обязан
+    пережить любую ошибку и не уронить планировщик."""
+
+    async def _job() -> None:
+        async with SessionLocal() as session:
+            try:
+                resolved_count = await resolve_crash_timeouts(session)
+                if resolved_count:
+                    logger.info(
+                        "crash_timeouts: форс-settle просроченных раундов — %s", resolved_count
+                    )
+            except Exception:  # noqa: BLE001 - job обязан пережить любую ошибку и не уронить планировщик
+                logger.exception("crash_timeouts: тик упал")
+
+    scheduler.add_job(
+        _job,
+        "interval",
+        seconds=15,
+        coalesce=True,
+        max_instances=1,
+        misfire_grace_time=60,
+        id=_CRASH_TIMEOUTS_JOB_ID,
         replace_existing=True,
     )

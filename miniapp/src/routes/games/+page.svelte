@@ -13,7 +13,9 @@
 
 	// Copy verbatim from 04-UI-SPEC.md/prototype — do not reword, except
 	// "Слот" (now a picker between two machines, see games/slots/+page.svelte,
-	// so its old Azumanga-specific stats no longer describe the destination).
+	// so its old Azumanga-specific stats no longer describe the destination)
+	// and "Краш" (new game, no spec copy to match — desc written to match the
+	// style of the rest: short, mechanic-first, no marketing fluff).
 	const tiles: Tile[] = [
 		{ title: 'Слоты', desc: '2 автомата на выбор', accent: 'pink', href: '/games/slots' },
 		{
@@ -29,7 +31,13 @@
 			href: '/games/blackjack'
 		},
 		{ title: 'Кости', desc: 'больше/меньше, выбери множитель', accent: 'pink', href: '/games/dice' },
-		{ title: 'Монетка', desc: 'орёл/решка, 50/50', accent: 'cyan', href: '/games/coinflip' }
+		{ title: 'Монетка', desc: 'орёл/решка, 50/50', accent: 'cyan', href: '/games/coinflip' },
+		{
+			title: 'Краш',
+			desc: 'растущий множитель — успей забрать',
+			accent: 'yellow',
+			href: '/games/crash'
+		}
 	];
 </script>
 
