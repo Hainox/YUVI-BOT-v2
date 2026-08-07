@@ -3,10 +3,25 @@ from __future__ import annotations
 from datetime import datetime
 from datetime import timedelta
 from datetime import timezone
+from decimal import Decimal
+from decimal import ROUND_HALF_UP
 import logging
 
+from sqlalchemy import insert
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from common.arena.config import ArenaConfig
+from common.arena.schemas import ArenaMatchResult
+from common.arena.schemas import FighterType
+from common.models.arena import ArenaFighterProgress
+from common.models.arena import ArenaFund
+from common.models.arena import ArenaFundLedger
+from common.models.arena import ArenaMatch
+from common.models.arena import ArenaProfile
+
 
 # Lazy import keeps pure lobby tests independent from bot runtime settings.
 class _EconomyServiceProxy:
@@ -31,9 +46,6 @@ economy_service = _EconomyServiceProxy()
 
 def _economy_service():
     return economy_service
-from common.arena.config import ArenaConfig
-from common.arena.schemas import FighterType
-from common.models.arena import ArenaMatch
 
 
 class ArenaServiceError(Exception):
@@ -412,3 +424,318 @@ async def _refund_side(
         # A prior successful refund is safe to replay; the locked match row
         # prevents two workers from trying to settle the same lifecycle.
         return
+
+
+# --- Settlement (Phase 5, FIGHTING_SPEC.md §6/§8) -----------------------
+#
+# `ArenaSessionService` (arena_session_service.py) deliberately owns no money
+# and no database transaction — its own docstring says "Phase 5 settlement
+# consumes the terminal snapshot produced here". Nothing in the repo ever
+# called that consumer: a match that reaches a decisive combat outcome (or a
+# disconnect/forfeit) had both stakes escrowed via `debit()` at create/accept
+# time, but no code path ever paid the winner, refunded a draw, or even
+# marked `ArenaMatch.status = "finished"` — the row just stays "active"
+# forever and the runtime worker re-ticks it every second, no-op, while the
+# Redis snapshot silently expires after its 2h TTL. `settle_match` below is
+# that missing consumer; `arena_runtime_worker.py` calls it right after any
+# `tick()` observes `state["terminal"]`.
+
+
+def _xp_threshold(level: int) -> int:
+    """FIGHTING_SPEC.md §8.2: XP до следующего уровня = 500 + (level-1)*100."""
+    return 500 + (level - 1) * 100
+
+
+async def _get_or_create_profile_for_update(session: AsyncSession, user_id: int) -> ArenaProfile:
+    """Get-or-create + lock a global (not chat-scoped) ArenaProfile row —
+    same insert-on-conflict-do-nothing-then-select-for-update idiom as
+    `economy_service._get_or_create_balance`."""
+    stmt = (
+        pg_insert(ArenaProfile)
+        .values(user_id=user_id)
+        .on_conflict_do_nothing(index_elements=["user_id"])
+    )
+    await session.execute(stmt)
+    return (
+        await session.execute(
+            select(ArenaProfile).where(ArenaProfile.user_id == user_id).with_for_update()
+        )
+    ).scalar_one()
+
+
+async def _get_or_create_fighter_progress_for_update(
+    session: AsyncSession, profile_id: int, fighter_type: str
+) -> ArenaFighterProgress:
+    stmt = (
+        pg_insert(ArenaFighterProgress)
+        .values(profile_id=profile_id, fighter_type=fighter_type)
+        .on_conflict_do_nothing(
+            index_elements=["profile_id", "fighter_type"]
+        )
+    )
+    await session.execute(stmt)
+    return (
+        await session.execute(
+            select(ArenaFighterProgress).where(
+                ArenaFighterProgress.profile_id == profile_id,
+                ArenaFighterProgress.fighter_type == fighter_type,
+            ).with_for_update()
+        )
+    ).scalar_one()
+
+
+async def _grant_fighter_xp(
+    session: AsyncSession, profile: ArenaProfile, fighter_type: str, xp_gained: int
+) -> None:
+    if xp_gained <= 0:
+        return
+    progress = await _get_or_create_fighter_progress_for_update(session, profile.id, fighter_type)
+    progress.xp += xp_gained
+    while progress.level < _CONFIG.max_fighter_level:
+        threshold = _xp_threshold(progress.level)
+        if progress.xp < threshold:
+            break
+        progress.xp -= threshold
+        progress.level += 1
+
+
+async def _credit_arena_fund(
+    session: AsyncSession,
+    chat_id: int,
+    amount: int,
+    *,
+    kind: str,
+    idempotency_key: str,
+    match_id: int | None = None,
+) -> bool:
+    """Idempotent credit into the per-chat ArenaFund + append-only
+    ArenaFundLedger audit row (FIGHTING_SPEC.md §12 admin/audit requirement).
+    Mirrors `economy_service.credit_bank`'s single-statement upsert shape —
+    ArenaFund is Arena's own fee destination, separate from the shared
+    `chat_bank` (spec §6.2: fee splits 2.5%/2.5% between the two)."""
+    try:
+        async with session.begin_nested():
+            stmt = (
+                pg_insert(ArenaFund)
+                .values(chat_id=chat_id, balance=amount)
+                .on_conflict_do_update(
+                    index_elements=["chat_id"], set_={"balance": ArenaFund.balance + amount}
+                )
+                .returning(ArenaFund.balance)
+            )
+            new_balance = (await session.execute(stmt)).scalar_one()
+            await session.execute(
+                insert(ArenaFundLedger).values(
+                    chat_id=chat_id,
+                    amount=amount,
+                    balance_after=new_balance,
+                    kind=kind,
+                    idempotency_key=idempotency_key,
+                    match_id=match_id,
+                )
+            )
+    except IntegrityError:
+        logger.info(
+            "_credit_arena_fund: idempotency_key=%s (kind=%s) уже применён, пропускаем",
+            idempotency_key,
+            kind,
+        )
+        return False
+    return True
+
+
+async def _record_match_stats(session: AsyncSession, match: ArenaMatch, *, result: str) -> None:
+    """Updates ArenaProfile (rating + counters) and ArenaFighterProgress
+    (XP/level) for both sides of a decisively-settled ("win"/"technical_loss")
+    or drawn match. Never called for the both-disconnected refund path — the
+    spec attaches no rating/XP consequence to a match that never really
+    happened (same treatment as a pre-active `cancel_match`/`expire_match`,
+    neither of which touch ArenaProfile either)."""
+    creator_id, opponent_id = match.creator_id, match.opponent_id
+    # Consistent lock order (ascending user_id) — Pattern 1 (rows locked in a
+    # fixed global order) — so two matches settling concurrently that happen
+    # to share a player can't deadlock against each other.
+    first_id, second_id = sorted((creator_id, opponent_id))
+    profiles = {
+        first_id: await _get_or_create_profile_for_update(session, first_id),
+        second_id: await _get_or_create_profile_for_update(session, second_id),
+    }
+    creator_profile, opponent_profile = profiles[creator_id], profiles[opponent_id]
+
+    if result == "draw":
+        for profile, fighter_type in (
+            (creator_profile, match.creator_fighter),
+            (opponent_profile, match.opponent_fighter),
+        ):
+            profile.total_matches += 1
+            profile.draws += 1
+            await _grant_fighter_xp(session, profile, fighter_type, _CONFIG.base_match_xp)
+        return
+
+    winner_profile = profiles[match.winner_id]
+    loser_profile = profiles[match.loser_id]
+    winner_fighter = (
+        match.creator_fighter if match.winner_id == creator_id else match.opponent_fighter
+    )
+    loser_fighter = (
+        match.creator_fighter if match.loser_id == creator_id else match.opponent_fighter
+    )
+
+    winner_profile.total_matches += 1
+    winner_profile.wins += 1
+    winner_profile.rating += _CONFIG.win_rating_delta
+    if result == "technical_loss":
+        winner_profile.technical_wins += 1
+    if match.result_reason == "knockout":
+        winner_profile.knockouts += 1
+    await _grant_fighter_xp(
+        session, winner_profile, winner_fighter, _CONFIG.base_match_xp + _CONFIG.win_bonus_xp
+    )
+
+    loser_profile.total_matches += 1
+    loser_xp = 0
+    if result == "technical_loss":
+        loser_profile.technical_losses += 1
+        loser_profile.rating = max(0, loser_profile.rating - _CONFIG.technical_loss_rating_delta)
+    else:
+        loser_profile.losses += 1
+        loser_profile.rating = max(0, loser_profile.rating - _CONFIG.loss_rating_delta)
+        loser_xp = _CONFIG.base_match_xp
+    await _grant_fighter_xp(session, loser_profile, loser_fighter, loser_xp)
+
+
+async def settle_match(
+    session: AsyncSession,
+    chat_id: int,
+    match_id: int,
+    runtime_state: dict,
+    *,
+    now: datetime | None = None,
+) -> ArenaMatch:
+    """Atomically settles one terminal Arena match — the Phase 5 consumer
+    `ArenaSessionService`'s docstring points to (see module-level comment
+    above). `runtime_state` is the terminal Redis snapshot the caller already
+    holds (`ArenaSessionService.tick`/`submit_action`/`forfeit`'s return
+    value) — this function never talks to Redis itself, preserving that
+    service's "owns no money" boundary.
+
+    Three branches, per FIGHTING_SPEC.md §6.2/§7/§8:
+    - `refund_required` (both players disconnected): full refund to both
+      sides, no fee, no rating/XP change.
+    - `result == "draw"`: full refund to both sides, no fee (spec §6.2), but
+      both sides still get draw XP (spec §8.2 lists "PvP-ничья: 100 XP").
+    - `result in ("win", "technical_loss")`: winner gets
+      `pot - 5% fee` (fee split 2.5%/2.5% between chat_bank and the
+      per-chat ArenaFund), loser gets nothing; both sides' rating/XP update
+      per §8.
+
+    Idempotent: `settlement_status != "pending"` is a same-row no-op
+    returning the already-settled match (roadmap Phase 5 requirement
+    "повторный settle возвращает сохранённый результат") — safe to call
+    repeatedly from a 1-second tick loop that may observe the same terminal
+    match more than once before this function's own commit lands.
+
+    No internal try/except-rollback here — same shape as `accept_duel`/
+    `accept_autobattle` (which also do several money-moving calls before a
+    single final commit): on an unexpected mid-function failure, the
+    exception propagates raw and the CALLER's session lifecycle decides what
+    happens to the uncommitted work (a real `SessionLocal()` block discards
+    it on close; wrapping here would additionally roll back whatever the
+    caller had already committed earlier in the same test/request
+    transaction, which is a documented false failure mode this repo hit
+    before — see test_duel_service.py's
+    test_accept_duel_payout_failure_after_rng_does_not_fabricate_or_double_charge
+    docstring for the full explanation).
+    """
+    match = await _get_match_for_update(session, chat_id, match_id)
+    if match.settlement_status != "pending" or match.status != "active":
+        await session.commit()
+        return match
+
+    current_time = _now(now)
+    idempotency_key = f"arena:match:{match_id}:settle"
+
+    if runtime_state.get("refund_required"):
+        await _refund_side(session, match, match.creator_id, match.creator_bet, "creator")
+        if match.opponent_id is not None and match.opponent_bet is not None:
+            await _refund_side(session, match, match.opponent_id, match.opponent_bet, "opponent")
+        match.status = "finished"
+        match.settlement_status = "refunded"
+        match.result_reason = runtime_state.get("reason")
+        match.resolved_at = current_time
+        match.finished_at = current_time
+        await session.commit()
+        return match
+
+    result = runtime_state.get("result")
+    winner_id = runtime_state.get("winner_id")
+    loser_id = runtime_state.get("loser_id")
+    reason = runtime_state.get("reason")
+
+    if result == ArenaMatchResult.DRAW.value:
+        await _refund_side(session, match, match.creator_id, match.creator_bet, "creator")
+        await _refund_side(session, match, match.opponent_id, match.opponent_bet, "opponent")
+        match.match_result = "draw"
+        match.result_reason = reason
+        match.status = "finished"
+        match.settlement_status = "refunded"
+        match.resolved_at = current_time
+        match.finished_at = current_time
+        await _record_match_stats(session, match, result="draw")
+        await session.commit()
+        return match
+
+    if (
+        result in (ArenaMatchResult.WIN.value, ArenaMatchResult.TECHNICAL_LOSS.value)
+        and winner_id is not None
+        and loser_id is not None
+    ):
+        pot = match.creator_bet + (match.opponent_bet or 0)
+        fee_total = int(
+            (Decimal(pot) * _CONFIG.fee_percent / Decimal(100)).quantize(
+                Decimal("1"), rounding=ROUND_HALF_UP
+            )
+        )
+        fee_fund = fee_total // 2
+        fee_chat = fee_total - fee_fund
+        payout = pot - fee_total
+
+        await _economy_service().credit(
+            session, chat_id, winner_id, payout, kind="arena_match_payout", ref_id=idempotency_key
+        )
+        await _economy_service().credit_bank(
+            session, chat_id, fee_chat, kind="arena_match_fee", ref_id=f"{idempotency_key}:chat_fee"
+        )
+        await _credit_arena_fund(
+            session,
+            chat_id,
+            fee_fund,
+            kind="arena_match_fee",
+            idempotency_key=f"{idempotency_key}:fund_fee",
+            match_id=match.id,
+        )
+
+        match.match_result = result
+        match.winner_id = winner_id
+        match.loser_id = loser_id
+        match.result_reason = reason
+        match.status = "finished"
+        match.settlement_status = "paid"
+        match.settlement_idempotency_key = idempotency_key
+        match.payout_amount = payout
+        match.fee_chat = fee_chat
+        match.fee_fund = fee_fund
+        match.resolved_at = current_time
+        match.finished_at = current_time
+        await _record_match_stats(session, match, result=result)
+        await session.commit()
+        return match
+
+    # Terminal Redis state that matches none of the three documented
+    # shapes ArenaSessionService ever produces — fail loudly rather than
+    # guess at a money-moving default (T-04.1-style discipline: never
+    # fabricate an outcome).
+    raise ArenaServiceError(
+        f"Матч #{match_id}: нераспознанное терминальное состояние "
+        f"(result={result!r}, refund_required={runtime_state.get('refund_required')!r})"
+    )
