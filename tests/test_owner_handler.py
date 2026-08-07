@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy import select
 
 import bot.handlers.owner as owner_handlers
 from bot.config import settings
@@ -18,6 +19,7 @@ from bot.services import changelog_service
 from bot.services import economy_service
 from bot.services import jackpot_service
 from bot.services import lurker_service
+from common.models.slot_jackpot import SlotJackpot
 from common.models.user import User
 
 
@@ -466,3 +468,107 @@ async def test_test_lurker_reports_empty_llm_response(session, monkeypatch):
 
     message.answer.assert_awaited_once()
     assert "пуст" in message.answer.await_args.args[0].lower()
+
+
+# --- /jackpot_event --------------------------------------------------------------
+
+
+async def _get_jackpot_row(session, chat_id: int) -> SlotJackpot | None:
+    return (
+        await session.execute(select(SlotJackpot).where(SlotJackpot.chat_id == chat_id))
+    ).scalar_one_or_none()
+
+
+@pytest.mark.asyncio
+async def test_jackpot_event_refuses_non_owner(session):
+    chat_id = -100930016
+    non_owner_id = 930040
+    assert non_owner_id != settings.owner_id
+    await _ensure_user(session, non_owner_id, "Не владелец")
+
+    message = _fake_message(chat_id, non_owner_id, "Не владелец", "/jackpot_event")
+    await owner_handlers.jackpot_event_command(message, session)
+
+    message.reply.assert_awaited_once()
+    assert "владельцу" in message.reply.await_args.args[0].lower()
+    message.answer.assert_not_awaited()
+    assert await _get_jackpot_row(session, chat_id) is None
+
+
+@pytest.mark.asyncio
+async def test_jackpot_event_no_args_defaults_to_100_spins_for_owner(session, monkeypatch):
+    monkeypatch.setattr(settings, "owner_id", 930041)
+    chat_id = -100930017
+    await _ensure_user(session, 930041, "Владелец")
+
+    message = _fake_message(chat_id, 930041, "Владелец", "/jackpot_event")
+    await owner_handlers.jackpot_event_command(message, session)
+
+    message.answer.assert_awaited_once()
+    text = message.answer.await_args.args[0]
+    assert "100" in text
+    assert jackpot_service.EVENT_NAME in text
+
+    row = await _get_jackpot_row(session, chat_id)
+    assert row is not None
+    assert row.event_spins_remaining == 100
+
+
+@pytest.mark.asyncio
+async def test_jackpot_event_explicit_spins_for_owner(session, monkeypatch):
+    monkeypatch.setattr(settings, "owner_id", 930042)
+    chat_id = -100930018
+    await _ensure_user(session, 930042, "Владелец")
+
+    message = _fake_message(chat_id, 930042, "Владелец", "/jackpot_event 250")
+    await owner_handlers.jackpot_event_command(message, session)
+
+    message.answer.assert_awaited_once()
+    text = message.answer.await_args.args[0]
+    assert "250" in text
+
+    row = await _get_jackpot_row(session, chat_id)
+    assert row.event_spins_remaining == 250
+
+
+@pytest.mark.asyncio
+async def test_jackpot_event_invalid_args_gives_usage_hint_and_touches_nothing(session, monkeypatch):
+    monkeypatch.setattr(settings, "owner_id", 930043)
+    chat_id = -100930019
+    await _ensure_user(session, 930043, "Владелец")
+
+    # "--5"/"---3" — регресс, найденный ревью 2026-08-07:
+    # `.lstrip("-").isdigit()` ошибочно пропускал их (лишние минусы
+    # схлопывались), а `int("--5")` падал необработанным ValueError.
+    for bad_args in [
+        "/jackpot_event 0",
+        "/jackpot_event -5",
+        "/jackpot_event --5",
+        "/jackpot_event ---3",
+        "/jackpot_event abc",
+        "/jackpot_event 1 2",
+    ]:
+        message = _fake_message(chat_id, 930043, "Владелец", bad_args)
+        await owner_handlers.jackpot_event_command(message, session)
+        message.answer.assert_awaited_once()
+        assert "Использование" in message.answer.await_args.args[0]
+
+    assert await _get_jackpot_row(session, chat_id) is None
+
+
+@pytest.mark.asyncio
+async def test_jackpot_event_restarting_overrides_previous_count(session, monkeypatch):
+    """Владелец сам решает перезапустить ивент — команда не отказывает,
+    просто перезаписывает remaining новым значением (см. докстринг
+    jackpot_service.start_event)."""
+    monkeypatch.setattr(settings, "owner_id", 930044)
+    chat_id = -100930020
+    await _ensure_user(session, 930044, "Владелец")
+
+    first = _fake_message(chat_id, 930044, "Владелец", "/jackpot_event 100")
+    await owner_handlers.jackpot_event_command(first, session)
+    assert (await _get_jackpot_row(session, chat_id)).event_spins_remaining == 100
+
+    second = _fake_message(chat_id, 930044, "Владелец", "/jackpot_event 30")
+    await owner_handlers.jackpot_event_command(second, session)
+    assert (await _get_jackpot_row(session, chat_id)).event_spins_remaining == 30

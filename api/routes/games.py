@@ -544,7 +544,14 @@ def _load_jackpot_gif() -> bytes:
 
 
 async def _announce_jackpot_win(
-    request: Request, session, chat_id: int, user_id: int, amount: int, pool_after: int
+    request: Request,
+    session,
+    chat_id: int,
+    user_id: int,
+    amount: int,
+    pool_after: int,
+    *,
+    event_win: bool = False,
 ) -> None:
     """Публикует срыв джекпота слота в чат — гифка + подпись с именем
     победителя и суммой (CASINO-06). Best-effort, та же дисциплина, что
@@ -552,12 +559,18 @@ async def _announce_jackpot_win(
     Telegram, отсутствующий файл на диске) НЕ должно откатывать уже
     совершённую и закоммиченную выплату — вызывается ПОСЛЕ `_play_slots`
     успешно вернул(а) `won=True`, деньги уже у игрока независимо от исхода
-    этого вызова."""
+    этого вызова.
+
+    `event_win` — прокинутый `jackpot_service.contribute_and_maybe_award`'s
+    `jackpot["event_win"]` (см. его докстринг) — переключает подпись на
+    ивент-формулировку ("ГИФТЕКИ ОТ ОСАКИ")."""
     name = (
         await session.execute(select(User.first_name).where(User.id == user_id))
     ).scalar_one_or_none() or str(user_id)
 
-    caption = jackpot_service.build_announcement_caption(html.escape(name), amount, pool_after)
+    caption = jackpot_service.build_announcement_caption(
+        html.escape(name), amount, pool_after, event=event_win
+    )
     try:
         gif_bytes = _load_jackpot_gif()
     except OSError:
@@ -605,10 +618,24 @@ async def post_slots(
         result["user_balance_after"] = balance
 
         jackpot = result.get("jackpot")
-        if jackpot and jackpot.get("won") and jackpot.get("amount", 0) > 0:
-            await _announce_jackpot_win(
-                request, session, auth.chat_id, auth.user_id, jackpot["amount"], jackpot["pool"]
-            )
+        if jackpot and jackpot.get("won"):
+            event_win = bool(jackpot.get("event_win"))
+            # Обычный (не-ивентный) джекпот с нулевой выплатой (банк был
+            # пуст в момент срыва) молчит, как и раньше — не новость. Ивент
+            # обязан объявиться ВСЕГДА, даже с нулевой выплатой (см.
+            # докстринг build_announcement_caption) — иначе он тихо "сгорал"
+            # бы без единого слова в чате, а весь смысл ивента в том, чтобы
+            # его исход был публично виден.
+            if jackpot.get("amount", 0) > 0 or event_win:
+                await _announce_jackpot_win(
+                    request,
+                    session,
+                    auth.chat_id,
+                    auth.user_id,
+                    jackpot["amount"],
+                    jackpot["pool"],
+                    event_win=event_win,
+                )
 
         return result
 
