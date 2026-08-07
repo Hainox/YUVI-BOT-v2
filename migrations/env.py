@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from common.db.base import Base
 from common.models import active_title  # noqa: F401
+from common.models import arena  # noqa: F401
 from common.models import bet  # noqa: F401
 from common.models import bot_setting  # noqa: F401
 from common.models import casino_game  # noqa: F401

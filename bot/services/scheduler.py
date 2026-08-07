@@ -92,6 +92,8 @@ def setup_jobs(bot: Bot) -> None:
     эти модули появились в более поздних планах, чем изначальный (пустой)
     setup_jobs плана 01.
     """
+    from bot.services import arena_runtime_worker
+    from bot.services import arena_service
     from bot.services import awards_service
     from bot.services import casino_service
     from bot.services import clicker_service
@@ -121,6 +123,8 @@ def setup_jobs(bot: Bot) -> None:
     lurker_service.register_daily_roast(scheduler, bot)
     daily_twin_service.register_daily_twin_tick(scheduler, bot)
     exchange_service.register_stuck_alert(scheduler, bot)
+    arena_service.register_expiry_job(scheduler)
+    arena_runtime_worker.register_runtime_tick(scheduler)
 
     async def _digest_job() -> None:
         await digest_service.run_daily_digest(bot)
