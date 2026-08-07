@@ -64,6 +64,7 @@
 		{ title: 'Ферма', desc: 'тапай, копи CP, качай апгрейды', accent: 'cyan', href: '/farm' },
 		{ title: 'Квесты', desc: 'ежедневные задания и достижения', accent: 'yellow', href: '/quests' },
 		{ title: 'Дуэль', desc: 'вызови кого-нибудь на бабки', accent: 'pink', href: '/duel' },
+		{ title: 'Автобитва', desc: 'PvP на гача-коллекции — сила решает, но не гарантирует', accent: 'yellow', href: '/autobattle' },
 		{ title: 'Рынки', desc: 'ставь на исход, следи за котировкой', accent: 'cyan', href: '/markets' },
 		{ title: 'Биржа', desc: 'продай ювики за что угодно — вне бота', accent: 'cyan', href: '/exchange' },
 		{ title: 'Портфолио', desc: 'твои открытые позиции', accent: 'yellow', href: '/portfolio' },
