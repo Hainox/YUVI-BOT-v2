@@ -236,6 +236,11 @@
 		</div>
 	</div>
 
+	<button type="button" class="training-link" onclick={() => goto('/arena/training')}>
+		<span class="training-link-title">Тренировка против AI</span>
+		<span class="training-link-sub">без ставок, без рейтинга — потренируй все 4 стиля боя</span>
+	</button>
+
 	<section class="arena-panel" aria-labelledby="create-title">
 		<div class="section-heading">
 			<div>
@@ -458,6 +463,30 @@
 		line-height: 1.5;
 		color: var(--text-muted);
 		margin-top: var(--space-xs);
+	}
+	.training-link {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		padding: var(--space-md);
+		background: var(--bg-secondary-2);
+		border: 1px dashed var(--accent-cyan);
+		border-radius: 14px;
+		text-align: left;
+		cursor: pointer;
+	}
+	.training-link:active {
+		transform: scale(0.99);
+	}
+	.training-link-title {
+		font-family: var(--font-chrome);
+		font-size: var(--font-heading-size);
+		color: var(--accent-cyan);
+	}
+	.training-link-sub {
+		font-family: var(--font-body);
+		font-size: 12px;
+		color: var(--text-muted);
 	}
 	.arena-panel {
 		padding: var(--space-md);
