@@ -879,3 +879,23 @@ async def post_crash_cashout(
         result["bank_capped"] = result.get("payout", 0) < fair_payout
 
         return result
+
+
+@router.get("/api/v1/games/crash/{game_id}")
+async def get_crash_peek(
+    game_id: int,
+    auth: AuthContext = Depends(require_membership),
+) -> dict:
+    """Read-only опрос для клиентского polling (см. докстринг
+    `casino_service.peek_crash`) — единственный GET-роут в crash-секции,
+    намеренно НИКОГДА не платит и не settle'ит: не публикует
+    `balance_events`, не считает `bank_capped`, в отличие от start/cashout
+    выше (там всегда есть либо реальное денежное движение, либо его
+    гарантированное отсутствие уже ПОСЛЕ settle; здесь settle не бывает
+    вообще ни на одном пути)."""
+    async with SessionLocal() as session:
+        try:
+            return await casino_service.peek_crash(session, auth.chat_id, game_id, auth.user_id)
+        except casino_service.CasinoError as exc:
+            # Тот же IDOR-паттерн 404 (не 403), что у cashout выше.
+            raise HTTPException(status_code=404, detail=str(exc)) from exc

@@ -20,6 +20,16 @@
 	// real response snaps it straight (see _applySettled below) — never a
 	// wrong payout, because no payout math happens here at all.
 	//
+	// Peek polling (_peek/_startPeekPolling below): a THIRD, read-only
+	// request kind alongside start/cashOut — GET /games/crash/{id}
+	// (casino_service.peek_crash) never settles or pays, it only answers
+	// "has real elapsed time already passed the hidden crash_point?". Exists
+	// because the cosmetic ticker above has no way to know that on its own
+	// (crash_point stays hidden while active); on a "yes" the client fires
+	// the REAL cashOut() to actually settle. Still fully D-03-compliant —
+	// this is purely "when did the server-authoritative outcome happen",
+	// never a second source of payout truth.
+	//
 	// Balance hold (lib/balance.ts): unlike blackjack/dice/roulette (which
 	// release the hold immediately once an action leaves them in a
 	// non-settled state, because nothing about their "still in progress"
@@ -50,11 +60,30 @@
 	const CRASH_GROWTH_RATE = 0.173; // e^(0.173*t) -> 2x at t≈4.0066s
 	const CRASH_MAX_MULTIPLIER = 100;
 
+	// Rising-graph readout dimensions (SVG viewBox units, arbitrary but fixed
+	// so path math below is simple). Purely decorative, same "COSMETIC ONLY"
+	// discipline as liveMultiplier itself — never read for payout.
+	const GRAPH_W = 300;
+	const GRAPH_H = 130;
+	const GRAPH_SAMPLES = 48;
+
 	// Settle-then-reveal pause before the win/bust panel appears — same
 	// "SETTLE_MS"-style idiom as games/dice's SETTLE_MS (its +page.svelte),
 	// same value, so cashing out reads with the same weight as any other
 	// instant-result game's payoff beat.
 	const SETTLE_MS = 650;
+
+	// Bug 2026-08-07 (Михаил): the cosmetic ticker above has ZERO way to know
+	// the round already busted server-side — crash_point stays hidden while
+	// active (see casino_service._crash_view), so the number just kept
+	// climbing for however long the player watched, and they only learned
+	// the round was long over when they finally tapped ЗАБРАТЬ. Polling
+	// GET /games/crash/{id} (casino_service.peek_crash — strictly read-only,
+	// never settles/pays) closes that gap: every PEEK_POLL_MS we ask the
+	// server "already busted?" and, if so, immediately fire the REAL
+	// cashOut() so the screen freezes/explodes near the actual moment
+	// instead of only on manual tap.
+	const PEEK_POLL_MS = 500;
 
 	function prefersReducedMotion(): boolean {
 		return typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -96,12 +125,25 @@
 	// Cosmetic ticker state ONLY — never read by start()/cashOut(), never
 	// feeds a request body. `liveMultiplier` is what's rendered; `clientStartMs`
 	// is the local performance.now() anchor captured the instant start()'s
-	// response arrived (deliberately NOT the server's `started_at` — this
-	// loop never talks to the server again until the player cashes out).
+	// response arrived (deliberately NOT the server's `started_at` — the
+	// ticker itself stays purely client-side math; only the separate peek
+	// poll below talks to the server mid-round, and only to ask "already
+	// busted?", never to sync this anchor).
 	let liveMultiplier = $state(1);
 	let clientStartMs: number | null = null;
 	let rafId: number | null = null;
 	let settleTimer: ReturnType<typeof setTimeout> | null = null;
+	let peekTimer: ReturnType<typeof setInterval> | null = null;
+
+	// Rising-graph curve, recomputed from scratch every tick (same growth
+	// formula as liveMultiplier, sampled GRAPH_SAMPLES times across
+	// [0, elapsedSec]) — no history buffer to maintain, just re-sample the
+	// deterministic curve each frame. Freezes naturally once _tick() stops
+	// (phase leaves 'active'), same as liveMultiplier itself.
+	let graphPathD = $state(`M 0 ${GRAPH_H} L 0 ${GRAPH_H}`);
+	let graphAreaD = $state(`M 0 ${GRAPH_H} L 0 ${GRAPH_H} Z`);
+	let graphTipX = $state(0);
+	let graphTipY = $state(GRAPH_H);
 
 	function _tick() {
 		if (phase !== 'active' || clientStartMs === null) {
@@ -116,7 +158,47 @@
 		// number ticks in the same discrete steps the real curve would,
 		// not because this value is ever compared against anything.
 		liveMultiplier = Math.floor(capped * 100) / 100;
+		_buildGraphPath(elapsedSec, capped);
 		rafId = requestAnimationFrame(_tick);
+	}
+
+	// Re-samples the SAME growth curve liveMultiplier reads, at GRAPH_SAMPLES
+	// points across [0, elapsedSec], into an SVG path — a rising line/area
+	// chart instead of just a bare number. Y axis auto-scales to the current
+	// multiplier (with 15% headroom) so the curve always fills the frame
+	// instead of flattening out near the bottom as the round goes on.
+	function _buildGraphPath(elapsedSec: number, currentMult: number) {
+		if (elapsedSec <= 0) {
+			graphPathD = `M 0 ${GRAPH_H} L 0 ${GRAPH_H}`;
+			graphAreaD = `M 0 ${GRAPH_H} L 0 ${GRAPH_H} Z`;
+			graphTipX = 0;
+			graphTipY = GRAPH_H;
+			return;
+		}
+		const yRange = Math.max(currentMult - 1, 0.5) * 1.15;
+		const segments: string[] = [];
+		let tipX = 0;
+		let tipY = GRAPH_H;
+		for (let i = 0; i <= GRAPH_SAMPLES; i++) {
+			const t = (elapsedSec * i) / GRAPH_SAMPLES;
+			const m = Math.min(Math.exp(CRASH_GROWTH_RATE * t), CRASH_MAX_MULTIPLIER);
+			const x = (t / elapsedSec) * GRAPH_W;
+			const y = GRAPH_H - ((m - 1) / yRange) * GRAPH_H;
+			segments.push(`${x.toFixed(1)} ${y.toFixed(1)}`);
+			tipX = x;
+			tipY = y;
+		}
+		graphPathD = 'M ' + segments.join(' L ');
+		graphAreaD = `${graphPathD} L ${GRAPH_W} ${GRAPH_H} L 0 ${GRAPH_H} Z`;
+		graphTipX = tipX;
+		graphTipY = tipY;
+	}
+
+	function _resetGraph() {
+		graphPathD = `M 0 ${GRAPH_H} L 0 ${GRAPH_H}`;
+		graphAreaD = `M 0 ${GRAPH_H} L 0 ${GRAPH_H} Z`;
+		graphTipX = 0;
+		graphTipY = GRAPH_H;
 	}
 
 	function _startTicker() {
@@ -138,15 +220,70 @@
 		}
 	}
 
+	// GET peek — strictly read-only on the server (casino_service.peek_crash
+	// never opens a FOR UPDATE lock, never commits, never pays), so calling
+	// it on a timer carries none of the risk a periodic cashOut() call would
+	// (that WOULD lock in a payout at whatever multiplier the timer happened
+	// to land on, ending the round the player never asked to end). Guarded
+	// on `cashingOut` so an in-flight cashOut() — whether from a manual tap
+	// or from a previous poll's own bust detection below — never overlaps
+	// with another poll tick; the guard on `phase === 'active'` inside
+	// _peek() itself (not just here) covers the tick that's already queued
+	// in the event loop when settle lands mid-interval.
+	function _startPeekPolling() {
+		_stopPeekPolling();
+		peekTimer = setInterval(_peek, PEEK_POLL_MS);
+	}
+
+	function _stopPeekPolling() {
+		if (peekTimer !== null) {
+			clearInterval(peekTimer);
+			peekTimer = null;
+		}
+	}
+
+	async function _peek() {
+		if (phase !== 'active' || gameId === null || cashingOut) return;
+		// Snapshot which round this request is FOR — apiFetch has a 15s hard
+		// timeout (lib/api.ts), so on a slow connection this GET can still be
+		// in flight after the round settles for real (manual tap, a different
+		// tick's own auto-cashout below) or even after the player starts a
+		// whole NEW round (gameId changes). Re-checked after the await,
+		// before touching any state — without this, a stale response for a
+		// round that's no longer "current" could apply ITS outcome onto
+		// (or auto-cash-out) whatever round the player has moved on to,
+		// silently ending it without their say-so.
+		const requestedGameId = gameId;
+		try {
+			const res = await apiFetch<CrashView & { pending_bust?: boolean }>(
+				`/api/v1/games/crash/${requestedGameId}`
+			);
+			if (gameId !== requestedGameId || phase !== 'active') return;
+			if (res.status !== 'active') {
+				// Someone/something else already settled it for real (a race
+				// with the timeout job, most likely) — apply that outcome
+				// directly, no need for a redundant cashOut() round-trip.
+				_applySettled(res);
+			} else if (res.pending_bust) {
+				// Server clock says elapsed time already passed crash_point,
+				// but the row itself is still "active" (nobody's called
+				// cashOut() yet) — do that now so it's ACTUALLY settled
+				// (idempotent, safe if it races a manual tap of ЗАБРАТЬ).
+				await cashOut();
+			}
+			// else: genuinely still active, nothing to do — ticker keeps climbing.
+		} catch {
+			// Silent — this is a background heartbeat, not a user action; a
+			// dropped poll just retries on the next tick, same spirit as the
+			// cosmetic ticker itself never surfacing an error banner.
+		}
+	}
+
 	// Informational mirror only (same spirit as dice's client-side `mult`
 	// readout) — bet*liveMultiplier off the COSMETIC number, shown so the
 	// player has a sense of what tapping ЗАБРАТЬ right now would roughly be
 	// worth. The real payout is whatever cashOut()'s response says, always.
 	const potentialPayout = $derived(Math.floor(roundBet * liveMultiplier));
-	// 0-100% climb indicator for the meter bar, log-shaped so early growth
-	// (where most rounds actually end) still reads as visible movement —
-	// caps at 10x, purely decorative.
-	const meterPct = $derived(Math.min(100, ((liveMultiplier - 1) / 9) * 100));
 
 	function _applyStart(v: CrashView) {
 		gameId = v.id;
@@ -159,9 +296,11 @@
 		busted = false;
 		resultVisible = false;
 		liveMultiplier = 1;
+		_resetGraph();
 		phase = 'active';
 		clientStartMs = performance.now();
 		_startTicker();
+		_startPeekPolling();
 	}
 
 	function _applySettled(v: CrashView) {
@@ -173,6 +312,7 @@
 		cashedOutMultiplier = v.cashed_out_multiplier ? parseFloat(v.cashed_out_multiplier) : null;
 		busted = outcome?.result === 'busted';
 		_stopTicker();
+		_stopPeekPolling();
 		// Snap the displayed number to the server's actual truth — never leave
 		// it wherever the local cosmetic loop happened to be sitting when this
 		// landed. Covers BOTH ways busted can be discovered (cashed out too
@@ -274,11 +414,13 @@
 		busted = false;
 		resultVisible = false;
 		liveMultiplier = 1;
+		_resetGraph();
 		error = null;
 	}
 
 	onDestroy(() => {
 		_stopTicker();
+		_stopPeekPolling();
 		_clearSettleTimer();
 		// Screen navigated away mid-round (active, or between cashOut()'s
 		// response and its own settle-reveal timer firing) — don't leave the
@@ -288,6 +430,13 @@
 		holdBalanceUpdates(false);
 	});
 </script>
+
+<svelte:head>
+	<!-- Rounds are short (few seconds) — preload both loop clips so playback
+	     is instant instead of waiting on a fetch the first time each is shown. -->
+	<link rel="preload" as="video" href="/casino/crash-active-bg.mp4" />
+	<link rel="preload" as="video" href="/casino/crash-result.mp4" />
+</svelte:head>
 
 <div class="crash-screen">
 	<div class="menu-head">
@@ -299,33 +448,89 @@
 		<div
 			class={`crash-table ${phase === 'settled' && resultVisible ? (busted ? 'crash-table-lose' : 'crash-table-win') : ''}`}
 		>
-			<div
-				class={`crash-readout
-					${phase === 'active' ? 'crash-readout-active' : ''}
-					${phase === 'settled' && resultVisible && busted ? 'crash-readout-busted' : ''}
-					${phase === 'settled' && resultVisible && !busted ? 'crash-readout-win' : ''}`}
-			>
-				×{liveMultiplier.toFixed(2)}
-			</div>
-			<div class="crash-readout-sub">
-				{#if phase === 'active'}
-					потенциальный выигрыш {potentialPayout}¥
-				{:else if phase === 'settled' && resultVisible}
-					{busted
-						? `сгорело на ×${(crashPoint ?? 0).toFixed(2)}`
-						: `забрано на ×${(cashedOutMultiplier ?? 0).toFixed(2)}`}
-				{/if}
-			</div>
 			{#if phase === 'active'}
-				<div class="crash-meter">
-					<div class="crash-meter-fill" style={`width:${meterPct}%`}></div>
-				</div>
+				<!-- Purely decorative loop, muted/no audio track — never gates
+				     gameplay, never read for anything (same COSMETIC discipline as
+				     the graph/ticker below). -->
+				<video
+					class="crash-bg-video"
+					src="/casino/crash-active-bg.mp4"
+					autoplay
+					muted
+					loop
+					playsinline
+					aria-hidden="true"
+				></video>
 			{/if}
+			<div class="crash-table-fg">
+				<div
+					class={`crash-readout
+						${phase === 'active' ? 'crash-readout-active' : ''}
+						${phase === 'settled' && resultVisible && busted ? 'crash-readout-busted' : ''}
+						${phase === 'settled' && resultVisible && !busted ? 'crash-readout-win' : ''}`}
+				>
+					×{liveMultiplier.toFixed(2)}
+				</div>
+				<div class="crash-readout-sub">
+					{#if phase === 'active'}
+						потенциальный выигрыш {potentialPayout}¥
+					{:else if phase === 'settled' && resultVisible}
+						{busted
+							? `сгорело на ×${(crashPoint ?? 0).toFixed(2)}`
+							: `забрано на ×${(cashedOutMultiplier ?? 0).toFixed(2)}`}
+					{/if}
+				</div>
+				<!-- Rising-line graph — re-sampled from the same growth curve
+				     liveMultiplier reads (see _buildGraphPath), never a separate
+				     source of truth. Stays visible (frozen at its last frame)
+				     through the settle reveal too, so the shape of the round that
+				     just happened remains on screen. -->
+				<svg
+					class="crash-graph"
+					viewBox={`0 0 ${GRAPH_W} ${GRAPH_H}`}
+					preserveAspectRatio="none"
+					aria-hidden="true"
+				>
+					<defs>
+						<linearGradient id="crashGraphFill" x1="0" y1="0" x2="0" y2="1">
+							<stop offset="0%" class="crash-graph-stop-start" />
+							<stop offset="100%" class="crash-graph-stop-end" />
+						</linearGradient>
+					</defs>
+					<line x1="0" y1={GRAPH_H * 0.25} x2={GRAPH_W} y2={GRAPH_H * 0.25} class="crash-graph-grid" />
+					<line x1="0" y1={GRAPH_H * 0.5} x2={GRAPH_W} y2={GRAPH_H * 0.5} class="crash-graph-grid" />
+					<line x1="0" y1={GRAPH_H * 0.75} x2={GRAPH_W} y2={GRAPH_H * 0.75} class="crash-graph-grid" />
+					<path d={graphAreaD} class="crash-graph-area" />
+					<path
+						d={graphPathD}
+						class={`crash-graph-line
+							${phase === 'settled' && resultVisible && busted ? 'crash-graph-line-lose' : ''}
+							${phase === 'settled' && resultVisible && !busted ? 'crash-graph-line-win' : ''}`}
+					/>
+					<circle
+						cx={graphTipX}
+						cy={graphTipY}
+						r="5"
+						class={`crash-graph-tip
+							${phase === 'settled' && resultVisible && busted ? 'crash-graph-tip-lose' : ''}
+							${phase === 'settled' && resultVisible && !busted ? 'crash-graph-tip-win' : ''}`}
+					/>
+				</svg>
+			</div>
 		</div>
 	{/if}
 
 	{#if phase === 'settled' && resultVisible}
 		<div class={`crash-result ${busted ? 'crash-result-lose' : 'crash-result-win'}`}>
+			<video
+				class="crash-result-video"
+				src="/casino/crash-result.mp4"
+				autoplay
+				muted
+				loop
+				playsinline
+				aria-hidden="true"
+			></video>
 			<div class="crash-result-label">{busted ? 'СГОРЕЛО' : 'ЗАБРАЛ'}</div>
 			<div class="crash-result-amount">{busted ? `−${roundBet}¥` : `+${payout}¥`}</div>
 			{#if bankCapped}
@@ -387,6 +592,8 @@
 	}
 
 	.crash-table {
+		position: relative;
+		overflow: hidden;
 		background: var(--bg-secondary-2);
 		border: 2px solid var(--border-secondary);
 		border-radius: 14px;
@@ -398,6 +605,33 @@
 		transition:
 			border-color 0.3s ease-out,
 			box-shadow 0.3s ease-out;
+	}
+
+	/* Purely decorative loop behind the readout/graph — z-index:0 keeps it
+	   under .crash-table-fg (z-index:1) regardless of DOM/paint-order rules
+	   for positioned vs static content (see script header comment). Dimmed
+	   + desaturated so foreground text/numbers stay legible over any frame
+	   of the clip. */
+	.crash-bg-video {
+		position: absolute;
+		inset: 0;
+		width: 100%;
+		height: 100%;
+		object-fit: cover;
+		opacity: 0.16;
+		filter: grayscale(0.35) contrast(0.9);
+		pointer-events: none;
+		z-index: 0;
+	}
+
+	.crash-table-fg {
+		position: relative;
+		z-index: 1;
+		width: 100%;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: var(--space-sm);
 	}
 	/* Same "positive vs destructive" table-wide color grade as blackjack's
 	   .bj-table-win/.bj-table-lose, gated on resultVisible the same way. */
@@ -481,22 +715,62 @@
 		min-height: 18px;
 	}
 
-	.crash-meter {
+	.crash-graph {
 		width: 100%;
-		height: 8px;
-		border-radius: 999px;
+		height: 120px;
+		display: block;
+		border-radius: 10px;
 		background: var(--bg-dominant);
 		border: 1px solid var(--border-secondary);
-		overflow: hidden;
 	}
-	.crash-meter-fill {
-		height: 100%;
-		background: linear-gradient(90deg, var(--accent-yellow), var(--accent-pink));
-		border-radius: 999px;
+	.crash-graph-grid {
+		stroke: var(--border-secondary);
+		stroke-width: 1;
+		vector-effect: non-scaling-stroke;
+	}
+	.crash-graph-stop-start {
+		stop-color: var(--accent-yellow);
+		stop-opacity: 0.45;
+	}
+	.crash-graph-stop-end {
+		stop-color: var(--accent-yellow);
+		stop-opacity: 0;
+	}
+	.crash-graph-area {
+		fill: url(#crashGraphFill);
+		stroke: none;
+	}
+	.crash-graph-line {
+		fill: none;
+		stroke: var(--accent-yellow);
+		stroke-width: 3;
+		stroke-linecap: round;
+		stroke-linejoin: round;
+		vector-effect: non-scaling-stroke;
+	}
+	.crash-graph-line-win {
+		stroke: var(--positive-text);
+	}
+	.crash-graph-line-lose {
+		stroke: var(--destructive-text);
+	}
+	.crash-graph-tip {
+		fill: var(--accent-yellow);
+		filter: drop-shadow(0 0 4px rgba(255, 216, 74, 0.7));
+	}
+	.crash-graph-tip-win {
+		fill: var(--positive-text);
+		filter: drop-shadow(0 0 4px rgba(46, 224, 106, 0.7));
+	}
+	.crash-graph-tip-lose {
+		fill: var(--destructive-text);
+		filter: drop-shadow(0 0 4px rgba(255, 56, 56, 0.7));
 	}
 	@media (prefers-reduced-motion: no-preference) {
-		.crash-meter-fill {
-			transition: width 0.05s linear;
+		.crash-graph-tip {
+			animation: crashPulse 900ms ease-in-out infinite;
+			transform-origin: center;
+			transform-box: fill-box;
 		}
 	}
 
@@ -526,6 +800,21 @@
 		border-color: var(--positive);
 	}
 	.crash-result-lose {
+		border-color: var(--destructive);
+	}
+	.crash-result-video {
+		width: 96px;
+		height: 96px;
+		object-fit: cover;
+		border-radius: 50%;
+		display: block;
+		margin: 0 auto var(--space-sm);
+		border: 2px solid var(--border-secondary);
+	}
+	.crash-result-win .crash-result-video {
+		border-color: var(--positive);
+	}
+	.crash-result-lose .crash-result-video {
 		border-color: var(--destructive);
 	}
 	.crash-result-label {
@@ -618,6 +907,14 @@
 			animation-duration: 0.01ms !important;
 			animation-delay: 0s !important;
 			transition-duration: 0.01ms !important;
+		}
+		/* Looping background/result clips are motion too — hide rather than
+		   freeze mid-frame (a paused arbitrary frame reads as broken, not
+		   "reduced"). Layout doesn't depend on them (bg video is absolutely
+		   positioned, result video just leaves its allotted space blank). */
+		.crash-bg-video,
+		.crash-result-video {
+			display: none;
 		}
 	}
 </style>
