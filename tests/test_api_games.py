@@ -57,6 +57,7 @@ from bot.config import settings
 from bot.services import casino_service
 from bot.services import crash_engine
 from bot.services import economy_service
+from bot.services import jackpot_service
 from bot.services import slot_engine
 from bot.services import teto_slot_engine
 from common.db.session import engine
@@ -126,6 +127,11 @@ CRASH_FUNDED_BANK_CHAT_ID = -900317
 # изоляция, что FRESH_BANK_CHAT_ID у coinflip/BLACKJACK_FRESH_BANK_CHAT_ID
 # выше: банк этого чата не делится ни с одним другим тестом файла.
 CRASH_FRESH_BANK_CHAT_ID = -900318
+
+# Отдельные chat_id для джекпот-ивента (/jackpot_event, CASINO-06 follow-up) —
+# та же изоляция, что у остальных диапазонов этого файла.
+JACKPOT_EVENT_CHAT_ID = -900319
+JACKPOT_EVENT_EMPTY_BANK_CHAT_ID = -900320
 
 
 class _ForcedWinRng:
@@ -1476,6 +1482,100 @@ async def test_slots_jackpot_win_with_drained_bank_does_not_announce(monkeypatch
     assert jackpot["won"] is True
     assert jackpot["amount"] == 0  # банк уже выеден выплатой честного line-win
     send_animation_mock.assert_not_awaited()
+
+
+# --- Джекпот-ивент "ГИФТЕКИ ОТ ОСАКИ" — announce-путь через реальный роут ----
+
+
+@pytest.mark.asyncio
+async def test_slots_jackpot_event_win_announces_with_event_caption(monkeypatch):
+    """Активный ивент (spins=1 -> remaining==1 -> гарантированный выигрыш на
+    первом же спине, независимо от jackpot_randint) даёт `event_win=True` в
+    ответе и шлёт в чат подпись именно с EVENT_NAME, не обычную."""
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    send_animation_mock = AsyncMock(return_value={"ok": True})
+    monkeypatch.setattr(telegram_client, "send_animation", send_animation_mock)
+    forced_symbols = ["sakaki", "bath-chibi", "osaka-stand", "dog", "gasp"] * 3
+    # jackpot_randint=999 -> в ОБЫЧНОМ режиме гарантированный проигрыш;
+    # доказывает, что выигрыш пришёл именно от pity-короткого замыкания
+    # remaining==1, а не от рандома.
+    monkeypatch.setattr(
+        casino_service, "_rng", _ForcedJackpotGridRng(forced_symbols, jackpot_randint=999)
+    )
+
+    user_id = 300412
+    await _ensure_user(user_id)
+    await _topup(JACKPOT_EVENT_CHAT_ID, user_id)
+    init_data = _build_init_data(user_id=user_id)
+
+    async with SessionLocal() as db_session:
+        await jackpot_service.start_event(db_session, JACKPOT_EVENT_CHAT_ID, 1)
+        await db_session.commit()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/games/slots",
+            params={"chat_id": JACKPOT_EVENT_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={"bet": 100, "idem_key": str(uuid.uuid4())},
+        )
+
+    assert resp.status_code == 200
+    jackpot = resp.json()["jackpot"]
+    assert jackpot["won"] is True
+    assert jackpot["event_win"] is True
+
+    send_animation_mock.assert_awaited_once()
+    caption = send_animation_mock.await_args.kwargs["caption"]
+    assert jackpot_service.EVENT_NAME in caption
+    assert str(jackpot["amount"]) in caption
+
+
+@pytest.mark.asyncio
+async def test_slots_jackpot_event_win_with_drained_bank_still_announces(monkeypatch):
+    """Регрессия найдена адверсариальным ревью 2026-08-07: обычный (не-
+    ивентный) джекпот с нулевой выплатой молчит (см.
+    test_slots_jackpot_win_with_drained_bank_does_not_announce выше) — но
+    ивент-выигрыш ОБЯЗАН объявиться в чат ДАЖЕ с нулевой выплатой, иначе
+    ивент "сгорал" бы незаметно для чата, что противоречит всему его смыслу
+    ("первый, кто поймает — заберёт банк и объявление увидят все")."""
+    monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
+    send_animation_mock = AsyncMock(return_value={"ok": True})
+    monkeypatch.setattr(telegram_client, "send_animation", send_animation_mock)
+    forced_symbols = ["muscle"] * 15  # честный line-win съедает банк ДО джекпот-ролла
+    monkeypatch.setattr(
+        casino_service, "_rng", _ForcedJackpotGridRng(forced_symbols, jackpot_randint=999)
+    )
+
+    user_id = 300413
+    await _ensure_user(user_id)
+    await _topup(JACKPOT_EVENT_EMPTY_BANK_CHAT_ID, user_id)
+    init_data = _build_init_data(user_id=user_id)
+
+    async with SessionLocal() as db_session:
+        await jackpot_service.start_event(db_session, JACKPOT_EVENT_EMPTY_BANK_CHAT_ID, 1)
+        await db_session.commit()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/games/slots",
+            params={"chat_id": JACKPOT_EVENT_EMPTY_BANK_CHAT_ID},
+            headers={"X-Telegram-Init-Data": init_data},
+            json={"bet": 10 * slot_engine.TOTAL_LINES, "idem_key": str(uuid.uuid4())},
+        )
+
+    assert resp.status_code == 200
+    jackpot = resp.json()["jackpot"]
+    assert jackpot["won"] is True
+    assert jackpot["event_win"] is True
+    assert jackpot["amount"] == 0  # банк уже выеден честным line-win
+
+    send_animation_mock.assert_awaited_once()
+    caption = send_animation_mock.await_args.kwargs["caption"]
+    assert jackpot_service.EVENT_NAME in caption
+    assert "пуст" in caption.lower()  # особая формулировка для нулевой выплаты, не "обнулён"
 
 
 # --- POST /api/v1/games/blackjack (start) + /blackjack/{id}/action -----------

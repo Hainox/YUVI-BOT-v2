@@ -28,6 +28,12 @@
 джекпот-выигрыш (1 к `slot_jackpot_odds`) и реальный ежедневный автопост
 (12:00 МСК) непрактично дожидаться вживую, чтобы просто свериться с тем, как
 оповещение выглядит в чате.
+
+/jackpot_event (запрошено 2026-08-07): ивент "ГИФТЕКИ ОТ ОСАКИ" — следующие
+N спинов слота Azumanga в ЭТОМ чате (по умолчанию 100) гарантированно
+завершатся выигрышем джекпота не позже N-го (jackpot_service.start_event/
+contribute_and_maybe_award, pity-механика). РЕАЛЬНОЕ движение денег на самом
+выигрыше, в отличие от /test_jackpot выше — не тест-триггер, настоящий ивент.
 """
 
 from __future__ import annotations
@@ -294,6 +300,69 @@ async def test_jackpot_command(message: Message, session: AsyncSession) -> None:
     caption = jackpot_service.build_announcement_caption(name, pool, settings.slot_jackpot_seed)
     await message.answer_animation(
         FSInputFile(jackpot_service.JACKPOT_GIF_PATH), caption=caption, parse_mode="HTML"
+    )
+
+
+_JACKPOT_EVENT_DEFAULT_SPINS = 100
+
+
+def _parse_jackpot_event_args(message: Message) -> int | None:
+    """Парсит `/jackpot_event [N]` — N опционален (по умолчанию
+    `_JACKPOT_EVENT_DEFAULT_SPINS`, запрошено владельцем как "100"), если
+    указан — положительное целое (та же валидация, что `_parse_grant_all_args`).
+    Возвращает `None` ТОЛЬКО на явно битый ввод (мусор/не-число/≤0) — команда
+    без аргумента вообще ВСЕГДА валидна, в отличие от /grant_all."""
+    if message.text is None:
+        return _JACKPOT_EVENT_DEFAULT_SPINS
+    parts = message.text.split()
+    if len(parts) == 1:
+        return _JACKPOT_EVENT_DEFAULT_SPINS
+    if len(parts) != 2:
+        return None
+    spins_raw = parts[1]
+    # Просто `.isdigit()` без lstrip — `str.isdigit()` уже отвергает ведущий
+    # минус целиком (в отличие от `.lstrip("-").isdigit()`, который ошибочно
+    # пропускает "--5"/"---3": лишние минусы схлопываются лишним lstrip'ом,
+    # а `int("--5")` падает необработанным ValueError — найдено ревью
+    # 2026-08-07). N здесь всегда положительное — минус не нужен вовсе.
+    if not spins_raw.isdigit():
+        return None
+    spins = int(spins_raw)
+    if spins <= 0:
+        return None
+    return spins
+
+
+@router.message(Command("jackpot_event"))
+async def jackpot_event_command(message: Message, session: AsyncSession) -> None:
+    """Запускает джекпот-ивент "ГИФТЕКИ ОТ ОСАКИ" (запрошено 2026-08-07,
+    владелец — пул слота Azumanga вырос до 800к+): следующие N спинов слота
+    в ЭТОМ чате гарантированно завершатся выигрышем джекпота не позже N-го
+    (jackpot_service.start_event/contribute_and_maybe_award — pity-механика,
+    read их докстринги за полным разбором формулы). Публикует в чат текст
+    анонса СРАЗУ здесь (не отдельной командой) — ивент без объявления никто
+    не побежит крутить, это его смысл."""
+    if message.from_user is None:
+        return
+    if message.from_user.id != settings.owner_id:
+        await message.reply("Эта команда доступна только владельцу бота.")
+        return
+
+    spins = _parse_jackpot_event_args(message)
+    if spins is None:
+        await message.answer(f"Использование: /jackpot_event [N] (по умолчанию {_JACKPOT_EVENT_DEFAULT_SPINS})")
+        return
+
+    pool = await jackpot_service.start_event(session, message.chat.id, spins)
+    await session.commit()
+
+    await message.answer(jackpot_service.build_event_start_caption(pool, spins))
+    logger.info(
+        "jackpot_event_command: owner=%s chat=%s spins=%s pool=%s",
+        message.from_user.id,
+        message.chat.id,
+        spins,
+        pool,
     )
 
 

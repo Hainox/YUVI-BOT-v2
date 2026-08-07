@@ -151,6 +151,7 @@ async def test_contribute_award_pays_full_pool_and_resets(session):
         "won": True,
         "amount": expected_pool_before_award,
         "pool": settings.slot_jackpot_seed,
+        "event_win": False,
     }
     row = await _get_pool_row(session, chat_id)
     assert row.pool == settings.slot_jackpot_seed
@@ -333,3 +334,190 @@ async def test_play_slots_replay_does_not_touch_jackpot(session, monkeypatch):
 
     row = await _get_pool_row(session, chat_id)
     assert row.pool == pool_after_first
+
+
+# --- Джекпот-ивент "ГИФТЕКИ ОТ ОСАКИ" (pity-гарант, /jackpot_event) ---------
+#
+# start_event ставит event_spins_remaining=N; contribute_and_maybe_award
+# бросает 1/remaining вместо обычных 1/slot_jackpot_odds, remaining==1
+# ГАРАНТИРУЕТ выигрыш на этом спине (сам код короткого замыкания читай в
+# jackpot_service.py — здесь только доказываем поведение снаружи).
+
+
+@pytest.mark.asyncio
+async def test_start_event_sets_remaining_without_touching_pool(session):
+    chat_id = -100900210
+    user_id = 900210
+    await _ensure_user(session, user_id)
+    await _fund(session, chat_id, user_id)
+    await session.commit()
+
+    # Растим пул одним обычным (не-ивентным) проигрышным спином, чтобы
+    # доказать, что start_event ничего не делает с уже накопленным пулом.
+    await jackpot_service.contribute_and_maybe_award(
+        session, chat_id, user_id, 100, "test_event_pregrowth", _ForcedRng(randint_value=99)
+    )
+    await session.commit()
+    pool_before = await jackpot_service.get_pool(session, chat_id)
+
+    returned_pool = await jackpot_service.start_event(session, chat_id, 100)
+    await session.commit()
+
+    assert returned_pool == pool_before
+    row = await _get_pool_row(session, chat_id)
+    assert row.event_spins_remaining == 100
+    assert row.pool == pool_before
+
+
+@pytest.mark.asyncio
+async def test_start_event_rejects_non_positive_spins(session):
+    chat_id = -100900211
+    with pytest.raises(ValueError):
+        await jackpot_service.start_event(session, chat_id, 0)
+    with pytest.raises(ValueError):
+        await jackpot_service.start_event(session, chat_id, -5)
+
+
+@pytest.mark.asyncio
+async def test_event_forces_win_on_the_very_last_spin_even_with_losing_rng(session):
+    """spins=1 -> remaining==1 сразу на первом же спине ивента -> выигрыш
+    гарантирован НЕЗАВИСИМО от rng (даже стаб, который в обычном режиме
+    ВСЕГДА проигрывает, здесь обязан "выиграть" — это и есть смысл гаранта)."""
+    chat_id = -100900212
+    user_id = 900212
+    await _ensure_user(session, user_id)
+    await _fund(session, chat_id, user_id)
+    await economy_service.credit_bank(
+        session, chat_id, 1_000_000, kind="test_seed", ref_id="test_event_last_spin_bank"
+    )
+    await session.commit()
+
+    await jackpot_service.start_event(session, chat_id, 1)
+    await session.commit()
+
+    never_wins_rng = _ForcedRng(randint_value=999)  # в обычном режиме никогда не 1
+    jackpot = await jackpot_service.contribute_and_maybe_award(
+        session, chat_id, user_id, 100, "test_event_last_spin", never_wins_rng
+    )
+    await session.commit()
+
+    assert jackpot["won"] is True
+    assert jackpot["event_win"] is True
+    row = await _get_pool_row(session, chat_id)
+    assert row.event_spins_remaining is None  # ивент закрыт этим выигрышем
+    assert row.pool == settings.slot_jackpot_seed
+
+
+@pytest.mark.asyncio
+async def test_event_pity_odds_not_base_odds_while_active(session, monkeypatch):
+    """Пока ивент активен, кубик бросается 1/remaining, а НЕ
+    1/slot_jackpot_odds — форсируем крошечный slot_jackpot_odds (было бы
+    почти гарантированным выигрышем в обычном режиме) и RNG-стаб, который
+    "проигрывает" именно тем значениям, что реально спрашивает pity-формула
+    (remaining=3,2), доказывая, что используется именно она."""
+    monkeypatch.setattr(settings, "slot_jackpot_odds", 2)  # если бы использовался — почти всегда "выигрыш"
+    chat_id = -100900213
+    user_id = 900213
+    await _ensure_user(session, user_id)
+    await _fund(session, chat_id, user_id)
+    await session.commit()
+
+    await jackpot_service.start_event(session, chat_id, 3)
+    await session.commit()
+
+    class _AlwaysHighRng:
+        """`.randint(a, b)` всегда возвращает `b` — проигрыш, ПОКА `b > 1`
+        (при remaining==1 pity-формула вообще не спрашивает rng, см. её
+        короткое замыкание, так что этот стаб не участвует в последнем спине)."""
+
+        def randint(self, a: int, b: int) -> int:
+            return b
+
+    rng = _AlwaysHighRng()
+
+    first = await jackpot_service.contribute_and_maybe_award(
+        session, chat_id, user_id, 100, "test_event_pity_1", rng
+    )
+    await session.commit()
+    assert first["won"] is False
+    assert (await _get_pool_row(session, chat_id)).event_spins_remaining == 2
+
+    second = await jackpot_service.contribute_and_maybe_award(
+        session, chat_id, user_id, 100, "test_event_pity_2", rng
+    )
+    await session.commit()
+    assert second["won"] is False
+    assert (await _get_pool_row(session, chat_id)).event_spins_remaining == 1
+
+    # Третий (последний) спин: remaining==1 -> гарантированный выигрыш,
+    # несмотря на тот же "всегда проигрышный" rng-стаб.
+    third = await jackpot_service.contribute_and_maybe_award(
+        session, chat_id, user_id, 100, "test_event_pity_3", rng
+    )
+    await session.commit()
+    assert third["won"] is True
+    assert third["event_win"] is True
+
+
+@pytest.mark.asyncio
+async def test_event_win_resumes_normal_odds_afterwards(session):
+    """"Кто первый успеет поймать — забирает банк и откатываем назад": после
+    выигрыша в ивенте следующий спин снова использует обычные
+    slot_jackpot_odds, а не pity — событие не "перезапускается" само собой."""
+    chat_id = -100900214
+    user_id = 900214
+    await _ensure_user(session, user_id)
+    await _fund(session, chat_id, user_id)
+    await economy_service.credit_bank(
+        session, chat_id, 1_000_000, kind="test_seed", ref_id="test_event_resume_bank"
+    )
+    await session.commit()
+
+    await jackpot_service.start_event(session, chat_id, 1)
+    await session.commit()
+    won_event_spin = await jackpot_service.contribute_and_maybe_award(
+        session, chat_id, user_id, 100, "test_event_resume_win", _ForcedRng(randint_value=999)
+    )
+    await session.commit()
+    assert won_event_spin["won"] is True
+    assert (await _get_pool_row(session, chat_id)).event_spins_remaining is None
+
+    # Тот же "any non-1 value" rng, что гарантированно выиграл бы в ивенте на
+    # remaining==1, теперь снова просто rng.randint(1, slot_jackpot_odds) —
+    # никакого специального обращения, обычный проигрыш при большом odds.
+    losing_rng = _ForcedRng(randint_value=999)
+    after = await jackpot_service.contribute_and_maybe_award(
+        session, chat_id, user_id, 100, "test_event_resume_after", losing_rng
+    )
+    await session.commit()
+    assert after["won"] is False
+
+
+@pytest.mark.asyncio
+async def test_event_win_closes_event_even_when_payout_capped_by_empty_bank(session):
+    """Тот же D-06-класса регресс, что test_contribute_award_with_empty_bank_
+    does_not_reset_pool, но для ивента: банк пуст -> paid=0, пул НЕ
+    сбрасывается — но ивент ВСЁ РАВНО закрывается (гарант был про сам факт
+    срабатывания кубика, не про размер выплаты, см. докстринг
+    contribute_and_maybe_award)."""
+    chat_id = -100900215
+    user_id = 900215
+    await _ensure_user(session, user_id)
+    await _fund(session, chat_id, user_id)
+    # ChatBank НЕ пополняется -> баланс банка 0.
+    await session.commit()
+
+    await jackpot_service.start_event(session, chat_id, 1)
+    await session.commit()
+
+    jackpot = await jackpot_service.contribute_and_maybe_award(
+        session, chat_id, user_id, 100, "test_event_empty_bank", _ForcedRng(randint_value=999)
+    )
+    await session.commit()
+
+    assert jackpot["won"] is True
+    assert jackpot["event_win"] is True
+    assert jackpot["amount"] == 0
+    row = await _get_pool_row(session, chat_id)
+    assert row.event_spins_remaining is None  # ивент закрыт, несмотря на нулевую выплату
+    assert row.pool != settings.slot_jackpot_seed  # пул НЕ сброшен (paid == 0)
