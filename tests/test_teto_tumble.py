@@ -4,13 +4,15 @@
 Доказывают:
 - `evaluate_paylines`: leftmost non-wild как target, wild подставляется вместо
   любого символа кроме scatter, минимум 3 подряд слева направо, scatter как
-  target пропускается (платит блоками через `count_scatter_blocks`, не по линии).
+  target пропускается (платит суммой площадей скаттер-блоков через
+  `count_scatter_blocks`, не по линии).
 - `resolve_tumble`: выигравший блок убирается ЦЕЛИКОМ; многоклеточный блок
   падает RIGID BODY (единым целым — не разрывается на части, даже если под
   разными его столбцами разная "высота падения"); партиция держится после
   гравитации + добора.
-- `count_scatter_blocks` считает БЛОКИ, а не клетки (зафиксировано владельцем
-  бота 2026-07-30 — см. `bot/services/teto_tumble.py`)."""
+- `count_scatter_blocks` считает СУММУ ПЛОЩАДЕЙ (клеток) скаттер-блоков, а не
+  их число (РЕШЕНИЕ ОТ 2026-08-06, отменяет прежнее "считаем блоки, не
+  клетки" от 2026-07-30 — см. `bot/services/teto_tumble.py`)."""
 
 from __future__ import annotations
 
@@ -141,7 +143,7 @@ def test_evaluate_paylines_wild_substitutes_for_any_symbol_except_scatter():
 
 def test_evaluate_paylines_scatter_as_leftmost_symbol_never_pays_by_line():
     # Скаттер как САМЫЙ ЛЕВЫЙ (target-определяющий) символ на линии
-    # пропускается целиком — платит по количеству блоков на экране
+    # пропускается целиком — платит по сумме площадей скаттер-блоков на экране
     # (count_scatter_blocks), не по payline. Вся строка 2 из скаттеров:
     # линии, начинающиеся с (2,0), скипаются по target == SCATTER_ID, а
     # линии, ныряющие в строку 2 позже, ломаются о скаттер-клетку внутри
@@ -194,14 +196,30 @@ def test_teto_paytable_covers_line_symbols_and_orders_tiers():
     )
 
 
-def test_count_scatter_blocks_counts_blocks_not_cells():
-    """ЗАФИКСИРОВАНО владельцем бота 2026-07-30: один крупный скаттер-мегаблок
-    (растянутый на много клеток) считается за ОДИН скаттер, не за N."""
+def test_count_scatter_blocks_counts_by_area():
+    """РЕШЕНИЕ ОТ 2026-08-06 (отменяет прежнее "считаем блоки, не клетки" от
+    2026-07-30): один крупный скаттер-мегаблок (растянутый на много клеток)
+    считается по СУММЕ СВОИХ КЛЕТОК, не за один скаттер. Блок здесь 4x4 ->
+    area=16, поэтому count_scatter_blocks обязан вернуть 16, а не 1."""
     big_scatter = MegaBlock(block_id=0, symbol_id=SCATTER_ID, row=0, col=0, height=4, width=4)  # area=16
     filler_ids = list(range(1, 21))
     other_cells = sorted(ALL_CELLS - set(big_scatter.cells))
     fillers = [MegaBlock(bid, "utau_note", r, c, 1, 1) for bid, (r, c) in zip(filler_ids, other_cells)]
-    assert count_scatter_blocks([big_scatter] + fillers) == 1
+    assert count_scatter_blocks([big_scatter] + fillers) == 16
+
+
+def test_count_scatter_blocks_sums_areas_of_multiple_blocks_on_board():
+    """Прямой пин семантики "сумма одинарных блоков", которую владелец
+    специально запросил при развороте 2026-08-06: ДВА скаттер-блока на одной
+    доске (1x1 в углу + 2x2 в другом углу) обязаны дать СУММУ их площадей
+    (1 + 4 = 5), не число блоков (2) и не площадь только одного из них."""
+    small_scatter = MegaBlock(block_id=0, symbol_id=SCATTER_ID, row=0, col=0, height=1, width=1)  # area=1
+    big_scatter = MegaBlock(block_id=1, symbol_id=SCATTER_ID, row=4, col=4, height=2, width=2)  # area=4
+    covered = set(small_scatter.cells) | set(big_scatter.cells)
+    filler_ids = list(range(2, 2 + len(ALL_CELLS) - len(covered)))
+    other_cells = sorted(ALL_CELLS - covered)
+    fillers = [MegaBlock(bid, "utau_note", r, c, 1, 1) for bid, (r, c) in zip(filler_ids, other_cells)]
+    assert count_scatter_blocks([small_scatter, big_scatter] + fillers) == 5
 
 
 # ---------------------------------------------------------------------------

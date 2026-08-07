@@ -128,12 +128,33 @@ SCENARIO_PREDICATES = {
 }
 
 
+def _trace_is_complete(seed: int) -> bool:
+    """Кандидат честен, только если его ПОЛНЫЙ трейс не режется
+    `serialize_animation` (`TRACE_MAX_OPS`/`TRACE_MAX_ROUNDS`) — регрессия
+    от перекалибровки 2026-08-06: `_is_freespins_with_multiplier` смотрит
+    только на `play_one_spin`-результат (без трейса, ради скорости скана,
+    см. `scan_seeds`), а он не видит числа op'ов/раундов. После разворота
+    `count_scatter_blocks` на сумму площадей триггер фриспинов стал реже, но
+    отдельные триггеры платят намного больше freespins (scatter_count теперь
+    обычно 6-20, не 5-8) — ПЕРВЫЙ сид, подходящий по `freespins_played>=3` +
+    пересечённому порогу лестницы, оказался 19-раундовым и уже сам
+    truncated'ился (>120 op's, `TRACE_MAX_OPS`). Дешёвая перепроверка
+    трейсом ПЕРЕД фиксацией сида как найденного отсеивает такие кандидаты,
+    не заставляя сам движок или лимиты трейса меняться ради фикстур."""
+    trace: list = []
+    res = eng.play_one_spin(random.Random(seed), BET_PER_LINE, trace=trace)
+    anim = eng.serialize_animation(trace, paid_total=res["total_payout"])
+    return not anim["truncated"]
+
+
 def scan_seeds() -> dict[str, int]:
     """Один детерминированный проход по сидам 0..MAX_SEEDS: для каждого
     сценария запоминается ПЕРВЫЙ подошедший сид (перезапуск скрипта даёт те же
     сиды => те же файлы). Скан идёт БЕЗ трейса (RNG потребляется бит-в-бит так
     же, см. докстринг `play_one_spin`) — трейс снимается вторым прогоном того
-    же сида уже только для победителей."""
+    же сида уже только для победителей (и ТРЕТИЙ раз ниже, в `main`, для
+    сборки итогового ответа — оба лишних прогона того же детерминированного
+    сида дёшевы против цены сканирования миллионов сидов трейсом)."""
     found: dict[str, int] = {}
     t0 = time.monotonic()
     for seed in range(MAX_SEEDS):
@@ -141,7 +162,7 @@ def scan_seeds() -> dict[str, int]:
             break
         res = eng.play_one_spin(random.Random(seed), BET_PER_LINE)
         for name, pred in SCENARIO_PREDICATES.items():
-            if name not in found and pred(res):
+            if name not in found and pred(res) and _trace_is_complete(seed):
                 found[name] = seed
                 print(f"[scan] {name}: seed={seed}")
         if seed and seed % PROGRESS_EVERY == 0:

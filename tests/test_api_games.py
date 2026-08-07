@@ -1137,19 +1137,28 @@ async def test_teto_slots_win_on_drained_bank_reports_bank_capped_and_animation_
     докстринге `api/routes/games.py`: "/me до и после раунда — 1000 и 1000,
     банк чата был 0"), но у Тето он громче: там фронт просто бампал число, а
     здесь он ТИКАЕТ счётчик по раундам из `animation` и грейдит большой
-    выигрыш. Сценарий не экзотический — 10.8% реальных спинов платят больше
-    ставки (замер на 20 000 спинов, максимум 126x ставки), а банк свежего или
+    выигрыш. Сценарий не экзотический — ~29.5% реальных спинов платят больше
+    ставки (замер на 100 000 спинов ПОСЛЕ перекалибровки от 2026-08-06,
+    максимум наблюдался ~258x ставки в этой выборке, официальная калибровка
+    на 300k видела хвост вплоть до ~300x — доля и хвост заметно выросли
+    против дореформенных цифр из-за смены `count_scatter_blocks` на
+    сумму площадей, см. её докстринг в `teto_tumble.py`), а банк свежего или
     выеденного чата этого не тянет.
 
     Форс полностью детерминирован: `casino_service._rng` подменён на
-    `random.Random(12945)` — движок берёт RNG ТОЛЬКО оттуда (D-03/T-04.1-01,
-    джекпот-слоя у Тето нет вовсе), поэтому спин воспроизводится побайтово и
-    честно платит 3 790 при ставке 30. Банк чата обнулён, в него попадает
-    ровно ставка -> `pay_from_bank` (D-06) платит 30 из 3 790.
+    `random.Random(6)` (был `random.Random(12945)` — перестал платить больше
+    ставки после перекалибровки WEIGHTS/TETO_PAYTABLE, сдвинувшей потребление
+    RNG базового заполнения; переподобран как первый сид от 0, чей
+    `total_payout` при этой ставке превышает саму ставку) — движок берёт RNG
+    ТОЛЬКО оттуда (D-03/T-04.1-01, джекпот-слоя у Тето нет вовсе), поэтому
+    спин воспроизводится побайтово и честно платит 1 430 при ставке 500
+    (`bet = 10 * TOTAL_LINES`). Банк чата обнулён, в него попадает ровно
+    ставка -> `pay_from_bank` (D-06) платит 500 из 1 430.
 
     Что именно фиксируем как клиентский контракт:
-      - `payout` == 30, а `outcome.total_payout` == 3 790: аудиторская запись
-        НЕ фальсифицируется под выплату (иначе мы бы соврали в другую сторону);
+      - `payout` == 500, а `outcome.total_payout` == 1 430: аудиторская
+        запись НЕ фальсифицируется под выплату (иначе мы бы соврали в другую
+        сторону);
       - `bank_capped: true` на верхнем уровне — клиенту не нужно ничего
         вычитать самому, чтобы понять, что произошло;
       - `animation.payout_paid` == `payout` и `animation.bank_capped` == true —
@@ -1162,7 +1171,7 @@ async def test_teto_slots_win_on_drained_bank_reports_bank_capped_and_animation_
         самая подпись инцидента, которую игрок читает как "экран соврал"."""
     monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
     monkeypatch.setattr(casino_service, "_last_slots_spin_at", {})
-    monkeypatch.setattr(casino_service, "_rng", random.Random(12945))
+    monkeypatch.setattr(casino_service, "_rng", random.Random(6))
     user_id = 300427
     await _ensure_user(user_id)
     await _topup(TETO_DRAINED_BANK_CHAT_ID, user_id)
@@ -1231,7 +1240,7 @@ async def test_teto_slots_win_on_funded_bank_reports_bank_capped_false(monkeypat
     отсутствующий."""
     monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
     monkeypatch.setattr(casino_service, "_last_slots_spin_at", {})
-    monkeypatch.setattr(casino_service, "_rng", random.Random(12945))
+    monkeypatch.setattr(casino_service, "_rng", random.Random(6))
     user_id = 300428
     await _ensure_user(user_id)
     await _topup(TETO_SLOTS_CHAT_ID, user_id)
