@@ -14,10 +14,11 @@ Telegram-бот для геймификации одного дружеског�
 Бот не прототип — он реально работает в чате прямо сейчас: собирает 100% сообщений, отвечает на 70+ команд, считает экономику, открывает полноценный Mini App с 5 казино-играми, продаёт соц-механики и скачивает медиа по ссылке из TikTok/Reels/Shorts через self-hosted `cobalt`.
 
 <p align="center">
-  <img src="docs/assets/screenshots/photo_2_2026-07-15_17-29-06.jpg" width="32%" alt="Открытие Mini App" />
-  <img src="docs/assets/screenshots/photo_3_2026-07-15_17-29-06.jpg" width="32%" alt="Хаб Mini App" />
+  <img src="docs/assets/screenshots/hub.jpg" width="32%" alt="Хаб Mini App" />
+  <img src="docs/assets/screenshots/teto-slot-win.jpg" width="32%" alt="Слот Тето Брейнрот — каскад с выигрышем" />
+  <img src="docs/assets/screenshots/gacha.jpg" width="32%" alt="Гача — баннер персонажа" />
 </p>
-<p align="center"><sub>Кнопка «Открыть казино» в закреплённом сообщении → запуск Mini App → хаб с фермой, гачей, рынками, играми и соц-экранами.</sub></p>
+<p align="center"><sub>Хаб Mini App → казино-слот с каскадами и дрель-хантом → гача-баннер с коллекцией персонажей.</sub></p>
 
 ## Оглавление
 
