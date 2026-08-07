@@ -1,4 +1,13 @@
-"""Periodic server clock for active Arena sessions."""
+"""Periodic server clock for active Arena sessions.
+
+Also the Phase-5 settlement trigger: this loop already re-scans every
+`ArenaMatch.status == "active"` row every second and ticks its combat
+session, so it's the cheapest, fastest place to notice a match going
+terminal (knockout/time-limit/technical loss/both-disconnected — any of
+`ArenaSessionService`'s four termination paths) and hand it to
+`arena_service.settle_match` — no second table scan needed. See
+`arena_service.py`'s "Settlement" section docstring for why this hook
+exists at all."""
 
 from __future__ import annotations
 
@@ -28,6 +37,9 @@ def register_runtime_tick(scheduler, *, interval_seconds: int = 1) -> None:
         import redis.asyncio as redis
         from sqlalchemy import select
 
+        from bot.services import arena_service
+        from bot.services import balance_events
+        from bot.services import economy_service
         from bot.services.arena_session_service import ArenaSessionService
         from bot.services.arena_session_service import persist_runtime_state
         from common.db.session import SessionLocal
@@ -45,11 +57,40 @@ def register_runtime_tick(scheduler, *, interval_seconds: int = 1) -> None:
             service = ArenaSessionService(_runtime_client, persist_state=persist_runtime_state)
             for match in matches:
                 try:
-                    await service.tick(match)
+                    state = await service.tick(match)
                 except Exception:
                     logger.exception("Arena runtime tick failed match_id=%s; resetting Redis client", match.id)
                     await shutdown_runtime_tick()
                     break
+                if not state["terminal"]:
+                    continue
+                async with SessionLocal() as settle_session:
+                    try:
+                        settled = await arena_service.settle_match(
+                            settle_session, match.chat_id, match.id, state
+                        )
+                    except Exception:
+                        logger.exception("Arena settlement failed match_id=%s", match.id)
+                        continue
+                    if settled.settlement_status == "pending":
+                        continue
+                    for user_id in (settled.creator_id, settled.opponent_id):
+                        if user_id is None:
+                            continue
+                        try:
+                            balance = await economy_service.get_balance(
+                                settle_session, settled.chat_id, user_id
+                            )
+                            await balance_events.publish_balance(
+                                _runtime_client, settled.chat_id, user_id, balance
+                            )
+                        except Exception:
+                            logger.debug(
+                                "Arena settlement balance publish failed match_id=%s user_id=%s",
+                                match.id,
+                                user_id,
+                                exc_info=True,
+                            )
         except Exception:
             logger.exception("Arena runtime worker tick failed; resetting Redis client")
             await shutdown_runtime_tick()
