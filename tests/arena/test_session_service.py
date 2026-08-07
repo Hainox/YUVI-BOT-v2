@@ -76,6 +76,9 @@ async def test_start_creates_server_clock_and_hides_client_control(service):
 
     assert state["phase_index"] == 0
     assert state["phase_deadline"] == "2026-08-07T12:00:03+00:00"
+    public = service.public_state(state, 202)
+    assert public["viewer_id"] == 202
+    assert public["viewer_side"] == "opponent"
     assert state["actions"] == {}
     assert state["engine"]["player"]["hp"] == 130
     assert "skip" not in state["allowed_actions"]
@@ -101,9 +104,15 @@ async def test_two_actions_resolve_once_and_publish_outcome(service):
     assert second["last_outcome"]["player_action"] == "fast_attack"
     assert second["last_outcome"]["opponent_action"] == "block"
 
+    retried = await service.submit_action(
+        match, 202, ArenaPlayerAction.BLOCK, "b-1", now=now + timedelta(seconds=1)
+    )
+    assert retried["phase_index"] == second["phase_index"]
+    assert retried["last_outcome"] == second["last_outcome"]
+
     with pytest.raises(DuplicateAction):
         await service.submit_action(
-            match, 202, ArenaPlayerAction.BLOCK, "b-1", now=now + timedelta(seconds=1)
+            match, 101, ArenaPlayerAction.BLOCK, "b-1", now=now + timedelta(seconds=1)
         )
     assert any(channel == "arena:match:-700001:11" for channel, _ in service.redis.published)
 
@@ -173,4 +182,4 @@ async def test_forfeit_is_idempotent(service):
 
     assert first["result"] == "technical_loss"
     assert first["winner_id"] == 202
-    assert second == first
+    assert second == {**first, "viewer_id": 101, "viewer_side": "player"}

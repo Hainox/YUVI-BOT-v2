@@ -1,7 +1,7 @@
 # Yuvi Arena — план разработки
 
 **Связанный документ:** `FIGHTING_SPEC.md`
-**Статус на 2026-08-07:** Фазы 0–4 и базовый Mini App lobby-срез частично реализованы; текущие изменения в коде покрывают Arena hub/lobby, а не полный боевой релиз.
+**Статус на 2026-08-07:** Фазы 0–4 и базовый Mini App lobby-срез реализованы. Phase 4 доставляет серверную PvP-сессию, authenticated REST/SSE runtime и экран `/arena/match/[id]`; settlement, рейтинг, XP и полноценные визуальные ассеты остаются следующими фазами.
 
 ## Фактическая карта текущей реализации
 
@@ -14,7 +14,7 @@
 | Fighter selection | 4 бойца, данные из `common/arena/fighters.py` |
 | Money safety | `economy_service`, idempotency keys, transaction rollback |
 | Privacy | чужой fighter скрыт до active; runtime API проверяет участника |
-| Runtime | backend API/session service есть; полноценный `/arena/match/[id]` Mini App экран ещё не подключён |
+| Runtime | Redis-backed backend session, authenticated REST/SSE API и `/arena/match/[id]` Mini App combat screen подключены |
 | Settlement/rating/XP | целевая часть ТЗ, следующий этап |
 
 Фактические API-маршруты lobby являются источником истины для текущего среза. В старом плане ниже `GET /api/v1/arena/lobby` следует читать как целевой агрегированный endpoint; он пока не реализован и не используется Mini App.
@@ -329,7 +329,7 @@ POST /api/v1/arena/matches/{id}/forfeit
 
 - плитка Arena в `miniapp/src/routes/+page.svelte` — **готово**;
 - базовый lobby `/arena`: создание, принятие, подтверждение, отмена и восстановление собственного матча — **готово**;
-- полный экран боя `/arena/match/[id]`, пять action-кнопок и runtime/SSE UI — **следующий этап**;
+- полный экран боя `/arena/match/[id]`, пять action-кнопок и runtime/SSE UI — **готово в Phase 4**;
 - 2.5D неоновая сцена;
 - выбор бойца с полными характеристиками;
 - свободная ставка с подтверждением;

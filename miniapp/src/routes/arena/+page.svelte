@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { goto } from '$app/navigation';
 	import { apiFetch, ApiError } from '$lib/api';
 	import { haptic } from '$lib/tg';
 
@@ -299,7 +300,9 @@
 						{busy ? 'ПОДТВЕРЖДАЕМ…' : 'ПОДТВЕРДИТЬ УЧАСТИЕ'}
 					</button>
 				{:else if activeMatch.status === 'active'}
-					<div class="active-match-ready">Бой начат — runtime-экран будет следующим экраном Arena.</div>
+					<button type="button" class="arena-cta" onclick={() => goto(`/arena/match/${activeMatch!.id}`)}>
+						ПЕРЕЙТИ В БОЙ
+					</button>
 				{/if}
 			</div>
 		</section>

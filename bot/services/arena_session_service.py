@@ -127,6 +127,8 @@ class ArenaSessionService:
 
         ArenaSessionService._require_participant(state, viewer_id)
         public = copy.deepcopy(state)
+        public["viewer_id"] = viewer_id
+        public["viewer_side"] = ArenaSessionService._side(state, viewer_id)
         public["actions"] = {
             user_id: entry
             for user_id, entry in state["actions"].items()
@@ -159,10 +161,16 @@ class ArenaSessionService:
         async with self._match_lock(match):
             state = await self._read_required(match)
             self._require_participant(state, user_id)
+            processed = state["processed_actions"].get(client_action_id)
+            if processed is not None:
+                if processed.get("user_id") == user_id:
+                    # Safe retry after a lost response: return the current
+                    # authoritative snapshot instead of making the client
+                    # invent a second action for the same phase.
+                    return self.public_state(state, user_id)
+                raise DuplicateAction("Идентификатор действия уже занят")
             if state["terminal"]:
                 raise SessionConflict("Матч уже завершён")
-            if client_action_id in state["processed_actions"]:
-                raise DuplicateAction("Действие уже обработано")
 
             if current >= _parse_time(state["phase_deadline"]):
                 outcomes = self._resolve_expired_phases(state, current)
@@ -198,6 +206,8 @@ class ArenaSessionService:
             await self._persist(match, state)
             for outcome in outcomes:
                 await self._publish(match, "phase_resolved", outcome)
+            if state["terminal"]:
+                await self._publish(match, "match_terminal", state)
             return self.public_state(state, user_id)
 
     async def tick(self, match, *, now: datetime | None = None) -> dict[str, Any]:
@@ -264,7 +274,7 @@ class ArenaSessionService:
             state = await self._read_required(match)
             self._require_participant(state, user_id)
             if state["terminal"]:
-                return state
+                return self.public_state(state, user_id)
             winner_id = self._other_user(state, user_id)
             state.update(
                 terminal=True,
@@ -289,13 +299,44 @@ class ArenaSessionService:
             raise SessionNotFound(f"Активная сессия матча #{match.id} не найдена")
         return state
 
-    @staticmethod
-    def _restore_from_match(match) -> dict[str, Any] | None:
+    def _restore_from_match(self, match) -> dict[str, Any] | None:
         replay_data = getattr(match, "replay_data", None)
         if not isinstance(replay_data, dict):
             return None
         runtime_state = replay_data.get("runtime_state")
-        return runtime_state if isinstance(runtime_state, dict) else None
+        if not isinstance(runtime_state, dict):
+            return None
+
+        # Snapshots may outlive a deploy. Fill fields introduced by later
+        # runtime versions and derive fighter-specific HUD limits from the
+        # authoritative fighter definition instead of using a client fallback.
+        import copy
+        from common.arena.fighters import FIGHTERS
+
+        state = copy.deepcopy(runtime_state)
+        state.setdefault("phase_duration_seconds", self.config.phase_duration_seconds)
+        state.setdefault("actions", {})
+        state.setdefault("processed_actions", {})
+        state.setdefault("outcome_history", [])
+        state.setdefault("last_outcome", None)
+        state.setdefault("terminal", False)
+        state.setdefault("refund_required", False)
+        state.setdefault("connections", {})
+        for side in ("player", "opponent"):
+            combatant = state.get("engine", {}).get(side, {})
+            fighter_value = combatant.get("fighter") or state.get("fighters", {}).get(side)
+            if fighter_value is not None:
+                fighter = FIGHTERS[FighterType(fighter_value)]
+                combatant["fighter"] = fighter.fighter_type.value
+                combatant["max_hp"] = fighter.max_hp
+            combatant.setdefault("max_energy", self.config.max_energy)
+            combatant.setdefault("dodge_cooldown_remaining", 0)
+            combatant.setdefault("damage_reduction_phases", 0)
+            combatant.setdefault("damage_bonus_percent", 0)
+            combatant.setdefault("damage_bonus_phases", 0)
+            combatant.setdefault("trap_phases", 0)
+            state.setdefault("engine", {})[side] = combatant
+        return state
 
     async def _read(self, key: str) -> dict[str, Any] | None:
         raw = await self.redis.get(key)
@@ -341,13 +382,14 @@ class ArenaSessionService:
             "phase_index": 0,
             "phase_started_at": _iso(now),
             "phase_deadline": _iso(now + timedelta(seconds=self.config.phase_duration_seconds)),
+            "phase_duration_seconds": self.config.phase_duration_seconds,
             "actions": {},
             "processed_actions": {},
             "connections": {
                 str(match.creator_id): {"connected": True, "deadline": None},
                 str(match.opponent_id): {"connected": True, "deadline": None},
             },
-            "engine": _engine_to_dict(engine_state),
+            "engine": _engine_to_dict(engine_state, max_energy=self.config.max_energy),
             "allowed_actions": [action.value for action in ArenaPlayerAction],
             "last_outcome": None,
             "outcome_history": [],
@@ -380,7 +422,7 @@ class ArenaSessionService:
             opponent_entry["action"] if opponent_entry else None,
         )
         old_phase = state["phase_index"]
-        state["engine"] = _engine_to_dict(outcome.state)
+        state["engine"] = _engine_to_dict(outcome.state, max_energy=self.config.max_energy)
         state["phase_index"] = outcome.state.phase_index
         state["phase_started_at"] = _iso(now)
         state["phase_deadline"] = _iso(now + timedelta(seconds=self.config.phase_duration_seconds))
@@ -501,11 +543,13 @@ def _parse_time(value: str) -> datetime:
     return _utc(datetime.fromisoformat(value))
 
 
-def _engine_to_dict(state: MatchState) -> dict[str, Any]:
+def _engine_to_dict(state: MatchState, *, max_energy: int = 100) -> dict[str, Any]:
     def combatant_to_dict(combatant: CombatantState) -> dict[str, Any]:
         return {
             "fighter": combatant.fighter.fighter_type.value,
             "hp": combatant.hp,
+            "max_hp": combatant.fighter.max_hp,
+            "max_energy": max_energy,
             "energy": combatant.energy,
             "dodge_cooldown_remaining": combatant.dodge_cooldown_remaining,
             "damage_reduction_phases": combatant.damage_reduction_phases,
