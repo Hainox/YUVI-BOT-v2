@@ -1,12 +1,12 @@
 {
   "game": "teto_slots",
   "bet": 500,
-  "payout": 1200,
+  "payout": 400,
   "outcome": {
     "initial_blocks": [
       {
         "block_id": 0,
-        "symbol_id": "teto_chimera",
+        "symbol_id": "skull_cringe",
         "row": 0,
         "col": 0,
         "height": 1,
@@ -14,7 +14,7 @@
       },
       {
         "block_id": 1,
-        "symbol_id": "teto_0401",
+        "symbol_id": "baguette_crumb",
         "row": 0,
         "col": 1,
         "height": 1,
@@ -22,7 +22,7 @@
       },
       {
         "block_id": 2,
-        "symbol_id": "teto_0401",
+        "symbol_id": "teto_chimera",
         "row": 0,
         "col": 2,
         "height": 1,
@@ -30,7 +30,7 @@
       },
       {
         "block_id": 3,
-        "symbol_id": "baguette_crumb",
+        "symbol_id": "teto_drill_rage",
         "row": 0,
         "col": 3,
         "height": 1,
@@ -38,7 +38,7 @@
       },
       {
         "block_id": 4,
-        "symbol_id": "utau_note",
+        "symbol_id": "drill_lollipop",
         "row": 0,
         "col": 4,
         "height": 1,
@@ -54,7 +54,7 @@
       },
       {
         "block_id": 6,
-        "symbol_id": "skull_cringe",
+        "symbol_id": "baguette_crumb",
         "row": 1,
         "col": 0,
         "height": 1,
@@ -62,7 +62,7 @@
       },
       {
         "block_id": 7,
-        "symbol_id": "teto_0401",
+        "symbol_id": "baguette_crumb",
         "row": 1,
         "col": 1,
         "height": 1,
@@ -70,7 +70,7 @@
       },
       {
         "block_id": 8,
-        "symbol_id": "skull_cringe",
+        "symbol_id": "teto_chimera",
         "row": 1,
         "col": 2,
         "height": 1,
@@ -78,7 +78,7 @@
       },
       {
         "block_id": 9,
-        "symbol_id": "skull_cringe",
+        "symbol_id": "teto_baguette_knight",
         "row": 1,
         "col": 3,
         "height": 1,
@@ -86,7 +86,7 @@
       },
       {
         "block_id": 10,
-        "symbol_id": "teto_drill_rage",
+        "symbol_id": "utau_note",
         "row": 1,
         "col": 4,
         "height": 1,
@@ -94,7 +94,7 @@
       },
       {
         "block_id": 11,
-        "symbol_id": "skull_cringe",
+        "symbol_id": "baguette_crumb",
         "row": 1,
         "col": 5,
         "height": 1,
@@ -102,7 +102,7 @@
       },
       {
         "block_id": 12,
-        "symbol_id": "teto_0401",
+        "symbol_id": "utau_note",
         "row": 2,
         "col": 0,
         "height": 1,
@@ -110,7 +110,7 @@
       },
       {
         "block_id": 13,
-        "symbol_id": "drill_lollipop",
+        "symbol_id": "teto_drill_rage",
         "row": 2,
         "col": 1,
         "height": 1,
@@ -118,7 +118,7 @@
       },
       {
         "block_id": 14,
-        "symbol_id": "baguette_crumb",
+        "symbol_id": "teto_drill_rage",
         "row": 2,
         "col": 2,
         "height": 1,
@@ -134,7 +134,7 @@
       },
       {
         "block_id": 16,
-        "symbol_id": "baguette_crumb",
+        "symbol_id": "utau_note",
         "row": 2,
         "col": 4,
         "height": 1,
@@ -142,7 +142,7 @@
       },
       {
         "block_id": 17,
-        "symbol_id": "baguette_cerberus",
+        "symbol_id": "drill_lollipop",
         "row": 2,
         "col": 5,
         "height": 1,
@@ -150,7 +150,7 @@
       },
       {
         "block_id": 18,
-        "symbol_id": "skull_cringe",
+        "symbol_id": "baguette_crumb",
         "row": 3,
         "col": 0,
         "height": 1,
@@ -158,7 +158,7 @@
       },
       {
         "block_id": 19,
-        "symbol_id": "skull_cringe",
+        "symbol_id": "utau_note",
         "row": 3,
         "col": 1,
         "height": 1,
@@ -166,7 +166,7 @@
       },
       {
         "block_id": 20,
-        "symbol_id": "teto_drill_rage",
+        "symbol_id": "utau_note",
         "row": 3,
         "col": 2,
         "height": 1,
@@ -174,7 +174,7 @@
       },
       {
         "block_id": 21,
-        "symbol_id": "teto_0401",
+        "symbol_id": "baguette_crumb",
         "row": 3,
         "col": 3,
         "height": 1,
@@ -182,7 +182,7 @@
       },
       {
         "block_id": 22,
-        "symbol_id": "teto_0401",
+        "symbol_id": "baguette_cerberus",
         "row": 3,
         "col": 4,
         "height": 1,
@@ -190,7 +190,7 @@
       },
       {
         "block_id": 23,
-        "symbol_id": "baguette_crumb",
+        "symbol_id": "utau_note",
         "row": 3,
         "col": 5,
         "height": 1,
@@ -198,7 +198,7 @@
       },
       {
         "block_id": 24,
-        "symbol_id": "teto_baguette_knight",
+        "symbol_id": "utau_note",
         "row": 4,
         "col": 0,
         "height": 1,
@@ -206,7 +206,7 @@
       },
       {
         "block_id": 25,
-        "symbol_id": "skull_cringe",
+        "symbol_id": "drill_lollipop",
         "row": 4,
         "col": 1,
         "height": 1,
@@ -214,7 +214,7 @@
       },
       {
         "block_id": 26,
-        "symbol_id": "utau_note",
+        "symbol_id": "drill_lollipop",
         "row": 4,
         "col": 2,
         "height": 1,
@@ -222,7 +222,7 @@
       },
       {
         "block_id": 27,
-        "symbol_id": "teto_baguette_knight",
+        "symbol_id": "skull_cringe",
         "row": 4,
         "col": 3,
         "height": 1,
@@ -230,7 +230,7 @@
       },
       {
         "block_id": 28,
-        "symbol_id": "teto_0401",
+        "symbol_id": "utau_note",
         "row": 4,
         "col": 4,
         "height": 1,
@@ -238,7 +238,7 @@
       },
       {
         "block_id": 29,
-        "symbol_id": "drill_lollipop",
+        "symbol_id": "teto_0401",
         "row": 4,
         "col": 5,
         "height": 1,
@@ -246,7 +246,7 @@
       },
       {
         "block_id": 30,
-        "symbol_id": "teto_chimera",
+        "symbol_id": "skull_cringe",
         "row": 5,
         "col": 0,
         "height": 1,
@@ -262,7 +262,7 @@
       },
       {
         "block_id": 32,
-        "symbol_id": "utau_note",
+        "symbol_id": "teto_0401",
         "row": 5,
         "col": 2,
         "height": 1,
@@ -270,7 +270,7 @@
       },
       {
         "block_id": 33,
-        "symbol_id": "baguette_crumb",
+        "symbol_id": "skull_cringe",
         "row": 5,
         "col": 3,
         "height": 1,
@@ -278,7 +278,7 @@
       },
       {
         "block_id": 34,
-        "symbol_id": "baguette_crumb",
+        "symbol_id": "skull_cringe",
         "row": 5,
         "col": 4,
         "height": 1,
@@ -286,7 +286,7 @@
       },
       {
         "block_id": 35,
-        "symbol_id": "baguette_crumb",
+        "symbol_id": "teto_drill_rage",
         "row": 5,
         "col": 5,
         "height": 1,
@@ -297,7 +297,7 @@
       "blocks": [
         {
           "block_id": 30,
-          "symbol_id": "teto_chimera",
+          "symbol_id": "skull_cringe",
           "row": 5,
           "col": 0,
           "height": 1,
@@ -313,7 +313,7 @@
         },
         {
           "block_id": 32,
-          "symbol_id": "utau_note",
+          "symbol_id": "teto_0401",
           "row": 5,
           "col": 2,
           "height": 1,
@@ -321,7 +321,7 @@
         },
         {
           "block_id": 33,
-          "symbol_id": "baguette_crumb",
+          "symbol_id": "skull_cringe",
           "row": 5,
           "col": 3,
           "height": 1,
@@ -329,7 +329,7 @@
         },
         {
           "block_id": 34,
-          "symbol_id": "baguette_crumb",
+          "symbol_id": "skull_cringe",
           "row": 5,
           "col": 4,
           "height": 1,
@@ -337,23 +337,15 @@
         },
         {
           "block_id": 35,
-          "symbol_id": "baguette_crumb",
+          "symbol_id": "teto_drill_rage",
           "row": 5,
           "col": 5,
           "height": 1,
           "width": 1
         },
         {
-          "block_id": 24,
-          "symbol_id": "teto_baguette_knight",
-          "row": 4,
-          "col": 0,
-          "height": 1,
-          "width": 1
-        },
-        {
           "block_id": 25,
-          "symbol_id": "skull_cringe",
+          "symbol_id": "drill_lollipop",
           "row": 4,
           "col": 1,
           "height": 1,
@@ -361,7 +353,7 @@
         },
         {
           "block_id": 26,
-          "symbol_id": "utau_note",
+          "symbol_id": "drill_lollipop",
           "row": 4,
           "col": 2,
           "height": 1,
@@ -369,7 +361,7 @@
         },
         {
           "block_id": 27,
-          "symbol_id": "teto_baguette_knight",
+          "symbol_id": "skull_cringe",
           "row": 4,
           "col": 3,
           "height": 1,
@@ -377,7 +369,7 @@
         },
         {
           "block_id": 28,
-          "symbol_id": "teto_0401",
+          "symbol_id": "utau_note",
           "row": 4,
           "col": 4,
           "height": 1,
@@ -385,7 +377,7 @@
         },
         {
           "block_id": 29,
-          "symbol_id": "drill_lollipop",
+          "symbol_id": "teto_0401",
           "row": 4,
           "col": 5,
           "height": 1,
@@ -393,31 +385,15 @@
         },
         {
           "block_id": 18,
-          "symbol_id": "skull_cringe",
-          "row": 3,
+          "symbol_id": "baguette_crumb",
+          "row": 4,
           "col": 0,
           "height": 1,
           "width": 1
         },
         {
-          "block_id": 19,
-          "symbol_id": "skull_cringe",
-          "row": 3,
-          "col": 1,
-          "height": 1,
-          "width": 1
-        },
-        {
-          "block_id": 20,
-          "symbol_id": "teto_drill_rage",
-          "row": 3,
-          "col": 2,
-          "height": 1,
-          "width": 1
-        },
-        {
           "block_id": 21,
-          "symbol_id": "teto_0401",
+          "symbol_id": "baguette_crumb",
           "row": 3,
           "col": 3,
           "height": 1,
@@ -425,7 +401,7 @@
         },
         {
           "block_id": 22,
-          "symbol_id": "teto_0401",
+          "symbol_id": "baguette_cerberus",
           "row": 3,
           "col": 4,
           "height": 1,
@@ -433,7 +409,7 @@
         },
         {
           "block_id": 23,
-          "symbol_id": "baguette_crumb",
+          "symbol_id": "utau_note",
           "row": 3,
           "col": 5,
           "height": 1,
@@ -441,16 +417,16 @@
         },
         {
           "block_id": 13,
-          "symbol_id": "drill_lollipop",
-          "row": 2,
+          "symbol_id": "teto_drill_rage",
+          "row": 3,
           "col": 1,
           "height": 1,
           "width": 1
         },
         {
           "block_id": 14,
-          "symbol_id": "baguette_crumb",
-          "row": 2,
+          "symbol_id": "teto_drill_rage",
+          "row": 3,
           "col": 2,
           "height": 1,
           "width": 1
@@ -465,7 +441,7 @@
         },
         {
           "block_id": 16,
-          "symbol_id": "baguette_crumb",
+          "symbol_id": "utau_note",
           "row": 2,
           "col": 4,
           "height": 1,
@@ -473,7 +449,7 @@
         },
         {
           "block_id": 17,
-          "symbol_id": "baguette_cerberus",
+          "symbol_id": "drill_lollipop",
           "row": 2,
           "col": 5,
           "height": 1,
@@ -481,23 +457,31 @@
         },
         {
           "block_id": 6,
-          "symbol_id": "skull_cringe",
-          "row": 2,
+          "symbol_id": "baguette_crumb",
+          "row": 3,
           "col": 0,
           "height": 1,
           "width": 1
         },
         {
+          "block_id": 7,
+          "symbol_id": "baguette_crumb",
+          "row": 2,
+          "col": 1,
+          "height": 1,
+          "width": 1
+        },
+        {
           "block_id": 8,
-          "symbol_id": "skull_cringe",
-          "row": 1,
+          "symbol_id": "teto_chimera",
+          "row": 2,
           "col": 2,
           "height": 1,
           "width": 1
         },
         {
           "block_id": 9,
-          "symbol_id": "skull_cringe",
+          "symbol_id": "teto_baguette_knight",
           "row": 1,
           "col": 3,
           "height": 1,
@@ -505,7 +489,7 @@
         },
         {
           "block_id": 10,
-          "symbol_id": "teto_drill_rage",
+          "symbol_id": "utau_note",
           "row": 1,
           "col": 4,
           "height": 1,
@@ -513,7 +497,7 @@
         },
         {
           "block_id": 11,
-          "symbol_id": "skull_cringe",
+          "symbol_id": "baguette_crumb",
           "row": 1,
           "col": 5,
           "height": 1,
@@ -521,23 +505,31 @@
         },
         {
           "block_id": 0,
-          "symbol_id": "teto_chimera",
-          "row": 1,
+          "symbol_id": "skull_cringe",
+          "row": 2,
           "col": 0,
           "height": 1,
           "width": 1
         },
         {
           "block_id": 1,
-          "symbol_id": "teto_0401",
+          "symbol_id": "baguette_crumb",
           "row": 1,
           "col": 1,
           "height": 1,
           "width": 1
         },
         {
+          "block_id": 2,
+          "symbol_id": "teto_chimera",
+          "row": 1,
+          "col": 2,
+          "height": 1,
+          "width": 1
+        },
+        {
           "block_id": 3,
-          "symbol_id": "baguette_crumb",
+          "symbol_id": "teto_drill_rage",
           "row": 0,
           "col": 3,
           "height": 1,
@@ -545,7 +537,7 @@
         },
         {
           "block_id": 4,
-          "symbol_id": "utau_note",
+          "symbol_id": "drill_lollipop",
           "row": 0,
           "col": 4,
           "height": 1,
@@ -561,7 +553,7 @@
         },
         {
           "block_id": 36,
-          "symbol_id": "baguette_crumb",
+          "symbol_id": "drill_lollipop",
           "row": 0,
           "col": 0,
           "height": 1,
@@ -569,7 +561,7 @@
         },
         {
           "block_id": 37,
-          "symbol_id": "skull_cringe",
+          "symbol_id": "utau_note",
           "row": 0,
           "col": 1,
           "height": 1,
@@ -582,10 +574,18 @@
           "col": 2,
           "height": 1,
           "width": 1
+        },
+        {
+          "block_id": 39,
+          "symbol_id": "utau_note",
+          "row": 1,
+          "col": 0,
+          "height": 1,
+          "width": 1
         }
       ],
-      "raw_round_payout": 1200,
-      "total_cells_won": 3,
+      "raw_round_payout": 400,
+      "total_cells_won": 4,
       "cells_converted_by_drill_hunt": 0,
       "drill_hunt_fired": false,
       "drill_hunt_wave_fired": false,
@@ -602,11 +602,11 @@
       "multiplier": 1,
       "crossed_thresholds": []
     },
-    "total_payout": 1200,
+    "total_payout": 400,
     "final_blocks": [
       {
         "block_id": 30,
-        "symbol_id": "teto_chimera",
+        "symbol_id": "skull_cringe",
         "row": 5,
         "col": 0,
         "height": 1,
@@ -622,7 +622,7 @@
       },
       {
         "block_id": 32,
-        "symbol_id": "utau_note",
+        "symbol_id": "teto_0401",
         "row": 5,
         "col": 2,
         "height": 1,
@@ -630,7 +630,7 @@
       },
       {
         "block_id": 33,
-        "symbol_id": "baguette_crumb",
+        "symbol_id": "skull_cringe",
         "row": 5,
         "col": 3,
         "height": 1,
@@ -638,7 +638,7 @@
       },
       {
         "block_id": 34,
-        "symbol_id": "baguette_crumb",
+        "symbol_id": "skull_cringe",
         "row": 5,
         "col": 4,
         "height": 1,
@@ -646,23 +646,15 @@
       },
       {
         "block_id": 35,
-        "symbol_id": "baguette_crumb",
+        "symbol_id": "teto_drill_rage",
         "row": 5,
         "col": 5,
         "height": 1,
         "width": 1
       },
       {
-        "block_id": 24,
-        "symbol_id": "teto_baguette_knight",
-        "row": 4,
-        "col": 0,
-        "height": 1,
-        "width": 1
-      },
-      {
         "block_id": 25,
-        "symbol_id": "skull_cringe",
+        "symbol_id": "drill_lollipop",
         "row": 4,
         "col": 1,
         "height": 1,
@@ -670,7 +662,7 @@
       },
       {
         "block_id": 26,
-        "symbol_id": "utau_note",
+        "symbol_id": "drill_lollipop",
         "row": 4,
         "col": 2,
         "height": 1,
@@ -678,7 +670,7 @@
       },
       {
         "block_id": 27,
-        "symbol_id": "teto_baguette_knight",
+        "symbol_id": "skull_cringe",
         "row": 4,
         "col": 3,
         "height": 1,
@@ -686,7 +678,7 @@
       },
       {
         "block_id": 28,
-        "symbol_id": "teto_0401",
+        "symbol_id": "utau_note",
         "row": 4,
         "col": 4,
         "height": 1,
@@ -694,7 +686,7 @@
       },
       {
         "block_id": 29,
-        "symbol_id": "drill_lollipop",
+        "symbol_id": "teto_0401",
         "row": 4,
         "col": 5,
         "height": 1,
@@ -702,31 +694,15 @@
       },
       {
         "block_id": 18,
-        "symbol_id": "skull_cringe",
-        "row": 3,
+        "symbol_id": "baguette_crumb",
+        "row": 4,
         "col": 0,
         "height": 1,
         "width": 1
       },
       {
-        "block_id": 19,
-        "symbol_id": "skull_cringe",
-        "row": 3,
-        "col": 1,
-        "height": 1,
-        "width": 1
-      },
-      {
-        "block_id": 20,
-        "symbol_id": "teto_drill_rage",
-        "row": 3,
-        "col": 2,
-        "height": 1,
-        "width": 1
-      },
-      {
         "block_id": 21,
-        "symbol_id": "teto_0401",
+        "symbol_id": "baguette_crumb",
         "row": 3,
         "col": 3,
         "height": 1,
@@ -734,7 +710,7 @@
       },
       {
         "block_id": 22,
-        "symbol_id": "teto_0401",
+        "symbol_id": "baguette_cerberus",
         "row": 3,
         "col": 4,
         "height": 1,
@@ -742,7 +718,7 @@
       },
       {
         "block_id": 23,
-        "symbol_id": "baguette_crumb",
+        "symbol_id": "utau_note",
         "row": 3,
         "col": 5,
         "height": 1,
@@ -750,16 +726,16 @@
       },
       {
         "block_id": 13,
-        "symbol_id": "drill_lollipop",
-        "row": 2,
+        "symbol_id": "teto_drill_rage",
+        "row": 3,
         "col": 1,
         "height": 1,
         "width": 1
       },
       {
         "block_id": 14,
-        "symbol_id": "baguette_crumb",
-        "row": 2,
+        "symbol_id": "teto_drill_rage",
+        "row": 3,
         "col": 2,
         "height": 1,
         "width": 1
@@ -774,7 +750,7 @@
       },
       {
         "block_id": 16,
-        "symbol_id": "baguette_crumb",
+        "symbol_id": "utau_note",
         "row": 2,
         "col": 4,
         "height": 1,
@@ -782,7 +758,7 @@
       },
       {
         "block_id": 17,
-        "symbol_id": "baguette_cerberus",
+        "symbol_id": "drill_lollipop",
         "row": 2,
         "col": 5,
         "height": 1,
@@ -790,23 +766,31 @@
       },
       {
         "block_id": 6,
-        "symbol_id": "skull_cringe",
-        "row": 2,
+        "symbol_id": "baguette_crumb",
+        "row": 3,
         "col": 0,
         "height": 1,
         "width": 1
       },
       {
+        "block_id": 7,
+        "symbol_id": "baguette_crumb",
+        "row": 2,
+        "col": 1,
+        "height": 1,
+        "width": 1
+      },
+      {
         "block_id": 8,
-        "symbol_id": "skull_cringe",
-        "row": 1,
+        "symbol_id": "teto_chimera",
+        "row": 2,
         "col": 2,
         "height": 1,
         "width": 1
       },
       {
         "block_id": 9,
-        "symbol_id": "skull_cringe",
+        "symbol_id": "teto_baguette_knight",
         "row": 1,
         "col": 3,
         "height": 1,
@@ -814,7 +798,7 @@
       },
       {
         "block_id": 10,
-        "symbol_id": "teto_drill_rage",
+        "symbol_id": "utau_note",
         "row": 1,
         "col": 4,
         "height": 1,
@@ -822,7 +806,7 @@
       },
       {
         "block_id": 11,
-        "symbol_id": "skull_cringe",
+        "symbol_id": "baguette_crumb",
         "row": 1,
         "col": 5,
         "height": 1,
@@ -830,23 +814,31 @@
       },
       {
         "block_id": 0,
-        "symbol_id": "teto_chimera",
-        "row": 1,
+        "symbol_id": "skull_cringe",
+        "row": 2,
         "col": 0,
         "height": 1,
         "width": 1
       },
       {
         "block_id": 1,
-        "symbol_id": "teto_0401",
+        "symbol_id": "baguette_crumb",
         "row": 1,
         "col": 1,
         "height": 1,
         "width": 1
       },
       {
+        "block_id": 2,
+        "symbol_id": "teto_chimera",
+        "row": 1,
+        "col": 2,
+        "height": 1,
+        "width": 1
+      },
+      {
         "block_id": 3,
-        "symbol_id": "baguette_crumb",
+        "symbol_id": "teto_drill_rage",
         "row": 0,
         "col": 3,
         "height": 1,
@@ -854,7 +846,7 @@
       },
       {
         "block_id": 4,
-        "symbol_id": "utau_note",
+        "symbol_id": "drill_lollipop",
         "row": 0,
         "col": 4,
         "height": 1,
@@ -870,7 +862,7 @@
       },
       {
         "block_id": 36,
-        "symbol_id": "baguette_crumb",
+        "symbol_id": "drill_lollipop",
         "row": 0,
         "col": 0,
         "height": 1,
@@ -878,7 +870,7 @@
       },
       {
         "block_id": 37,
-        "symbol_id": "skull_cringe",
+        "symbol_id": "utau_note",
         "row": 0,
         "col": 1,
         "height": 1,
@@ -891,15 +883,23 @@
         "col": 2,
         "height": 1,
         "width": 1
+      },
+      {
+        "block_id": 39,
+        "symbol_id": "utau_note",
+        "row": 1,
+        "col": 0,
+        "height": 1,
+        "width": 1
       }
     ]
   },
-  "user_balance_after": 10700,
+  "user_balance_after": 9900,
   "bank_capped": false,
   "animation": {
     "version": 1,
-    "payout_paid": 1200,
-    "payout_engine_total": 1200,
+    "payout_paid": 400,
+    "payout_engine_total": 400,
     "bank_capped": false,
     "ladder_thresholds": [
       {
@@ -929,7 +929,7 @@
         "blocks": [
           {
             "block_id": 0,
-            "symbol_id": "teto_chimera",
+            "symbol_id": "skull_cringe",
             "row": 0,
             "col": 0,
             "height": 1,
@@ -937,7 +937,7 @@
           },
           {
             "block_id": 1,
-            "symbol_id": "teto_0401",
+            "symbol_id": "baguette_crumb",
             "row": 0,
             "col": 1,
             "height": 1,
@@ -945,7 +945,7 @@
           },
           {
             "block_id": 2,
-            "symbol_id": "teto_0401",
+            "symbol_id": "teto_chimera",
             "row": 0,
             "col": 2,
             "height": 1,
@@ -953,7 +953,7 @@
           },
           {
             "block_id": 3,
-            "symbol_id": "baguette_crumb",
+            "symbol_id": "teto_drill_rage",
             "row": 0,
             "col": 3,
             "height": 1,
@@ -961,7 +961,7 @@
           },
           {
             "block_id": 4,
-            "symbol_id": "utau_note",
+            "symbol_id": "drill_lollipop",
             "row": 0,
             "col": 4,
             "height": 1,
@@ -977,7 +977,7 @@
           },
           {
             "block_id": 6,
-            "symbol_id": "skull_cringe",
+            "symbol_id": "baguette_crumb",
             "row": 1,
             "col": 0,
             "height": 1,
@@ -985,7 +985,7 @@
           },
           {
             "block_id": 7,
-            "symbol_id": "teto_0401",
+            "symbol_id": "baguette_crumb",
             "row": 1,
             "col": 1,
             "height": 1,
@@ -993,7 +993,7 @@
           },
           {
             "block_id": 8,
-            "symbol_id": "skull_cringe",
+            "symbol_id": "teto_chimera",
             "row": 1,
             "col": 2,
             "height": 1,
@@ -1001,7 +1001,7 @@
           },
           {
             "block_id": 9,
-            "symbol_id": "skull_cringe",
+            "symbol_id": "teto_baguette_knight",
             "row": 1,
             "col": 3,
             "height": 1,
@@ -1009,7 +1009,7 @@
           },
           {
             "block_id": 10,
-            "symbol_id": "teto_drill_rage",
+            "symbol_id": "utau_note",
             "row": 1,
             "col": 4,
             "height": 1,
@@ -1017,7 +1017,7 @@
           },
           {
             "block_id": 11,
-            "symbol_id": "skull_cringe",
+            "symbol_id": "baguette_crumb",
             "row": 1,
             "col": 5,
             "height": 1,
@@ -1025,7 +1025,7 @@
           },
           {
             "block_id": 12,
-            "symbol_id": "teto_0401",
+            "symbol_id": "utau_note",
             "row": 2,
             "col": 0,
             "height": 1,
@@ -1033,7 +1033,7 @@
           },
           {
             "block_id": 13,
-            "symbol_id": "drill_lollipop",
+            "symbol_id": "teto_drill_rage",
             "row": 2,
             "col": 1,
             "height": 1,
@@ -1041,7 +1041,7 @@
           },
           {
             "block_id": 14,
-            "symbol_id": "baguette_crumb",
+            "symbol_id": "teto_drill_rage",
             "row": 2,
             "col": 2,
             "height": 1,
@@ -1057,7 +1057,7 @@
           },
           {
             "block_id": 16,
-            "symbol_id": "baguette_crumb",
+            "symbol_id": "utau_note",
             "row": 2,
             "col": 4,
             "height": 1,
@@ -1065,7 +1065,7 @@
           },
           {
             "block_id": 17,
-            "symbol_id": "baguette_cerberus",
+            "symbol_id": "drill_lollipop",
             "row": 2,
             "col": 5,
             "height": 1,
@@ -1073,7 +1073,7 @@
           },
           {
             "block_id": 18,
-            "symbol_id": "skull_cringe",
+            "symbol_id": "baguette_crumb",
             "row": 3,
             "col": 0,
             "height": 1,
@@ -1081,7 +1081,7 @@
           },
           {
             "block_id": 19,
-            "symbol_id": "skull_cringe",
+            "symbol_id": "utau_note",
             "row": 3,
             "col": 1,
             "height": 1,
@@ -1089,7 +1089,7 @@
           },
           {
             "block_id": 20,
-            "symbol_id": "teto_drill_rage",
+            "symbol_id": "utau_note",
             "row": 3,
             "col": 2,
             "height": 1,
@@ -1097,7 +1097,7 @@
           },
           {
             "block_id": 21,
-            "symbol_id": "teto_0401",
+            "symbol_id": "baguette_crumb",
             "row": 3,
             "col": 3,
             "height": 1,
@@ -1105,7 +1105,7 @@
           },
           {
             "block_id": 22,
-            "symbol_id": "teto_0401",
+            "symbol_id": "baguette_cerberus",
             "row": 3,
             "col": 4,
             "height": 1,
@@ -1113,7 +1113,7 @@
           },
           {
             "block_id": 23,
-            "symbol_id": "baguette_crumb",
+            "symbol_id": "utau_note",
             "row": 3,
             "col": 5,
             "height": 1,
@@ -1121,7 +1121,7 @@
           },
           {
             "block_id": 24,
-            "symbol_id": "teto_baguette_knight",
+            "symbol_id": "utau_note",
             "row": 4,
             "col": 0,
             "height": 1,
@@ -1129,7 +1129,7 @@
           },
           {
             "block_id": 25,
-            "symbol_id": "skull_cringe",
+            "symbol_id": "drill_lollipop",
             "row": 4,
             "col": 1,
             "height": 1,
@@ -1137,7 +1137,7 @@
           },
           {
             "block_id": 26,
-            "symbol_id": "utau_note",
+            "symbol_id": "drill_lollipop",
             "row": 4,
             "col": 2,
             "height": 1,
@@ -1145,7 +1145,7 @@
           },
           {
             "block_id": 27,
-            "symbol_id": "teto_baguette_knight",
+            "symbol_id": "skull_cringe",
             "row": 4,
             "col": 3,
             "height": 1,
@@ -1153,7 +1153,7 @@
           },
           {
             "block_id": 28,
-            "symbol_id": "teto_0401",
+            "symbol_id": "utau_note",
             "row": 4,
             "col": 4,
             "height": 1,
@@ -1161,7 +1161,7 @@
           },
           {
             "block_id": 29,
-            "symbol_id": "drill_lollipop",
+            "symbol_id": "teto_0401",
             "row": 4,
             "col": 5,
             "height": 1,
@@ -1169,7 +1169,7 @@
           },
           {
             "block_id": 30,
-            "symbol_id": "teto_chimera",
+            "symbol_id": "skull_cringe",
             "row": 5,
             "col": 0,
             "height": 1,
@@ -1185,7 +1185,7 @@
           },
           {
             "block_id": 32,
-            "symbol_id": "utau_note",
+            "symbol_id": "teto_0401",
             "row": 5,
             "col": 2,
             "height": 1,
@@ -1193,7 +1193,7 @@
           },
           {
             "block_id": 33,
-            "symbol_id": "baguette_crumb",
+            "symbol_id": "skull_cringe",
             "row": 5,
             "col": 3,
             "height": 1,
@@ -1201,7 +1201,7 @@
           },
           {
             "block_id": 34,
-            "symbol_id": "baguette_crumb",
+            "symbol_id": "skull_cringe",
             "row": 5,
             "col": 4,
             "height": 1,
@@ -1209,7 +1209,7 @@
           },
           {
             "block_id": 35,
-            "symbol_id": "baguette_crumb",
+            "symbol_id": "teto_drill_rage",
             "row": 5,
             "col": 5,
             "height": 1,
@@ -1225,19 +1225,44 @@
         "source": "cascade",
         "has_win": true,
         "winning_block_ids": [
-          2,
-          7,
-          12
+          12,
+          19,
+          20,
+          24
         ],
         "winning_lines": [
           {
-            "line_index": 18,
-            "symbol_id": "teto_0401",
+            "line_index": 37,
+            "symbol_id": "utau_note",
+            "length": 3,
+            "block_ids": [
+              24,
+              19,
+              20
+            ],
+            "cells": [
+              [
+                4,
+                0
+              ],
+              [
+                3,
+                1
+              ],
+              [
+                3,
+                2
+              ]
+            ]
+          },
+          {
+            "line_index": 41,
+            "symbol_id": "utau_note",
             "length": 3,
             "block_ids": [
               12,
-              7,
-              2
+              19,
+              20
             ],
             "cells": [
               [
@@ -1245,22 +1270,22 @@
                 0
               ],
               [
-                1,
+                3,
                 1
               ],
               [
-                0,
+                3,
                 2
               ]
             ]
           }
         ],
-        "cells_won": 3,
-        "payout": 1200,
+        "cells_won": 4,
+        "payout": 400,
         "blocks": [
           {
             "block_id": 0,
-            "symbol_id": "teto_chimera",
+            "symbol_id": "skull_cringe",
             "row": 0,
             "col": 0,
             "height": 1,
@@ -1268,7 +1293,7 @@
           },
           {
             "block_id": 1,
-            "symbol_id": "teto_0401",
+            "symbol_id": "baguette_crumb",
             "row": 0,
             "col": 1,
             "height": 1,
@@ -1276,7 +1301,7 @@
           },
           {
             "block_id": 2,
-            "symbol_id": "teto_0401",
+            "symbol_id": "teto_chimera",
             "row": 0,
             "col": 2,
             "height": 1,
@@ -1284,7 +1309,7 @@
           },
           {
             "block_id": 3,
-            "symbol_id": "baguette_crumb",
+            "symbol_id": "teto_drill_rage",
             "row": 0,
             "col": 3,
             "height": 1,
@@ -1292,7 +1317,7 @@
           },
           {
             "block_id": 4,
-            "symbol_id": "utau_note",
+            "symbol_id": "drill_lollipop",
             "row": 0,
             "col": 4,
             "height": 1,
@@ -1308,7 +1333,7 @@
           },
           {
             "block_id": 6,
-            "symbol_id": "skull_cringe",
+            "symbol_id": "baguette_crumb",
             "row": 1,
             "col": 0,
             "height": 1,
@@ -1316,7 +1341,7 @@
           },
           {
             "block_id": 7,
-            "symbol_id": "teto_0401",
+            "symbol_id": "baguette_crumb",
             "row": 1,
             "col": 1,
             "height": 1,
@@ -1324,7 +1349,7 @@
           },
           {
             "block_id": 8,
-            "symbol_id": "skull_cringe",
+            "symbol_id": "teto_chimera",
             "row": 1,
             "col": 2,
             "height": 1,
@@ -1332,7 +1357,7 @@
           },
           {
             "block_id": 9,
-            "symbol_id": "skull_cringe",
+            "symbol_id": "teto_baguette_knight",
             "row": 1,
             "col": 3,
             "height": 1,
@@ -1340,7 +1365,7 @@
           },
           {
             "block_id": 10,
-            "symbol_id": "teto_drill_rage",
+            "symbol_id": "utau_note",
             "row": 1,
             "col": 4,
             "height": 1,
@@ -1348,7 +1373,7 @@
           },
           {
             "block_id": 11,
-            "symbol_id": "skull_cringe",
+            "symbol_id": "baguette_crumb",
             "row": 1,
             "col": 5,
             "height": 1,
@@ -1356,7 +1381,7 @@
           },
           {
             "block_id": 12,
-            "symbol_id": "teto_0401",
+            "symbol_id": "utau_note",
             "row": 2,
             "col": 0,
             "height": 1,
@@ -1364,7 +1389,7 @@
           },
           {
             "block_id": 13,
-            "symbol_id": "drill_lollipop",
+            "symbol_id": "teto_drill_rage",
             "row": 2,
             "col": 1,
             "height": 1,
@@ -1372,7 +1397,7 @@
           },
           {
             "block_id": 14,
-            "symbol_id": "baguette_crumb",
+            "symbol_id": "teto_drill_rage",
             "row": 2,
             "col": 2,
             "height": 1,
@@ -1388,7 +1413,7 @@
           },
           {
             "block_id": 16,
-            "symbol_id": "baguette_crumb",
+            "symbol_id": "utau_note",
             "row": 2,
             "col": 4,
             "height": 1,
@@ -1396,7 +1421,7 @@
           },
           {
             "block_id": 17,
-            "symbol_id": "baguette_cerberus",
+            "symbol_id": "drill_lollipop",
             "row": 2,
             "col": 5,
             "height": 1,
@@ -1404,7 +1429,7 @@
           },
           {
             "block_id": 18,
-            "symbol_id": "skull_cringe",
+            "symbol_id": "baguette_crumb",
             "row": 3,
             "col": 0,
             "height": 1,
@@ -1412,7 +1437,7 @@
           },
           {
             "block_id": 19,
-            "symbol_id": "skull_cringe",
+            "symbol_id": "utau_note",
             "row": 3,
             "col": 1,
             "height": 1,
@@ -1420,7 +1445,7 @@
           },
           {
             "block_id": 20,
-            "symbol_id": "teto_drill_rage",
+            "symbol_id": "utau_note",
             "row": 3,
             "col": 2,
             "height": 1,
@@ -1428,7 +1453,7 @@
           },
           {
             "block_id": 21,
-            "symbol_id": "teto_0401",
+            "symbol_id": "baguette_crumb",
             "row": 3,
             "col": 3,
             "height": 1,
@@ -1436,7 +1461,7 @@
           },
           {
             "block_id": 22,
-            "symbol_id": "teto_0401",
+            "symbol_id": "baguette_cerberus",
             "row": 3,
             "col": 4,
             "height": 1,
@@ -1444,7 +1469,7 @@
           },
           {
             "block_id": 23,
-            "symbol_id": "baguette_crumb",
+            "symbol_id": "utau_note",
             "row": 3,
             "col": 5,
             "height": 1,
@@ -1452,7 +1477,7 @@
           },
           {
             "block_id": 24,
-            "symbol_id": "teto_baguette_knight",
+            "symbol_id": "utau_note",
             "row": 4,
             "col": 0,
             "height": 1,
@@ -1460,7 +1485,7 @@
           },
           {
             "block_id": 25,
-            "symbol_id": "skull_cringe",
+            "symbol_id": "drill_lollipop",
             "row": 4,
             "col": 1,
             "height": 1,
@@ -1468,7 +1493,7 @@
           },
           {
             "block_id": 26,
-            "symbol_id": "utau_note",
+            "symbol_id": "drill_lollipop",
             "row": 4,
             "col": 2,
             "height": 1,
@@ -1476,7 +1501,7 @@
           },
           {
             "block_id": 27,
-            "symbol_id": "teto_baguette_knight",
+            "symbol_id": "skull_cringe",
             "row": 4,
             "col": 3,
             "height": 1,
@@ -1484,7 +1509,7 @@
           },
           {
             "block_id": 28,
-            "symbol_id": "teto_0401",
+            "symbol_id": "utau_note",
             "row": 4,
             "col": 4,
             "height": 1,
@@ -1492,7 +1517,7 @@
           },
           {
             "block_id": 29,
-            "symbol_id": "drill_lollipop",
+            "symbol_id": "teto_0401",
             "row": 4,
             "col": 5,
             "height": 1,
@@ -1500,7 +1525,7 @@
           },
           {
             "block_id": 30,
-            "symbol_id": "teto_chimera",
+            "symbol_id": "skull_cringe",
             "row": 5,
             "col": 0,
             "height": 1,
@@ -1516,7 +1541,7 @@
           },
           {
             "block_id": 32,
-            "symbol_id": "utau_note",
+            "symbol_id": "teto_0401",
             "row": 5,
             "col": 2,
             "height": 1,
@@ -1524,7 +1549,7 @@
           },
           {
             "block_id": 33,
-            "symbol_id": "baguette_crumb",
+            "symbol_id": "skull_cringe",
             "row": 5,
             "col": 3,
             "height": 1,
@@ -1532,7 +1557,7 @@
           },
           {
             "block_id": 34,
-            "symbol_id": "baguette_crumb",
+            "symbol_id": "skull_cringe",
             "row": 5,
             "col": 4,
             "height": 1,
@@ -1540,7 +1565,7 @@
           },
           {
             "block_id": 35,
-            "symbol_id": "baguette_crumb",
+            "symbol_id": "teto_drill_rage",
             "row": 5,
             "col": 5,
             "height": 1,
@@ -1556,14 +1581,15 @@
         "source": "cascade",
         "step": 1,
         "removed_block_ids": [
-          2,
-          7,
-          12
+          12,
+          19,
+          20,
+          24
         ],
         "blocks": [
           {
             "block_id": 30,
-            "symbol_id": "teto_chimera",
+            "symbol_id": "skull_cringe",
             "row": 5,
             "col": 0,
             "height": 1,
@@ -1579,7 +1605,7 @@
           },
           {
             "block_id": 32,
-            "symbol_id": "utau_note",
+            "symbol_id": "teto_0401",
             "row": 5,
             "col": 2,
             "height": 1,
@@ -1587,7 +1613,7 @@
           },
           {
             "block_id": 33,
-            "symbol_id": "baguette_crumb",
+            "symbol_id": "skull_cringe",
             "row": 5,
             "col": 3,
             "height": 1,
@@ -1595,7 +1621,7 @@
           },
           {
             "block_id": 34,
-            "symbol_id": "baguette_crumb",
+            "symbol_id": "skull_cringe",
             "row": 5,
             "col": 4,
             "height": 1,
@@ -1603,23 +1629,15 @@
           },
           {
             "block_id": 35,
-            "symbol_id": "baguette_crumb",
+            "symbol_id": "teto_drill_rage",
             "row": 5,
             "col": 5,
             "height": 1,
             "width": 1
           },
           {
-            "block_id": 24,
-            "symbol_id": "teto_baguette_knight",
-            "row": 4,
-            "col": 0,
-            "height": 1,
-            "width": 1
-          },
-          {
             "block_id": 25,
-            "symbol_id": "skull_cringe",
+            "symbol_id": "drill_lollipop",
             "row": 4,
             "col": 1,
             "height": 1,
@@ -1627,7 +1645,7 @@
           },
           {
             "block_id": 26,
-            "symbol_id": "utau_note",
+            "symbol_id": "drill_lollipop",
             "row": 4,
             "col": 2,
             "height": 1,
@@ -1635,7 +1653,7 @@
           },
           {
             "block_id": 27,
-            "symbol_id": "teto_baguette_knight",
+            "symbol_id": "skull_cringe",
             "row": 4,
             "col": 3,
             "height": 1,
@@ -1643,7 +1661,7 @@
           },
           {
             "block_id": 28,
-            "symbol_id": "teto_0401",
+            "symbol_id": "utau_note",
             "row": 4,
             "col": 4,
             "height": 1,
@@ -1651,7 +1669,7 @@
           },
           {
             "block_id": 29,
-            "symbol_id": "drill_lollipop",
+            "symbol_id": "teto_0401",
             "row": 4,
             "col": 5,
             "height": 1,
@@ -1659,31 +1677,15 @@
           },
           {
             "block_id": 18,
-            "symbol_id": "skull_cringe",
-            "row": 3,
+            "symbol_id": "baguette_crumb",
+            "row": 4,
             "col": 0,
             "height": 1,
             "width": 1
           },
           {
-            "block_id": 19,
-            "symbol_id": "skull_cringe",
-            "row": 3,
-            "col": 1,
-            "height": 1,
-            "width": 1
-          },
-          {
-            "block_id": 20,
-            "symbol_id": "teto_drill_rage",
-            "row": 3,
-            "col": 2,
-            "height": 1,
-            "width": 1
-          },
-          {
             "block_id": 21,
-            "symbol_id": "teto_0401",
+            "symbol_id": "baguette_crumb",
             "row": 3,
             "col": 3,
             "height": 1,
@@ -1691,7 +1693,7 @@
           },
           {
             "block_id": 22,
-            "symbol_id": "teto_0401",
+            "symbol_id": "baguette_cerberus",
             "row": 3,
             "col": 4,
             "height": 1,
@@ -1699,7 +1701,7 @@
           },
           {
             "block_id": 23,
-            "symbol_id": "baguette_crumb",
+            "symbol_id": "utau_note",
             "row": 3,
             "col": 5,
             "height": 1,
@@ -1707,16 +1709,16 @@
           },
           {
             "block_id": 13,
-            "symbol_id": "drill_lollipop",
-            "row": 2,
+            "symbol_id": "teto_drill_rage",
+            "row": 3,
             "col": 1,
             "height": 1,
             "width": 1
           },
           {
             "block_id": 14,
-            "symbol_id": "baguette_crumb",
-            "row": 2,
+            "symbol_id": "teto_drill_rage",
+            "row": 3,
             "col": 2,
             "height": 1,
             "width": 1
@@ -1731,7 +1733,7 @@
           },
           {
             "block_id": 16,
-            "symbol_id": "baguette_crumb",
+            "symbol_id": "utau_note",
             "row": 2,
             "col": 4,
             "height": 1,
@@ -1739,7 +1741,7 @@
           },
           {
             "block_id": 17,
-            "symbol_id": "baguette_cerberus",
+            "symbol_id": "drill_lollipop",
             "row": 2,
             "col": 5,
             "height": 1,
@@ -1747,23 +1749,31 @@
           },
           {
             "block_id": 6,
-            "symbol_id": "skull_cringe",
-            "row": 2,
+            "symbol_id": "baguette_crumb",
+            "row": 3,
             "col": 0,
             "height": 1,
             "width": 1
           },
           {
+            "block_id": 7,
+            "symbol_id": "baguette_crumb",
+            "row": 2,
+            "col": 1,
+            "height": 1,
+            "width": 1
+          },
+          {
             "block_id": 8,
-            "symbol_id": "skull_cringe",
-            "row": 1,
+            "symbol_id": "teto_chimera",
+            "row": 2,
             "col": 2,
             "height": 1,
             "width": 1
           },
           {
             "block_id": 9,
-            "symbol_id": "skull_cringe",
+            "symbol_id": "teto_baguette_knight",
             "row": 1,
             "col": 3,
             "height": 1,
@@ -1771,7 +1781,7 @@
           },
           {
             "block_id": 10,
-            "symbol_id": "teto_drill_rage",
+            "symbol_id": "utau_note",
             "row": 1,
             "col": 4,
             "height": 1,
@@ -1779,7 +1789,7 @@
           },
           {
             "block_id": 11,
-            "symbol_id": "skull_cringe",
+            "symbol_id": "baguette_crumb",
             "row": 1,
             "col": 5,
             "height": 1,
@@ -1787,23 +1797,31 @@
           },
           {
             "block_id": 0,
-            "symbol_id": "teto_chimera",
-            "row": 1,
+            "symbol_id": "skull_cringe",
+            "row": 2,
             "col": 0,
             "height": 1,
             "width": 1
           },
           {
             "block_id": 1,
-            "symbol_id": "teto_0401",
+            "symbol_id": "baguette_crumb",
             "row": 1,
             "col": 1,
             "height": 1,
             "width": 1
           },
           {
+            "block_id": 2,
+            "symbol_id": "teto_chimera",
+            "row": 1,
+            "col": 2,
+            "height": 1,
+            "width": 1
+          },
+          {
             "block_id": 3,
-            "symbol_id": "baguette_crumb",
+            "symbol_id": "teto_drill_rage",
             "row": 0,
             "col": 3,
             "height": 1,
@@ -1811,7 +1829,7 @@
           },
           {
             "block_id": 4,
-            "symbol_id": "utau_note",
+            "symbol_id": "drill_lollipop",
             "row": 0,
             "col": 4,
             "height": 1,
@@ -1827,7 +1845,7 @@
           },
           {
             "block_id": 36,
-            "symbol_id": "baguette_crumb",
+            "symbol_id": "drill_lollipop",
             "row": 0,
             "col": 0,
             "height": 1,
@@ -1835,7 +1853,7 @@
           },
           {
             "block_id": 37,
-            "symbol_id": "skull_cringe",
+            "symbol_id": "utau_note",
             "row": 0,
             "col": 1,
             "height": 1,
@@ -1846,6 +1864,14 @@
             "symbol_id": "teto_drill_rage",
             "row": 0,
             "col": 2,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 39,
+            "symbol_id": "utau_note",
+            "row": 1,
+            "col": 0,
             "height": 1,
             "width": 1
           }
@@ -1865,7 +1891,7 @@
         "blocks": [
           {
             "block_id": 30,
-            "symbol_id": "teto_chimera",
+            "symbol_id": "skull_cringe",
             "row": 5,
             "col": 0,
             "height": 1,
@@ -1881,7 +1907,7 @@
           },
           {
             "block_id": 32,
-            "symbol_id": "utau_note",
+            "symbol_id": "teto_0401",
             "row": 5,
             "col": 2,
             "height": 1,
@@ -1889,7 +1915,7 @@
           },
           {
             "block_id": 33,
-            "symbol_id": "baguette_crumb",
+            "symbol_id": "skull_cringe",
             "row": 5,
             "col": 3,
             "height": 1,
@@ -1897,7 +1923,7 @@
           },
           {
             "block_id": 34,
-            "symbol_id": "baguette_crumb",
+            "symbol_id": "skull_cringe",
             "row": 5,
             "col": 4,
             "height": 1,
@@ -1905,23 +1931,15 @@
           },
           {
             "block_id": 35,
-            "symbol_id": "baguette_crumb",
+            "symbol_id": "teto_drill_rage",
             "row": 5,
             "col": 5,
             "height": 1,
             "width": 1
           },
           {
-            "block_id": 24,
-            "symbol_id": "teto_baguette_knight",
-            "row": 4,
-            "col": 0,
-            "height": 1,
-            "width": 1
-          },
-          {
             "block_id": 25,
-            "symbol_id": "skull_cringe",
+            "symbol_id": "drill_lollipop",
             "row": 4,
             "col": 1,
             "height": 1,
@@ -1929,7 +1947,7 @@
           },
           {
             "block_id": 26,
-            "symbol_id": "utau_note",
+            "symbol_id": "drill_lollipop",
             "row": 4,
             "col": 2,
             "height": 1,
@@ -1937,7 +1955,7 @@
           },
           {
             "block_id": 27,
-            "symbol_id": "teto_baguette_knight",
+            "symbol_id": "skull_cringe",
             "row": 4,
             "col": 3,
             "height": 1,
@@ -1945,7 +1963,7 @@
           },
           {
             "block_id": 28,
-            "symbol_id": "teto_0401",
+            "symbol_id": "utau_note",
             "row": 4,
             "col": 4,
             "height": 1,
@@ -1953,7 +1971,7 @@
           },
           {
             "block_id": 29,
-            "symbol_id": "drill_lollipop",
+            "symbol_id": "teto_0401",
             "row": 4,
             "col": 5,
             "height": 1,
@@ -1961,31 +1979,15 @@
           },
           {
             "block_id": 18,
-            "symbol_id": "skull_cringe",
-            "row": 3,
+            "symbol_id": "baguette_crumb",
+            "row": 4,
             "col": 0,
             "height": 1,
             "width": 1
           },
           {
-            "block_id": 19,
-            "symbol_id": "skull_cringe",
-            "row": 3,
-            "col": 1,
-            "height": 1,
-            "width": 1
-          },
-          {
-            "block_id": 20,
-            "symbol_id": "teto_drill_rage",
-            "row": 3,
-            "col": 2,
-            "height": 1,
-            "width": 1
-          },
-          {
             "block_id": 21,
-            "symbol_id": "teto_0401",
+            "symbol_id": "baguette_crumb",
             "row": 3,
             "col": 3,
             "height": 1,
@@ -1993,7 +1995,7 @@
           },
           {
             "block_id": 22,
-            "symbol_id": "teto_0401",
+            "symbol_id": "baguette_cerberus",
             "row": 3,
             "col": 4,
             "height": 1,
@@ -2001,7 +2003,7 @@
           },
           {
             "block_id": 23,
-            "symbol_id": "baguette_crumb",
+            "symbol_id": "utau_note",
             "row": 3,
             "col": 5,
             "height": 1,
@@ -2009,16 +2011,16 @@
           },
           {
             "block_id": 13,
-            "symbol_id": "drill_lollipop",
-            "row": 2,
+            "symbol_id": "teto_drill_rage",
+            "row": 3,
             "col": 1,
             "height": 1,
             "width": 1
           },
           {
             "block_id": 14,
-            "symbol_id": "baguette_crumb",
-            "row": 2,
+            "symbol_id": "teto_drill_rage",
+            "row": 3,
             "col": 2,
             "height": 1,
             "width": 1
@@ -2033,7 +2035,7 @@
           },
           {
             "block_id": 16,
-            "symbol_id": "baguette_crumb",
+            "symbol_id": "utau_note",
             "row": 2,
             "col": 4,
             "height": 1,
@@ -2041,7 +2043,7 @@
           },
           {
             "block_id": 17,
-            "symbol_id": "baguette_cerberus",
+            "symbol_id": "drill_lollipop",
             "row": 2,
             "col": 5,
             "height": 1,
@@ -2049,23 +2051,31 @@
           },
           {
             "block_id": 6,
-            "symbol_id": "skull_cringe",
-            "row": 2,
+            "symbol_id": "baguette_crumb",
+            "row": 3,
             "col": 0,
             "height": 1,
             "width": 1
           },
           {
+            "block_id": 7,
+            "symbol_id": "baguette_crumb",
+            "row": 2,
+            "col": 1,
+            "height": 1,
+            "width": 1
+          },
+          {
             "block_id": 8,
-            "symbol_id": "skull_cringe",
-            "row": 1,
+            "symbol_id": "teto_chimera",
+            "row": 2,
             "col": 2,
             "height": 1,
             "width": 1
           },
           {
             "block_id": 9,
-            "symbol_id": "skull_cringe",
+            "symbol_id": "teto_baguette_knight",
             "row": 1,
             "col": 3,
             "height": 1,
@@ -2073,7 +2083,7 @@
           },
           {
             "block_id": 10,
-            "symbol_id": "teto_drill_rage",
+            "symbol_id": "utau_note",
             "row": 1,
             "col": 4,
             "height": 1,
@@ -2081,7 +2091,7 @@
           },
           {
             "block_id": 11,
-            "symbol_id": "skull_cringe",
+            "symbol_id": "baguette_crumb",
             "row": 1,
             "col": 5,
             "height": 1,
@@ -2089,23 +2099,31 @@
           },
           {
             "block_id": 0,
-            "symbol_id": "teto_chimera",
-            "row": 1,
+            "symbol_id": "skull_cringe",
+            "row": 2,
             "col": 0,
             "height": 1,
             "width": 1
           },
           {
             "block_id": 1,
-            "symbol_id": "teto_0401",
+            "symbol_id": "baguette_crumb",
             "row": 1,
             "col": 1,
             "height": 1,
             "width": 1
           },
           {
+            "block_id": 2,
+            "symbol_id": "teto_chimera",
+            "row": 1,
+            "col": 2,
+            "height": 1,
+            "width": 1
+          },
+          {
             "block_id": 3,
-            "symbol_id": "baguette_crumb",
+            "symbol_id": "teto_drill_rage",
             "row": 0,
             "col": 3,
             "height": 1,
@@ -2113,7 +2131,7 @@
           },
           {
             "block_id": 4,
-            "symbol_id": "utau_note",
+            "symbol_id": "drill_lollipop",
             "row": 0,
             "col": 4,
             "height": 1,
@@ -2129,7 +2147,7 @@
           },
           {
             "block_id": 36,
-            "symbol_id": "baguette_crumb",
+            "symbol_id": "drill_lollipop",
             "row": 0,
             "col": 0,
             "height": 1,
@@ -2137,7 +2155,7 @@
           },
           {
             "block_id": 37,
-            "symbol_id": "skull_cringe",
+            "symbol_id": "utau_note",
             "row": 0,
             "col": 1,
             "height": 1,
@@ -2148,6 +2166,14 @@
             "symbol_id": "teto_drill_rage",
             "row": 0,
             "col": 2,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 39,
+            "symbol_id": "utau_note",
+            "row": 1,
+            "col": 0,
             "height": 1,
             "width": 1
           }
@@ -2165,7 +2191,7 @@
         "blocks": [
           {
             "block_id": 30,
-            "symbol_id": "teto_chimera",
+            "symbol_id": "skull_cringe",
             "row": 5,
             "col": 0,
             "height": 1,
@@ -2181,7 +2207,7 @@
           },
           {
             "block_id": 32,
-            "symbol_id": "utau_note",
+            "symbol_id": "teto_0401",
             "row": 5,
             "col": 2,
             "height": 1,
@@ -2189,7 +2215,7 @@
           },
           {
             "block_id": 33,
-            "symbol_id": "baguette_crumb",
+            "symbol_id": "skull_cringe",
             "row": 5,
             "col": 3,
             "height": 1,
@@ -2197,7 +2223,7 @@
           },
           {
             "block_id": 34,
-            "symbol_id": "baguette_crumb",
+            "symbol_id": "skull_cringe",
             "row": 5,
             "col": 4,
             "height": 1,
@@ -2205,23 +2231,15 @@
           },
           {
             "block_id": 35,
-            "symbol_id": "baguette_crumb",
+            "symbol_id": "teto_drill_rage",
             "row": 5,
             "col": 5,
             "height": 1,
             "width": 1
           },
           {
-            "block_id": 24,
-            "symbol_id": "teto_baguette_knight",
-            "row": 4,
-            "col": 0,
-            "height": 1,
-            "width": 1
-          },
-          {
             "block_id": 25,
-            "symbol_id": "skull_cringe",
+            "symbol_id": "drill_lollipop",
             "row": 4,
             "col": 1,
             "height": 1,
@@ -2229,7 +2247,7 @@
           },
           {
             "block_id": 26,
-            "symbol_id": "utau_note",
+            "symbol_id": "drill_lollipop",
             "row": 4,
             "col": 2,
             "height": 1,
@@ -2237,7 +2255,7 @@
           },
           {
             "block_id": 27,
-            "symbol_id": "teto_baguette_knight",
+            "symbol_id": "skull_cringe",
             "row": 4,
             "col": 3,
             "height": 1,
@@ -2245,7 +2263,7 @@
           },
           {
             "block_id": 28,
-            "symbol_id": "teto_0401",
+            "symbol_id": "utau_note",
             "row": 4,
             "col": 4,
             "height": 1,
@@ -2253,7 +2271,7 @@
           },
           {
             "block_id": 29,
-            "symbol_id": "drill_lollipop",
+            "symbol_id": "teto_0401",
             "row": 4,
             "col": 5,
             "height": 1,
@@ -2261,31 +2279,15 @@
           },
           {
             "block_id": 18,
-            "symbol_id": "skull_cringe",
-            "row": 3,
+            "symbol_id": "baguette_crumb",
+            "row": 4,
             "col": 0,
             "height": 1,
             "width": 1
           },
           {
-            "block_id": 19,
-            "symbol_id": "skull_cringe",
-            "row": 3,
-            "col": 1,
-            "height": 1,
-            "width": 1
-          },
-          {
-            "block_id": 20,
-            "symbol_id": "teto_drill_rage",
-            "row": 3,
-            "col": 2,
-            "height": 1,
-            "width": 1
-          },
-          {
             "block_id": 21,
-            "symbol_id": "teto_0401",
+            "symbol_id": "baguette_crumb",
             "row": 3,
             "col": 3,
             "height": 1,
@@ -2293,7 +2295,7 @@
           },
           {
             "block_id": 22,
-            "symbol_id": "teto_0401",
+            "symbol_id": "baguette_cerberus",
             "row": 3,
             "col": 4,
             "height": 1,
@@ -2301,7 +2303,7 @@
           },
           {
             "block_id": 23,
-            "symbol_id": "baguette_crumb",
+            "symbol_id": "utau_note",
             "row": 3,
             "col": 5,
             "height": 1,
@@ -2309,16 +2311,16 @@
           },
           {
             "block_id": 13,
-            "symbol_id": "drill_lollipop",
-            "row": 2,
+            "symbol_id": "teto_drill_rage",
+            "row": 3,
             "col": 1,
             "height": 1,
             "width": 1
           },
           {
             "block_id": 14,
-            "symbol_id": "baguette_crumb",
-            "row": 2,
+            "symbol_id": "teto_drill_rage",
+            "row": 3,
             "col": 2,
             "height": 1,
             "width": 1
@@ -2333,7 +2335,7 @@
           },
           {
             "block_id": 16,
-            "symbol_id": "baguette_crumb",
+            "symbol_id": "utau_note",
             "row": 2,
             "col": 4,
             "height": 1,
@@ -2341,7 +2343,7 @@
           },
           {
             "block_id": 17,
-            "symbol_id": "baguette_cerberus",
+            "symbol_id": "drill_lollipop",
             "row": 2,
             "col": 5,
             "height": 1,
@@ -2349,23 +2351,31 @@
           },
           {
             "block_id": 6,
-            "symbol_id": "skull_cringe",
-            "row": 2,
+            "symbol_id": "baguette_crumb",
+            "row": 3,
             "col": 0,
             "height": 1,
             "width": 1
           },
           {
+            "block_id": 7,
+            "symbol_id": "baguette_crumb",
+            "row": 2,
+            "col": 1,
+            "height": 1,
+            "width": 1
+          },
+          {
             "block_id": 8,
-            "symbol_id": "skull_cringe",
-            "row": 1,
+            "symbol_id": "teto_chimera",
+            "row": 2,
             "col": 2,
             "height": 1,
             "width": 1
           },
           {
             "block_id": 9,
-            "symbol_id": "skull_cringe",
+            "symbol_id": "teto_baguette_knight",
             "row": 1,
             "col": 3,
             "height": 1,
@@ -2373,7 +2383,7 @@
           },
           {
             "block_id": 10,
-            "symbol_id": "teto_drill_rage",
+            "symbol_id": "utau_note",
             "row": 1,
             "col": 4,
             "height": 1,
@@ -2381,7 +2391,7 @@
           },
           {
             "block_id": 11,
-            "symbol_id": "skull_cringe",
+            "symbol_id": "baguette_crumb",
             "row": 1,
             "col": 5,
             "height": 1,
@@ -2389,23 +2399,31 @@
           },
           {
             "block_id": 0,
-            "symbol_id": "teto_chimera",
-            "row": 1,
+            "symbol_id": "skull_cringe",
+            "row": 2,
             "col": 0,
             "height": 1,
             "width": 1
           },
           {
             "block_id": 1,
-            "symbol_id": "teto_0401",
+            "symbol_id": "baguette_crumb",
             "row": 1,
             "col": 1,
             "height": 1,
             "width": 1
           },
           {
+            "block_id": 2,
+            "symbol_id": "teto_chimera",
+            "row": 1,
+            "col": 2,
+            "height": 1,
+            "width": 1
+          },
+          {
             "block_id": 3,
-            "symbol_id": "baguette_crumb",
+            "symbol_id": "teto_drill_rage",
             "row": 0,
             "col": 3,
             "height": 1,
@@ -2413,7 +2431,7 @@
           },
           {
             "block_id": 4,
-            "symbol_id": "utau_note",
+            "symbol_id": "drill_lollipop",
             "row": 0,
             "col": 4,
             "height": 1,
@@ -2429,7 +2447,7 @@
           },
           {
             "block_id": 36,
-            "symbol_id": "baguette_crumb",
+            "symbol_id": "drill_lollipop",
             "row": 0,
             "col": 0,
             "height": 1,
@@ -2437,7 +2455,7 @@
           },
           {
             "block_id": 37,
-            "symbol_id": "skull_cringe",
+            "symbol_id": "utau_note",
             "row": 0,
             "col": 1,
             "height": 1,
@@ -2448,6 +2466,14 @@
             "symbol_id": "teto_drill_rage",
             "row": 0,
             "col": 2,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 39,
+            "symbol_id": "utau_note",
+            "row": 1,
+            "col": 0,
             "height": 1,
             "width": 1
           }
@@ -2467,7 +2493,7 @@
         "blocks": [
           {
             "block_id": 30,
-            "symbol_id": "teto_chimera",
+            "symbol_id": "skull_cringe",
             "row": 5,
             "col": 0,
             "height": 1,
@@ -2483,7 +2509,7 @@
           },
           {
             "block_id": 32,
-            "symbol_id": "utau_note",
+            "symbol_id": "teto_0401",
             "row": 5,
             "col": 2,
             "height": 1,
@@ -2491,7 +2517,7 @@
           },
           {
             "block_id": 33,
-            "symbol_id": "baguette_crumb",
+            "symbol_id": "skull_cringe",
             "row": 5,
             "col": 3,
             "height": 1,
@@ -2499,7 +2525,7 @@
           },
           {
             "block_id": 34,
-            "symbol_id": "baguette_crumb",
+            "symbol_id": "skull_cringe",
             "row": 5,
             "col": 4,
             "height": 1,
@@ -2507,23 +2533,15 @@
           },
           {
             "block_id": 35,
-            "symbol_id": "baguette_crumb",
+            "symbol_id": "teto_drill_rage",
             "row": 5,
             "col": 5,
             "height": 1,
             "width": 1
           },
           {
-            "block_id": 24,
-            "symbol_id": "teto_baguette_knight",
-            "row": 4,
-            "col": 0,
-            "height": 1,
-            "width": 1
-          },
-          {
             "block_id": 25,
-            "symbol_id": "skull_cringe",
+            "symbol_id": "drill_lollipop",
             "row": 4,
             "col": 1,
             "height": 1,
@@ -2531,7 +2549,7 @@
           },
           {
             "block_id": 26,
-            "symbol_id": "utau_note",
+            "symbol_id": "drill_lollipop",
             "row": 4,
             "col": 2,
             "height": 1,
@@ -2539,7 +2557,7 @@
           },
           {
             "block_id": 27,
-            "symbol_id": "teto_baguette_knight",
+            "symbol_id": "skull_cringe",
             "row": 4,
             "col": 3,
             "height": 1,
@@ -2547,7 +2565,7 @@
           },
           {
             "block_id": 28,
-            "symbol_id": "teto_0401",
+            "symbol_id": "utau_note",
             "row": 4,
             "col": 4,
             "height": 1,
@@ -2555,7 +2573,7 @@
           },
           {
             "block_id": 29,
-            "symbol_id": "drill_lollipop",
+            "symbol_id": "teto_0401",
             "row": 4,
             "col": 5,
             "height": 1,
@@ -2563,31 +2581,15 @@
           },
           {
             "block_id": 18,
-            "symbol_id": "skull_cringe",
-            "row": 3,
+            "symbol_id": "baguette_crumb",
+            "row": 4,
             "col": 0,
             "height": 1,
             "width": 1
           },
           {
-            "block_id": 19,
-            "symbol_id": "skull_cringe",
-            "row": 3,
-            "col": 1,
-            "height": 1,
-            "width": 1
-          },
-          {
-            "block_id": 20,
-            "symbol_id": "teto_drill_rage",
-            "row": 3,
-            "col": 2,
-            "height": 1,
-            "width": 1
-          },
-          {
             "block_id": 21,
-            "symbol_id": "teto_0401",
+            "symbol_id": "baguette_crumb",
             "row": 3,
             "col": 3,
             "height": 1,
@@ -2595,7 +2597,7 @@
           },
           {
             "block_id": 22,
-            "symbol_id": "teto_0401",
+            "symbol_id": "baguette_cerberus",
             "row": 3,
             "col": 4,
             "height": 1,
@@ -2603,7 +2605,7 @@
           },
           {
             "block_id": 23,
-            "symbol_id": "baguette_crumb",
+            "symbol_id": "utau_note",
             "row": 3,
             "col": 5,
             "height": 1,
@@ -2611,16 +2613,16 @@
           },
           {
             "block_id": 13,
-            "symbol_id": "drill_lollipop",
-            "row": 2,
+            "symbol_id": "teto_drill_rage",
+            "row": 3,
             "col": 1,
             "height": 1,
             "width": 1
           },
           {
             "block_id": 14,
-            "symbol_id": "baguette_crumb",
-            "row": 2,
+            "symbol_id": "teto_drill_rage",
+            "row": 3,
             "col": 2,
             "height": 1,
             "width": 1
@@ -2635,7 +2637,7 @@
           },
           {
             "block_id": 16,
-            "symbol_id": "baguette_crumb",
+            "symbol_id": "utau_note",
             "row": 2,
             "col": 4,
             "height": 1,
@@ -2643,7 +2645,7 @@
           },
           {
             "block_id": 17,
-            "symbol_id": "baguette_cerberus",
+            "symbol_id": "drill_lollipop",
             "row": 2,
             "col": 5,
             "height": 1,
@@ -2651,23 +2653,31 @@
           },
           {
             "block_id": 6,
-            "symbol_id": "skull_cringe",
-            "row": 2,
+            "symbol_id": "baguette_crumb",
+            "row": 3,
             "col": 0,
             "height": 1,
             "width": 1
           },
           {
+            "block_id": 7,
+            "symbol_id": "baguette_crumb",
+            "row": 2,
+            "col": 1,
+            "height": 1,
+            "width": 1
+          },
+          {
             "block_id": 8,
-            "symbol_id": "skull_cringe",
-            "row": 1,
+            "symbol_id": "teto_chimera",
+            "row": 2,
             "col": 2,
             "height": 1,
             "width": 1
           },
           {
             "block_id": 9,
-            "symbol_id": "skull_cringe",
+            "symbol_id": "teto_baguette_knight",
             "row": 1,
             "col": 3,
             "height": 1,
@@ -2675,7 +2685,7 @@
           },
           {
             "block_id": 10,
-            "symbol_id": "teto_drill_rage",
+            "symbol_id": "utau_note",
             "row": 1,
             "col": 4,
             "height": 1,
@@ -2683,7 +2693,7 @@
           },
           {
             "block_id": 11,
-            "symbol_id": "skull_cringe",
+            "symbol_id": "baguette_crumb",
             "row": 1,
             "col": 5,
             "height": 1,
@@ -2691,23 +2701,31 @@
           },
           {
             "block_id": 0,
-            "symbol_id": "teto_chimera",
-            "row": 1,
+            "symbol_id": "skull_cringe",
+            "row": 2,
             "col": 0,
             "height": 1,
             "width": 1
           },
           {
             "block_id": 1,
-            "symbol_id": "teto_0401",
+            "symbol_id": "baguette_crumb",
             "row": 1,
             "col": 1,
             "height": 1,
             "width": 1
           },
           {
+            "block_id": 2,
+            "symbol_id": "teto_chimera",
+            "row": 1,
+            "col": 2,
+            "height": 1,
+            "width": 1
+          },
+          {
             "block_id": 3,
-            "symbol_id": "baguette_crumb",
+            "symbol_id": "teto_drill_rage",
             "row": 0,
             "col": 3,
             "height": 1,
@@ -2715,7 +2733,7 @@
           },
           {
             "block_id": 4,
-            "symbol_id": "utau_note",
+            "symbol_id": "drill_lollipop",
             "row": 0,
             "col": 4,
             "height": 1,
@@ -2731,7 +2749,7 @@
           },
           {
             "block_id": 36,
-            "symbol_id": "baguette_crumb",
+            "symbol_id": "drill_lollipop",
             "row": 0,
             "col": 0,
             "height": 1,
@@ -2739,7 +2757,7 @@
           },
           {
             "block_id": 37,
-            "symbol_id": "skull_cringe",
+            "symbol_id": "utau_note",
             "row": 0,
             "col": 1,
             "height": 1,
@@ -2750,6 +2768,14 @@
             "symbol_id": "teto_drill_rage",
             "row": 0,
             "col": 2,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 39,
+            "symbol_id": "utau_note",
+            "row": 1,
+            "col": 0,
             "height": 1,
             "width": 1
           }
@@ -2760,9 +2786,9 @@
         "seq": 6,
         "phase": "base",
         "round": 0,
-        "raw_round_payout": 1200,
+        "raw_round_payout": 400,
         "multiplier_applied": 1,
-        "final_round_payout": 1200,
+        "final_round_payout": 400,
         "cells_converted_by_drill_hunt": 0,
         "tumble_steps_used": 1,
         "tumble_hard_cap_hit": false,
@@ -2772,7 +2798,7 @@
         "blocks": [
           {
             "block_id": 30,
-            "symbol_id": "teto_chimera",
+            "symbol_id": "skull_cringe",
             "row": 5,
             "col": 0,
             "height": 1,
@@ -2788,7 +2814,7 @@
           },
           {
             "block_id": 32,
-            "symbol_id": "utau_note",
+            "symbol_id": "teto_0401",
             "row": 5,
             "col": 2,
             "height": 1,
@@ -2796,7 +2822,7 @@
           },
           {
             "block_id": 33,
-            "symbol_id": "baguette_crumb",
+            "symbol_id": "skull_cringe",
             "row": 5,
             "col": 3,
             "height": 1,
@@ -2804,7 +2830,7 @@
           },
           {
             "block_id": 34,
-            "symbol_id": "baguette_crumb",
+            "symbol_id": "skull_cringe",
             "row": 5,
             "col": 4,
             "height": 1,
@@ -2812,23 +2838,15 @@
           },
           {
             "block_id": 35,
-            "symbol_id": "baguette_crumb",
+            "symbol_id": "teto_drill_rage",
             "row": 5,
             "col": 5,
             "height": 1,
             "width": 1
           },
           {
-            "block_id": 24,
-            "symbol_id": "teto_baguette_knight",
-            "row": 4,
-            "col": 0,
-            "height": 1,
-            "width": 1
-          },
-          {
             "block_id": 25,
-            "symbol_id": "skull_cringe",
+            "symbol_id": "drill_lollipop",
             "row": 4,
             "col": 1,
             "height": 1,
@@ -2836,7 +2854,7 @@
           },
           {
             "block_id": 26,
-            "symbol_id": "utau_note",
+            "symbol_id": "drill_lollipop",
             "row": 4,
             "col": 2,
             "height": 1,
@@ -2844,7 +2862,7 @@
           },
           {
             "block_id": 27,
-            "symbol_id": "teto_baguette_knight",
+            "symbol_id": "skull_cringe",
             "row": 4,
             "col": 3,
             "height": 1,
@@ -2852,7 +2870,7 @@
           },
           {
             "block_id": 28,
-            "symbol_id": "teto_0401",
+            "symbol_id": "utau_note",
             "row": 4,
             "col": 4,
             "height": 1,
@@ -2860,7 +2878,7 @@
           },
           {
             "block_id": 29,
-            "symbol_id": "drill_lollipop",
+            "symbol_id": "teto_0401",
             "row": 4,
             "col": 5,
             "height": 1,
@@ -2868,31 +2886,15 @@
           },
           {
             "block_id": 18,
-            "symbol_id": "skull_cringe",
-            "row": 3,
+            "symbol_id": "baguette_crumb",
+            "row": 4,
             "col": 0,
             "height": 1,
             "width": 1
           },
           {
-            "block_id": 19,
-            "symbol_id": "skull_cringe",
-            "row": 3,
-            "col": 1,
-            "height": 1,
-            "width": 1
-          },
-          {
-            "block_id": 20,
-            "symbol_id": "teto_drill_rage",
-            "row": 3,
-            "col": 2,
-            "height": 1,
-            "width": 1
-          },
-          {
             "block_id": 21,
-            "symbol_id": "teto_0401",
+            "symbol_id": "baguette_crumb",
             "row": 3,
             "col": 3,
             "height": 1,
@@ -2900,7 +2902,7 @@
           },
           {
             "block_id": 22,
-            "symbol_id": "teto_0401",
+            "symbol_id": "baguette_cerberus",
             "row": 3,
             "col": 4,
             "height": 1,
@@ -2908,7 +2910,7 @@
           },
           {
             "block_id": 23,
-            "symbol_id": "baguette_crumb",
+            "symbol_id": "utau_note",
             "row": 3,
             "col": 5,
             "height": 1,
@@ -2916,16 +2918,16 @@
           },
           {
             "block_id": 13,
-            "symbol_id": "drill_lollipop",
-            "row": 2,
+            "symbol_id": "teto_drill_rage",
+            "row": 3,
             "col": 1,
             "height": 1,
             "width": 1
           },
           {
             "block_id": 14,
-            "symbol_id": "baguette_crumb",
-            "row": 2,
+            "symbol_id": "teto_drill_rage",
+            "row": 3,
             "col": 2,
             "height": 1,
             "width": 1
@@ -2940,7 +2942,7 @@
           },
           {
             "block_id": 16,
-            "symbol_id": "baguette_crumb",
+            "symbol_id": "utau_note",
             "row": 2,
             "col": 4,
             "height": 1,
@@ -2948,7 +2950,7 @@
           },
           {
             "block_id": 17,
-            "symbol_id": "baguette_cerberus",
+            "symbol_id": "drill_lollipop",
             "row": 2,
             "col": 5,
             "height": 1,
@@ -2956,23 +2958,31 @@
           },
           {
             "block_id": 6,
-            "symbol_id": "skull_cringe",
-            "row": 2,
+            "symbol_id": "baguette_crumb",
+            "row": 3,
             "col": 0,
             "height": 1,
             "width": 1
           },
           {
+            "block_id": 7,
+            "symbol_id": "baguette_crumb",
+            "row": 2,
+            "col": 1,
+            "height": 1,
+            "width": 1
+          },
+          {
             "block_id": 8,
-            "symbol_id": "skull_cringe",
-            "row": 1,
+            "symbol_id": "teto_chimera",
+            "row": 2,
             "col": 2,
             "height": 1,
             "width": 1
           },
           {
             "block_id": 9,
-            "symbol_id": "skull_cringe",
+            "symbol_id": "teto_baguette_knight",
             "row": 1,
             "col": 3,
             "height": 1,
@@ -2980,7 +2990,7 @@
           },
           {
             "block_id": 10,
-            "symbol_id": "teto_drill_rage",
+            "symbol_id": "utau_note",
             "row": 1,
             "col": 4,
             "height": 1,
@@ -2988,7 +2998,7 @@
           },
           {
             "block_id": 11,
-            "symbol_id": "skull_cringe",
+            "symbol_id": "baguette_crumb",
             "row": 1,
             "col": 5,
             "height": 1,
@@ -2996,23 +3006,31 @@
           },
           {
             "block_id": 0,
-            "symbol_id": "teto_chimera",
-            "row": 1,
+            "symbol_id": "skull_cringe",
+            "row": 2,
             "col": 0,
             "height": 1,
             "width": 1
           },
           {
             "block_id": 1,
-            "symbol_id": "teto_0401",
+            "symbol_id": "baguette_crumb",
             "row": 1,
             "col": 1,
             "height": 1,
             "width": 1
           },
           {
+            "block_id": 2,
+            "symbol_id": "teto_chimera",
+            "row": 1,
+            "col": 2,
+            "height": 1,
+            "width": 1
+          },
+          {
             "block_id": 3,
-            "symbol_id": "baguette_crumb",
+            "symbol_id": "teto_drill_rage",
             "row": 0,
             "col": 3,
             "height": 1,
@@ -3020,7 +3038,7 @@
           },
           {
             "block_id": 4,
-            "symbol_id": "utau_note",
+            "symbol_id": "drill_lollipop",
             "row": 0,
             "col": 4,
             "height": 1,
@@ -3036,7 +3054,7 @@
           },
           {
             "block_id": 36,
-            "symbol_id": "baguette_crumb",
+            "symbol_id": "drill_lollipop",
             "row": 0,
             "col": 0,
             "height": 1,
@@ -3044,7 +3062,7 @@
           },
           {
             "block_id": 37,
-            "symbol_id": "skull_cringe",
+            "symbol_id": "utau_note",
             "row": 0,
             "col": 1,
             "height": 1,
@@ -3055,6 +3073,14 @@
             "symbol_id": "teto_drill_rage",
             "row": 0,
             "col": 2,
+            "height": 1,
+            "width": 1
+          },
+          {
+            "block_id": 39,
+            "symbol_id": "utau_note",
+            "row": 1,
+            "col": 0,
             "height": 1,
             "width": 1
           }

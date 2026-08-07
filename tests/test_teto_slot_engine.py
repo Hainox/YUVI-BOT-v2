@@ -64,13 +64,15 @@ class _ForcedRng:
 
 
 def test_compute_freespins_awarded_open_formula_not_a_lookup_table():
-    """`freespins = scatter_count if scatter_count >= 5 else 0` — буквально.
-    НЕ 3-кейсовый lookup вроде `slot_engine._freespins_for` (тот класс бага
-    уже найден для Azumanga — здесь не повторяем, см. `teto_slot_engine.py`)."""
+    """`freespins = scatter_count if scatter_count >= FREESPIN_SCATTER_MIN else
+    0` — буквально (порог сейчас 6, поднят с 5 при перекалибровке от
+    2026-08-06 после разворота `count_scatter_blocks` на сумму площадей — см.
+    её докстринг в `teto_tumble.py`). НЕ 3-кейсовый lookup вроде
+    `slot_engine._freespins_for` (тот класс бага уже найден для Azumanga —
+    здесь не повторяем, см. `teto_slot_engine.py`)."""
     assert _compute_freespins_awarded(0) == 0
-    assert _compute_freespins_awarded(4) == 0
+    assert _compute_freespins_awarded(FREESPIN_SCATTER_MIN - 1) == 0
     assert _compute_freespins_awarded(FREESPIN_SCATTER_MIN) == FREESPIN_SCATTER_MIN
-    assert _compute_freespins_awarded(6) == 6
     assert _compute_freespins_awarded(16) == 16, "скаттер-мегаблок может закрыть до 16 клеток одним блоком"
 
 
@@ -227,17 +229,19 @@ def test_wild_symbol_never_appears_except_via_drill_hunt():
 
 
 def test_forced_end_to_end_nontrivial_spin_matches_expected_shape():
-    """ОДИН полностью детерминированный сценарий (форс-сид 98182, найден
-    перебором сидов 0..100k УЖЕ ПОСЛЕ калибровки: 50 линий + взвешенное
-    заполнение со скаттером 1/27 сделали совпадение всех шести условий
-    заметно более редким, и прототипный сид 76972 перестал давать фриспины —
+    """ОДИН полностью детерминированный сценарий (форс-сид 38786, найден
+    перебором сидов 0..60k ПОСЛЕ перекалибровки от 2026-08-06: разворот
+    `count_scatter_blocks` на сумму площадей + новые `WEIGHTS`
+    (скаттер 1/42, был 1/27) + `FREESPIN_SCATTER_MIN=6` (был 5) сдвинули
+    потребление RNG и сделали триггер фриспинов заметно реже (~1 к 420-450
+    вместо ~1 к 80-100), поэтому прежний сид 98182 перестал давать фриспины —
     новый сид обязан переподбираться после КАЖДОЙ правки
-    WEIGHTS/SHAPE_POOL/TETO_PAYLINES, потому что любая из них сдвигает
-    потребление RNG), где заведомо происходит: мегаблок в первичном
-    заполнении + хотя бы один тумбл-шаг + Дрель-Хант в базовой игре +
+    WEIGHTS/SHAPE_POOL/TETO_PAYLINES/FREESPIN_SCATTER_MIN, потому что любая из
+    них сдвигает потребление RNG), где заведомо происходит: мегаблок в
+    первичном заполнении + хотя бы один тумбл-шаг + Дрель-Хант в базовой игре +
     начисление фриспинов + Дрель-Хант с волной хотя бы в одном фриспин-раунде
     + пересечение хотя бы одного порога лестницы."""
-    seed = 98182
+    seed = 38786
     rng = random.Random(seed)
     result = play_one_spin(rng, bet_per_line=1)
 
@@ -522,8 +526,13 @@ def test_trace_is_pure_observation_traced_and_untraced_spins_are_identical():
 
 
 def test_block_ids_are_unique_across_the_whole_spin_not_just_within_a_round():
-    """200 сидов. `block_id` не переиспользуется между раундами одного спина:
-    множества id любых двух РАЗНЫХ раундов трейса не пересекаются.
+    """8000 сидов (было 200 — недостаточно ПОСЛЕ перекалибровки от 2026-08-06:
+    триггер фриспинов упал с ~1 к 80-100 до ~1 к 420-450, поэтому на 200
+    сидах P(ни одного многораундового спина) ~= exp(-200/430) ~= 0.63 —
+    тест был бы флейки-провальным чаще, чем зелёным; 8000 сидов дают
+    ожидаемо ~18-19 триггеров, P(нуля) исчезающе мал). `block_id` не
+    переиспользуется между раундами одного спина: множества id любых двух
+    РАЗНЫХ раундов трейса не пересекаются.
 
     Зачем это свойство (см. `teto_slot_engine._next_block_id`): `block_id` —
     единственный стабильный идентификатор блока между кадрами, по нему
@@ -533,7 +542,7 @@ def test_block_ids_are_unique_across_the_whole_spin_not_just_within_a_round():
     `round_end` предыдущего), связал бы блок 7 первого раунда с совершенно
     другим блоком 7 второго и нарисовал бы переезд несуществующего блока."""
     saw_multi_round_spin = False
-    for seed in range(200):
+    for seed in range(8000):
         trace: list = []
         play_one_spin(random.Random(seed), bet_per_line=1, trace=trace)
 
@@ -554,10 +563,14 @@ def test_block_ids_are_unique_across_the_whole_spin_not_just_within_a_round():
 
 
 def test_round_end_ladder_carries_the_target_a_progress_gauge_needs():
-    """200 сидов. `round_end.ladder` фриспин-раунда несёт не только пройденное
-    (`score_after`/`multiplier_after`/`crossed_thresholds`), но и ЦЕЛЬ
-    (`next_threshold`/`next_multiplier`/`score_to_next`), а сам список порогов
-    и потолок счёта лежат в конверте (`ladder_thresholds`/`ladder_max_score`).
+    """8000 сидов (было 200 — та же причина, что у теста block_id выше:
+    триггер фриспинов после перекалибровки от 2026-08-06 упал до ~1 к
+    420-450, 200 сидов больше не дают статистической гарантии хотя бы одного
+    фриспин-раунда). `round_end.ladder` фриспин-раунда несёт не только
+    пройденное (`score_after`/`multiplier_after`/`crossed_thresholds`), но и
+    ЦЕЛЬ (`next_threshold`/`next_multiplier`/`score_to_next`), а сам список
+    порогов и потолок счёта лежат в конверте
+    (`ladder_thresholds`/`ladder_max_score`).
 
     Без этого шкала-вал дрели — заявленный "запоминающийся приём" экрана
     (`docs/teto-slot-design-direction.md` §4) — не рисуется вовсе: прогресс-бар
@@ -569,7 +582,7 @@ def test_round_end_ladder_carries_the_target_a_progress_gauge_needs():
 
     saw_open_gauge = False
     saw_completed_ladder = False
-    for seed in range(200):
+    for seed in range(8000):
         trace: list = []
         result = play_one_spin(random.Random(seed), bet_per_line=1, trace=trace)
         envelope = eng.serialize_animation(trace, paid_total=result["total_payout"])
@@ -637,9 +650,13 @@ def test_serialize_animation_never_lets_the_screen_count_past_what_was_paid():
     Проверяем ровно ту формулу, которая описана как единственно правильная в
     докстринге `serialize_animation`: показанный итог после раунда k ==
     `min(префиксная сумма final_round_payout, payout_paid)` — она никогда не
-    превышает выплаченное, монотонна и заканчивается РОВНО на `payout_paid`."""
+    превышает выплаченное, монотонна и заканчивается РОВНО на `payout_paid`.
+
+    Сид 4 (был 12945 — перестал платить после перекалибровки WEIGHTS/
+    TETO_PAYTABLE от 2026-08-06, сдвинувшей потребление RNG базового
+    заполнения; переподобран как первый winning-сид от 0)."""
     trace: list = []
-    result = play_one_spin(random.Random(12945), bet_per_line=10, trace=trace)
+    result = play_one_spin(random.Random(4), bet_per_line=10, trace=trace)
     engine_total = result["total_payout"]
     assert engine_total > 0, "сид подобран как выигрышный — если это изменилось, подобрать новый"
 
@@ -1124,18 +1141,20 @@ def test_serialize_animation_round_cap_truncates_by_time_budget_not_only_by_ops(
     потому что единственный существовавший тест усечения форсирует ДОРОГИЕ
     раунды и всегда упирается в op_cap первым.
 
-    Сид 177 даёт 10 раундов на настоящем RNG (прежний сид 0 подбирался до
-    взвешенного заполнения: со скаттером 1/27 фриспины стали событием ~1 к
-    100 спинов, и сид 0 их больше не видит — новый найден программным
-    перебором сидов по `freespins_played >= 4`, первый с максимальным числом
-    раундов среди первых двух сотен); `max_ops` поднят заведомо выше всего
-    трейса, чтобы причиной усечения гарантированно был именно предел
-    раундов, а не совпадение с байтовым."""
+    Сид 6178 даёт 26 раундов на настоящем RNG (прежний сид 177 подбирался до
+    перекалибровки от 2026-08-06 — разворот `count_scatter_blocks` на сумму
+    площадей + новые `WEIGHTS`/`FREESPIN_SCATTER_MIN` уронили частоту
+    триггера фриспинов с ~1 к 80-100 до ~1 к 420-450, и сид 177 больше не
+    даёт многораундовый спин — новый найден программным перебором сидов
+    0..40000 по `freespins_played >= 4` (found 81 таких кандидатов), первый с
+    максимальным числом раундов среди найденных); `max_ops` поднят заведомо
+    выше всего трейса, чтобы причиной усечения гарантированно был именно
+    предел раундов, а не совпадение с байтовым."""
     trace: list = []
-    result = play_one_spin(random.Random(177), bet_per_line=3, trace=trace)
+    result = play_one_spin(random.Random(6178), bet_per_line=3, trace=trace)
 
     rounds_played = 1 + result["freespins_played"]
-    assert rounds_played == 10, "сид 177 подобран как многораундовый — если это изменилось, подобрать новый"
+    assert rounds_played == 26, "сид 6178 подобран как многораундовый — если это изменилось, подобрать новый"
 
     envelope = eng.serialize_animation(
         trace, paid_total=result["total_payout"], max_rounds=3, max_ops=10**6

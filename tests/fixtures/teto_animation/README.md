@@ -13,11 +13,11 @@
 | Файл | Сид | Что показывает |
 |---|---|---|
 | `lose.json` | 0 | проигрыш: payout=0, минимум op'ов |
-| `simple_win.json` | 1 | выигрыш базового раунда, 1-3 тумбл-шага, без фриспинов/Дрель-Ханта |
-| `drill_hunt_win.json` | 37 | Дрель-Хант сработал, волна выиграла (source="drill_hunt_wave") |
-| `freespins.json` | 8971 | фриспины с порогом лестницы: 14 раундов / 94 ops, множитель до x10 (лестница до x10) |
-| `bank_capped.json` | 8971 | тот же спин, что freespins, но банк урезал выплату (paid=84940 из total=169880); проверка счётчика min(prefix_sum, payout_paid) |
-| `replay.json` | 1 | тот же спин, что simple_win, но `animation: null` (идемпотентный replay) |
+| `simple_win.json` | 4 | выигрыш базового раунда, 1-3 тумбл-шага, без фриспинов/Дрель-Ханта |
+| `drill_hunt_win.json` | 6 | Дрель-Хант сработал, волна выиграла (source="drill_hunt_wave") |
+| `freespins.json` | 4859 | фриспины с порогом лестницы: 14 раундов / 102 ops, множитель до x2 (лестница до x2) |
+| `bank_capped.json` | 4859 | тот же спин, что freespins, но банк урезал выплату (paid=9365 из total=18730); проверка счётчика min(prefix_sum, payout_paid) |
+| `replay.json` | 4 | тот же спин, что simple_win, но `animation: null` (идемпотентный replay) |
 
 `bank_capped.json` — единственный файл, где `payout` <
 `outcome.total_payout` (симуляция капа банком D-06); собран честно через

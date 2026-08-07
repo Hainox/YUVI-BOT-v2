@@ -153,8 +153,9 @@ def win_units(blocks: list[MegaBlock], winning_ids) -> int:
 def evaluate_paylines(blocks: list[MegaBlock]) -> tuple[bool, set[int]]:
     """Leftmost non-wild символ на линии — target; подряд слева направо,
     `WILD_ID` считается за любой символ кроме `SCATTER_ID`; 3+ подряд
-    совпадений — выигрыш. Скаттер как target пропускается (платит по
-    количеству блоков на экране — `count_scatter_blocks` — а не по payline)."""
+    совпадений — выигрыш. Скаттер как target пропускается (платит по сумме
+    площадей скаттер-блоков на экране — `count_scatter_blocks` — а не по
+    payline)."""
     cell_to_block: dict[tuple[int, int], MegaBlock] = {}
     for b in blocks:
         for cell in b.cells:
@@ -283,12 +284,22 @@ def describe_winning_lines(blocks: list[MegaBlock]) -> list[dict]:
 
 
 def count_scatter_blocks(blocks: list[MegaBlock]) -> int:
-    """Число SCATTER-БЛОКОВ на доске (не клеток) — ЗАФИКСИРОВАНО владельцем
-    бота 2026-07-30: скаттер-мегаблок — один крупный символ, растянутый на
-    несколько клеток (до 16, `MEGA_BLOCK_SCATTER_AREA_CAP`), а не N отдельных
-    скаттеров, поэтому формула фриспинов (`teto_slot_engine.
-    compute_freespins_awarded`) считает БЛОКИ, а не клетки."""
-    return sum(1 for b in blocks if b.symbol_id == SCATTER_ID)
+    """Сумма ПЛОЩАДЕЙ (клеток) всех SCATTER-мегаблоков на доске — РЕШЕНИЕ
+    ОТ 2026-08-06, отменяет прежнее "считаем блоки, не клетки"
+    (ЗАФИКСИРОВАНО владельцем бота 2026-07-30, порт 75540f5, подтверждено
+    повторно на RTP-калибровке той же недели). Разворот сделан владельцем
+    после реального денежного спина: крупный скаттер-мегаблок выглядел так,
+    будто должен был засчитаться как сумма одинарных скаттеров, из которых
+    слился ("по логике этот блок — сумма одинарных блоков и он должен был
+    дать [бонус]") — и по прежней формуле фриспины не дались. Новое правило:
+    каждая клетка скаттер-мегаблока считается отдельно (используем
+    `MegaBlock.area`), т.е. блок 2×3 даёт 6, а не 1; максимум за один блок —
+    16 (`MEGA_BLOCK_SCATTER_AREA_CAP`). Это меняет фактическую частоту
+    триггера фриспинов и вклад скаттеров в RTP — полная Monte-Carlo
+    перекалибровка `FREESPIN_SCATTER_MIN`/`TETO_PAYTABLE`/`WEIGHTS` следует
+    отдельным шагом того же изменения (см. комментарий калибровки
+    TETO_PAYTABLE/WEIGHTS ниже по актуальным цифрам)."""
+    return sum(b.area for b in blocks if b.symbol_id == SCATTER_ID)
 
 
 def resolve_tumble(rng, blocks: list[MegaBlock], winning_block_ids: set[int]) -> list[MegaBlock]:
