@@ -40,6 +40,11 @@
 	const SPIN_PER_COL_MS = 100;
 	const REVEAL_DELAY_MS = SPIN_BASE_MS + SPIN_PER_COL_MS * 4 + 60;
 
+	// CASINO-06: клипы на срыв джекпота — чисто косметический выбор (не
+	// влияет на деньги/исход), поэтому Math.random() на клиенте уместен, та
+	// же дисциплина, что у _randomSymbolId() ниже (filler-символы спина).
+	const JACKPOT_VIDEOS = ['/casino/jackpot-video-1.mp4', '/casino/jackpot-video-2.mp4'];
+
 	// Visual drum: FILLER_ROWS of cosmetic random symbols scroll past before
 	// the strip settles on the real final 3 rows for that column. Row count
 	// is fixed so the CSS translateY(%) landing position never changes.
@@ -161,6 +166,47 @@
 	// явным тапом игрока (см. кнопку "ЗАБРАТЬ" ниже) — момент слишком редкий
 	// (~раз в 20 дней на чат), чтобы автоматически прятать по таймеру.
 	let jackpotWinAmount = $state<number | null>(null);
+	// Клип выбирается ОДИН РАЗ за срыв (в момент res.jackpot?.won ниже), не на
+	// каждый re-render — иначе повторная реактивность подменила бы src под
+	// уже играющим видео.
+	let jackpotVideoSrc = $state<string | null>(null);
+	let jackpotVideoEl = $state<HTMLVideoElement | null>(null);
+	// Браузер почти всегда блокирует autoplay СО ЗВУКОМ вне прямого
+	// user gesture — к моменту показа оверлея мы уже прошли несколько await
+	// внутри spin() (fetch, реплей бонуса), т.е. формально это уже не тот же
+	// synchronous call stack, что клик по "Крутить". Пробуем воспроизвести
+	// со звуком явно (см. $effect ниже); если браузер отклонил — тихо
+	// откатываемся на muted+loop и показываем заметную кнопку "включить
+	// звук", тап по которой — уже гарантированный user gesture.
+	let jackpotVideoMuted = $state(false);
+
+	$effect(() => {
+		if (jackpotVideoSrc && jackpotVideoEl) {
+			jackpotVideoEl.muted = false;
+			jackpotVideoEl.currentTime = 0;
+			jackpotVideoEl.play().catch(() => {
+				jackpotVideoMuted = true;
+				jackpotVideoEl?.play().catch(() => {
+					// И muted-автоплей иногда блокируется (крайне редкая политика
+					// WebView) — экран всё равно рабочий, просто без видео-клипа
+					// до тапа по кнопке звука/самому видео.
+				});
+			});
+		}
+	});
+
+	function _unmuteJackpotVideo() {
+		// Тап — прямой user gesture, здесь unmuted play() уже не блокируется
+		// ни одной известной политикой автоплея.
+		jackpotVideoMuted = false;
+		jackpotVideoEl?.play().catch(() => {});
+	}
+
+	function _closeJackpotOverlay() {
+		jackpotVideoEl?.pause();
+		jackpotWinAmount = null;
+		jackpotVideoSrc = null;
+	}
 
 	onMount(async () => {
 		try {
@@ -395,6 +441,8 @@
 			// перекрыть оверлей) и ждём явного "ЗАБРАТЬ" от игрока.
 			stopAutoSpin();
 			jackpotWinAmount = res.jackpot.amount ?? 0;
+			jackpotVideoMuted = false;
+			jackpotVideoSrc = JACKPOT_VIDEOS[Math.floor(Math.random() * JACKPOT_VIDEOS.length)];
 			haptic('jackpot');
 		}
 	}
@@ -459,8 +507,20 @@
 	// Если экран размонтировали посреди спина/бонус-реплея — код после
 	// _revealScatterAndBonus() выше никогда не выполнится, значит холд
 	// баланса больше некому отпустить, кроме как здесь.
-	onDestroy(() => holdBalanceUpdates(false));
+	onDestroy(() => {
+		holdBalanceUpdates(false);
+		jackpotVideoEl?.pause();
+	});
 </script>
+
+<svelte:head>
+	<!-- CASINO-06: джекпот — ~1 на 10000 спинов (SLOT_JACKPOT_ODDS), поэтому
+	     префетчим оба клипа заранее, ЗАДОЛГО до момента, когда они реально
+	     понадобятся — без этого первый показ ждал бы полной загрузки видео
+	     ровно в момент, когда экран должен праздновать, а не буферизовать. -->
+	<link rel="preload" as="video" href="/casino/jackpot-video-1.mp4" />
+	<link rel="preload" as="video" href="/casino/jackpot-video-2.mp4" />
+</svelte:head>
 
 <div class="slot-screen">
 	<div class="menu-head">
@@ -641,9 +701,30 @@
 		     явного действия игрока (кнопка "ЗАБРАТЬ"), не тайм-аута. -->
 		<div class="jackpot-overlay" role="alertdialog" aria-modal="true" aria-label="Джекпот сорван">
 			<div class="jackpot-card">
-				<img class="jackpot-gif" src="/casino/jackpot.gif" alt="Джекпот, джекпот!" />
+				<div class="jackpot-video-wrap">
+					<!-- svelte-ignore a11y_media_has_caption -->
+					<video
+						bind:this={jackpotVideoEl}
+						class="jackpot-video"
+						src={jackpotVideoSrc}
+						playsinline
+						loop
+						muted={jackpotVideoMuted}
+						onclick={_unmuteJackpotVideo}
+					></video>
+					{#if jackpotVideoMuted}
+						<button
+							type="button"
+							class="jackpot-unmute"
+							onclick={_unmuteJackpotVideo}
+							aria-label="Включить звук"
+						>
+							🔇 звук
+						</button>
+					{/if}
+				</div>
 				<div class="jackpot-amount">+{jackpotWinAmount}¥</div>
-				<button type="button" class="jackpot-collect" onclick={() => (jackpotWinAmount = null)}>
+				<button type="button" class="jackpot-collect" onclick={_closeJackpotOverlay}>
 					ЗАБРАТЬ
 				</button>
 			</div>
@@ -1090,11 +1171,33 @@
 		box-shadow: 6px 6px 0 #111;
 		animation: jackpotCardPop 0.32s cubic-bezier(0.16, 0.86, 0.32, 1.28);
 	}
-	.jackpot-gif {
+	.jackpot-video-wrap {
+		position: relative;
 		width: 100%;
 		max-width: 260px;
+	}
+	.jackpot-video {
+		display: block;
+		width: 100%;
+		max-height: 42vh;
+		object-fit: contain;
 		border-radius: 12px;
 		border: 2px solid #111;
+		background: #000;
+	}
+	.jackpot-unmute {
+		position: absolute;
+		right: var(--space-xs, 8px);
+		bottom: var(--space-xs, 8px);
+		background: rgba(10, 6, 8, 0.78);
+		color: #fff;
+		border: 2px solid #111;
+		border-radius: 999px;
+		padding: 6px 12px;
+		font-family: var(--font-body);
+		font-size: var(--font-caption-size, 12px);
+		font-weight: 700;
+		cursor: pointer;
 	}
 	.jackpot-amount {
 		font-family: var(--font-numeric);
