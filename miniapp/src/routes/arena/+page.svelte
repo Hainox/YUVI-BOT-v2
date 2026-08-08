@@ -3,6 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { apiFetch, ApiError } from '$lib/api';
 	import { haptic } from '$lib/tg';
+	import ArenaFighter from '$lib/components/ArenaFighter.svelte';
 
 	type FighterType = 'tank' | 'assassin' | 'berserker' | 'tactician';
 	type ArenaMatch = {
@@ -27,14 +28,15 @@
 		name: string;
 		role: string;
 		stats: string;
+		special: string;
 		accent: 'pink' | 'cyan' | 'yellow';
 	};
 
 	const fighters: Fighter[] = [
-		{ id: 'tank', name: 'Танк', role: 'выносливость и защита', stats: '130 HP · 20 тяжёлый удар', accent: 'cyan' },
-		{ id: 'assassin', name: 'Ассасин', role: 'скорость и уклонение', stats: '80 HP · 30 спецприём', accent: 'pink' },
-		{ id: 'berserker', name: 'Берсерк', role: 'риск и урон на низком HP', stats: '105 HP · 24 тяжёлый удар', accent: 'yellow' },
-		{ id: 'tactician', name: 'Тактик', role: 'контроль и эффекты', stats: '95 HP · тактическая ловушка', accent: 'cyan' }
+		{ id: 'tank', name: 'Танк', role: 'выносливость и защита', stats: '130 HP · 20 тяжёлый удар', special: 'Крепость', accent: 'cyan' },
+		{ id: 'assassin', name: 'Ассасин', role: 'скорость и уклонение', stats: '80 HP · 30 спецприём', special: 'Молниеносный рывок', accent: 'pink' },
+		{ id: 'berserker', name: 'Берсерк', role: 'риск и урон на низком HP', stats: '105 HP · 24 тяжёлый удар', special: 'Ярость', accent: 'yellow' },
+		{ id: 'tactician', name: 'Тактик', role: 'контроль и эффекты', stats: '95 HP · тактическая ловушка', special: 'Тактическая ловушка', accent: 'cyan' }
 	];
 
 	let matches = $state<ArenaMatch[]>([]);
@@ -168,7 +170,7 @@
 				method: 'POST'
 			});
 			notice = activeMatch.status === 'active'
-				? `Матч #${activeMatch.id} начался. Боевой экран подключим следующим шагом.`
+				? `Матч #${activeMatch.id} начался. Переходим в боевой экран.`
 				: 'Подтверждение принято. Ждём второго игрока.';
 			haptic('win');
 		} catch (err) {
@@ -236,6 +238,12 @@
 		</div>
 	</div>
 
+	<div class="arena-links">
+		<button type="button" class="arena-link" onclick={() => goto('/arena/profile')}>ПРОФИЛЬ <span>рейтинг и XP</span></button>
+		<button type="button" class="arena-link" onclick={() => goto('/arena/history')}>ИСТОРИЯ <span>завершённые бои</span></button>
+		<button type="button" class="arena-link" onclick={() => goto('/arena/leaderboard')}>ТОП <span>кто здесь босс</span></button>
+	</div>
+
 	<button type="button" class="training-link" onclick={() => goto('/arena/training')}>
 		<span class="training-link-title">Тренировка против AI</span>
 		<span class="training-link-sub">без ставок, без рейтинга — потренируй все 4 стиля боя</span>
@@ -258,9 +266,13 @@
 					aria-pressed={selectedFighter === fighter.id}
 					onclick={() => (selectedFighter = fighter.id)}
 				>
-					<span class="fighter-name">{fighter.name}</span>
-					<span class="fighter-role">{fighter.role}</span>
-					<span class="fighter-stats">{fighter.stats}</span>
+					<ArenaFighter fighter={fighter.id} size="sm" state={selectedFighter === fighter.id ? 'selected' : 'idle'} />
+					<span class="fighter-copy">
+						<span class="fighter-name">{fighter.name}</span>
+						<span class="fighter-role">{fighter.role}</span>
+						<span class="fighter-stats">{fighter.stats}</span>
+						<span class="fighter-special">✦ {fighter.special}</span>
+					</span>
 				</button>
 			{/each}
 		</div>
@@ -340,7 +352,7 @@
 							<div class="match-side">
 								<span class="match-player">игрок #{match.creator_id}</span>
 								<strong>{match.creator_bet}¥</strong>
-								<span class="match-fighter">{fighterName(match.creator_fighter)}</span>
+								<span class="match-fighter"><ArenaFighter fighter={match.creator_fighter ?? null} size="sm" />{fighterName(match.creator_fighter)}</span>
 							</div>
 							<span class="versus">VS</span>
 							<div class="match-side match-side-right">
@@ -464,6 +476,10 @@
 		color: var(--text-muted);
 		margin-top: var(--space-xs);
 	}
+	.arena-links { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-xs); }
+	.arena-link { min-height: 64px; padding: 8px 6px; border: 1px solid var(--border-secondary); border-radius: 10px; background: var(--bg-secondary-2); color: var(--accent-cyan); font: 12px var(--font-chrome); cursor: pointer; }
+	.arena-link span { display: block; margin-top: 4px; color: var(--text-muted); font: 10px var(--font-body); }
+	.arena-link:hover { border-color: var(--accent-cyan); background: #221d30; }
 	.training-link {
 		display: flex;
 		flex-direction: column;
@@ -517,11 +533,14 @@
 		gap: var(--space-sm);
 	}
 	.fighter-card {
-		min-height: 112px;
-		padding: 12px;
+		min-height: 142px;
+		padding: 10px;
 		border: 1px solid var(--border-secondary);
 		border-radius: 10px;
 		background: var(--bg-secondary-1);
+		display: flex;
+		align-items: center;
+		gap: 8px;
 		text-align: left;
 		font-family: inherit;
 		cursor: pointer;
@@ -530,6 +549,7 @@
 	.fighter-card:hover { background: #221d30; }
 	.fighter-card:active { transform: scale(0.98); }
 	.fighter-selected { border-color: var(--accent-yellow); box-shadow: inset 0 0 0 1px var(--accent-yellow); }
+	.fighter-copy { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 	.fighter-name {
 		display: block;
 		font-family: var(--font-chrome);
@@ -548,6 +568,7 @@
 	}
 	.fighter-role { color: var(--text-secondary); margin-top: 5px; }
 	.fighter-stats { color: var(--text-muted); margin-top: 4px; }
+	.fighter-special { color: var(--accent-yellow); font: 10px var(--font-body); margin-top: 3px; }
 	.bet-row {
 		display: flex;
 		align-items: center;
@@ -634,7 +655,9 @@
 	.match-side-right { text-align: right; align-items: flex-end; }
 	.match-player, .match-fighter { font-family: var(--font-body); font-size: 11px; color: var(--text-muted); }
 	.match-side strong { font-family: var(--font-numeric); font-size: 24px; color: var(--text-primary); }
-	.match-fighter { color: var(--accent-cyan); }
+	.match-fighter { display: inline-flex; align-items: center; gap: 4px; color: var(--accent-cyan); }
+	.match-fighter :global(.fighter-visual) { width: 24px; height: 26px; }
+	.match-fighter :global(.fighter-label), .match-fighter :global(.fighter-ring), .match-fighter :global(.fighter-aura), .match-fighter :global(.fighter-shadow), .match-fighter :global(.fighter-scanline) { display: none; }
 	.versus { font-family: var(--font-numeric); font-size: 18px; color: var(--accent-yellow); }
 	.accept-controls { border-top: 1px solid var(--divider); padding-top: var(--space-sm); display: flex; flex-direction: column; gap: var(--space-sm); }
 	.accept-fighters { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
@@ -648,7 +671,9 @@
 	.arena-error { color: var(--destructive-text); background: var(--destructive-bg); border: 1px solid rgba(255, 117, 112, 0.3); }
 	.arena-footnote { text-align: center; color: var(--text-muted); font-family: var(--font-body); font-size: 11px; line-height: 1.4; }
 	@media (max-width: 360px) {
+		.arena-links { grid-template-columns: 1fr; }
 		.fighter-grid { grid-template-columns: 1fr; }
+		.fighter-card { min-height: 118px; }
 		.accept-fighters { grid-template-columns: repeat(2, 1fr); }
 	}
 </style>

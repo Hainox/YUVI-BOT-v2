@@ -1,7 +1,7 @@
 # Yuvi Arena — план разработки
 
 **Связанный документ:** `FIGHTING_SPEC.md`
-**Статус на 2026-08-07:** Фазы 0–4 и базовый Mini App lobby-срез реализованы. Phase 4 доставляет серверную PvP-сессию, authenticated REST/SSE runtime и экран `/arena/match/[id]`; settlement, рейтинг, XP и полноценные визуальные ассеты остаются следующими фазами.
+**Статус на 2026-08-08:** Фазы 0–7 частично реализованы. В репозитории есть серверная PvP-сессия, authenticated REST/SSE runtime, settlement с рейтингом/XP, минимальная админская обработка зависших матчей и экраны `/arena`, `/arena/match/[id]`, `/arena/result/[id]`, `/arena/history`, `/arena/leaderboard`, `/arena/profile` и `/arena/training`. Ежедневные/недельные награды, дайджест/MP4 и полноценные визуальные ассеты остаются следующими этапами.
 
 ## Фактическая карта текущей реализации
 
@@ -15,7 +15,8 @@
 | Money safety | `economy_service`, idempotency keys, transaction rollback |
 | Privacy | чужой fighter скрыт до active; runtime API проверяет участника |
 | Runtime | Redis-backed backend session, authenticated REST/SSE API и `/arena/match/[id]` Mini App combat screen подключены |
-| Settlement/rating/XP | целевая часть ТЗ, следующий этап |
+| Settlement/rating/XP | реализованы: идемпотентная выплата/возврат, рейтинг, XP и публикация баланса; покрыты контрактными тестами |
+| Admin hardening | rate limits, stuck/refund/audit, read-only overview и Arena fund ledger API реализованы; force-finish и metrics остаются |
 
 Фактические API-маршруты lobby являются источником истины для текущего среза. В старом плане ниже `GET /api/v1/arena/lobby` следует читать как целевой агрегированный endpoint; он пока не реализован и не используется Mini App.
 
@@ -251,7 +252,7 @@ POST /api/v1/arena/matches/{id}/forfeit
 
 ---
 
-## Фаза 5. Settlement, рейтинг и XP
+## Фаза 5. Settlement, рейтинг и XP — реализовано в текущем срезе
 
 **Цель:** атомарно завершать матч и обновлять экономику/прогресс.
 
@@ -284,7 +285,7 @@ POST /api/v1/arena/matches/{id}/forfeit
 
 ---
 
-## Фаза 6. Тренировочный режим
+## Фаза 6. Тренировочный режим — базовый срез реализован
 
 **Цель:** сделать полноценный AI-режим без экономики.
 
@@ -308,7 +309,7 @@ POST /api/v1/arena/matches/{id}/forfeit
 
 ---
 
-## Фаза 7. Mini App вертикальный срез
+## Фаза 7. Mini App вертикальный срез — базовый срез реализован
 
 **Цель:** пройти полный пользовательский путь на телефоне.
 
@@ -418,12 +419,12 @@ POST /api/v1/arena/matches/{id}/forfeit
 
 ### Задачи
 
-- admin overview;
-- зависшие матчи;
-- force finish;
-- refund;
-- просмотр фондов;
-- просмотр ledger;
+- admin overview — **готово** (`GET /api/v1/arena/admin/overview`);
+- зависшие матчи — **готово**;
+- force finish — **отложено**: безопасный refund уже есть, автоматическое определение победителя намеренно не добавлено;
+- refund — **готово**;
+- просмотр фондов — **готово** в overview;
+- просмотр ledger — **готово** (`GET /api/v1/arena/admin/fund-ledger`);
 - обязательный audit log;
 - rate limits API;
 - идемпотентность всех денежных маршрутов;

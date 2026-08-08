@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from common.arena.config import ArenaConfig
 from common.arena.schemas import ArenaMatchResult
 from common.arena.schemas import FighterType
+from common.models.arena import ArenaAdminAudit
 from common.models.arena import ArenaFighterProgress
 from common.models.arena import ArenaFund
 from common.models.arena import ArenaFundLedger
@@ -602,6 +603,121 @@ async def _record_match_stats(session: AsyncSession, match: ArenaMatch, *, resul
         loser_profile.rating = max(0, loser_profile.rating - _CONFIG.loss_rating_delta)
         loser_xp = _CONFIG.base_match_xp
     await _grant_fighter_xp(session, loser_profile, loser_fighter, loser_xp)
+
+
+async def list_stuck_matches(
+    session: AsyncSession,
+    chat_id: int,
+    *,
+    older_than: datetime,
+    limit: int = 100,
+) -> list[ArenaMatch]:
+    """Return lifecycle rows that need an operator's attention."""
+    if not 1 <= limit <= 200:
+        raise InvalidMatch("limit должен быть от 1 до 200")
+    result = await session.execute(
+        select(ArenaMatch)
+        .where(
+            ArenaMatch.chat_id == chat_id,
+            ArenaMatch.status.in_(["waiting", "accepting", "active"]),
+            ArenaMatch.created_at < older_than,
+        )
+        .order_by(ArenaMatch.created_at.asc())
+        .limit(limit)
+    )
+    return list(result.scalars().all())
+
+
+async def admin_refund_match(
+    session: AsyncSession,
+    chat_id: int,
+    match_id: int,
+    admin_id: int,
+    reason: str,
+    idempotency_key: str,
+    *,
+    now: datetime | None = None,
+) -> ArenaMatch:
+    """Safely refund an unresolved match and write an immutable audit row.
+
+    An administrator can resolve a stuck match only as a full refund. This
+    avoids guessing a combat winner from a broken runtime snapshot; payout or
+    force-win remains a separate, explicitly reviewed operation.
+    """
+    cleaned_reason = reason.strip()
+    if not cleaned_reason or len(cleaned_reason) > 200:
+        raise InvalidMatch("Причина возврата обязательна и должна быть не длиннее 200 символов")
+    if not idempotency_key or len(idempotency_key) > 120:
+        raise InvalidMatch("Некорректный ключ идемпотентности")
+
+    match = await _get_match_for_update(session, chat_id, match_id)
+    previous_status = match.status
+    existing_audit = (
+        await session.execute(
+            select(ArenaAdminAudit).where(
+                ArenaAdminAudit.admin_id == admin_id,
+                ArenaAdminAudit.idempotency_key == idempotency_key,
+            )
+        )
+    ).scalar_one_or_none()
+    if existing_audit is not None:
+        if existing_audit.match_id != match.id:
+            raise MatchConflict("Ключ идемпотентности уже использован для другого матча")
+        await session.commit()
+        return match
+    if match.settlement_status != "pending" or match.status in {"cancelled", "refunded"}:
+        raise MatchConflict("Матч уже разрешён")
+    if match.status not in {"waiting", "accepting", "active", "finished"}:
+        raise MatchConflict("Матч нельзя вернуть")
+
+    current_time = _now(now)
+    audit_insert = (
+        pg_insert(ArenaAdminAudit)
+        .values(
+            chat_id=chat_id,
+            admin_id=admin_id,
+            operation="refund_match",
+            idempotency_key=idempotency_key,
+            match_id=match.id,
+            amount=match.creator_bet + (match.opponent_bet or 0),
+            reason=cleaned_reason,
+            result="refunded",
+            details={"previous_status": previous_status},
+        )
+        .on_conflict_do_nothing(index_elements=["admin_id", "idempotency_key"])
+        .returning(ArenaAdminAudit.id)
+    )
+    reserved_audit_id = (await session.execute(audit_insert)).scalar_one_or_none()
+    if reserved_audit_id is None:
+        # A concurrent request with the same admin/key already completed (or
+        # is completing) a refund. The unique constraint is the serialization
+        # point; only the same match may safely replay this operation.
+        existing_audit = (
+            await session.execute(
+                select(ArenaAdminAudit).where(
+                    ArenaAdminAudit.admin_id == admin_id,
+                    ArenaAdminAudit.idempotency_key == idempotency_key,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing_audit is None or existing_audit.match_id != match.id:
+            raise MatchConflict("Ключ идемпотентности уже использован для другого матча")
+        await session.commit()
+        return match
+
+    # Reserve the audit row before money moves. If a refund call fails, the
+    # caller's transaction rollback removes both the reservation and any
+    # partial ledger work, so a later retry can safely try again.
+    await _refund_side(session, match, match.creator_id, match.creator_bet, "creator")
+    if match.opponent_id is not None and match.opponent_bet is not None:
+        await _refund_side(session, match, match.opponent_id, match.opponent_bet, "opponent")
+    match.status = "refunded"
+    match.settlement_status = "refunded"
+    match.result_reason = "admin_refund"
+    match.resolved_at = current_time
+    match.finished_at = current_time
+    await session.commit()
+    return match
 
 
 async def settle_match(

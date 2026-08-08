@@ -23,6 +23,7 @@ from common.arena.engine import MatchState
 from common.arena.schemas import ArenaMatchResult
 from common.arena.schemas import ArenaPlayerAction
 from common.arena.schemas import FighterType
+from common.models.arena import ArenaMatchEvent
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +101,9 @@ class ArenaSessionService:
             restored = self._restore_from_match(match)
             if restored is not None:
                 await self._write(key, restored)
+                # Re-save a recovered snapshot so newly introduced fields and
+                # any terminal state survive another Redis loss immediately.
+                await self._persist(match, restored)
                 return restored
 
             state = self.engine.start(
@@ -314,17 +318,54 @@ class ArenaSessionService:
         from common.arena.fighters import FIGHTERS
 
         state = copy.deepcopy(runtime_state)
+
+        # Participant identity is immutable DB data, not replay data. Older
+        # snapshots written before the reconnect contract may have no
+        # ``players``/``connections`` keys at all; restoring them as empty
+        # dictionaries makes every subsequent action/tick fail with a KeyError
+        # or treat both users as absent. Rebuild these fields from the match
+        # row and keep only the two legitimate participant connection entries.
+        state["match_id"] = match.id
+        state["chat_id"] = match.chat_id
+        state["players"] = {
+            "player": match.creator_id,
+            "opponent": match.opponent_id,
+        }
+        state["fighters"] = {
+            "player": match.creator_fighter,
+            "opponent": match.opponent_fighter,
+        }
         state.setdefault("phase_duration_seconds", self.config.phase_duration_seconds)
+        state.setdefault("phase_index", 0)
         state.setdefault("actions", {})
         state.setdefault("processed_actions", {})
         state.setdefault("outcome_history", [])
         state.setdefault("last_outcome", None)
         state.setdefault("terminal", False)
         state.setdefault("refund_required", False)
-        state.setdefault("connections", {})
+
+        saved_connections = state.get("connections")
+        if not isinstance(saved_connections, dict):
+            saved_connections = {}
+        state["connections"] = {
+            str(user_id): (
+                saved_connections.get(str(user_id))
+                if isinstance(saved_connections.get(str(user_id)), dict)
+                else {"connected": True, "deadline": None}
+            )
+            for user_id in (match.creator_id, match.opponent_id)
+            if user_id is not None
+        }
+        for connection in state["connections"].values():
+            connection.setdefault("connected", True)
+            connection.setdefault("deadline", None)
+
+        engine = state.setdefault("engine", {})
         for side in ("player", "opponent"):
-            combatant = state.get("engine", {}).get(side, {})
-            fighter_value = combatant.get("fighter") or state.get("fighters", {}).get(side)
+            combatant = engine.get(side)
+            if not isinstance(combatant, dict):
+                combatant = {}
+            fighter_value = combatant.get("fighter") or state["fighters"].get(side)
             if fighter_value is not None:
                 fighter = FIGHTERS[FighterType(fighter_value)]
                 combatant["fighter"] = fighter.fighter_type.value
@@ -335,7 +376,7 @@ class ArenaSessionService:
             combatant.setdefault("damage_bonus_percent", 0)
             combatant.setdefault("damage_bonus_phases", 0)
             combatant.setdefault("trap_phases", 0)
-            state.setdefault("engine", {})[side] = combatant
+            engine[side] = combatant
         return state
 
     async def _read(self, key: str) -> dict[str, Any] | None:
@@ -576,6 +617,7 @@ async def persist_runtime_state(match, state: dict[str, Any]) -> None:
     never spans PostgreSQL I/O and API request sessions can safely be closed.
     """
     from sqlalchemy import select
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
 
     from common.db.session import SessionLocal
     from common.models.arena import ArenaMatch
@@ -593,6 +635,56 @@ async def persist_runtime_state(match, state: dict[str, Any]) -> None:
         replay_data = dict(stored.replay_data or {})
         replay_data["runtime_state"] = state
         stored.replay_data = replay_data
+
+        # Redis Pub/Sub is intentionally best-effort and cannot be used as a
+        # replay/audit source. Persist every authoritative phase outcome with
+        # stable keys so retries of this callback are harmless. The terminal
+        # marker covers forfeit/disconnect terminal states that have no phase
+        # outcome of their own.
+        history = state.get("outcome_history") or []
+        for sequence, outcome in enumerate(history):
+            # Use the authoritative phase index as the DB sequence. The
+            # in-memory history is capped, so enumerate(history) would reuse
+            # old sequence numbers after phase 120 and silently drop new
+            # replay events on the UNIQUE(match_id, sequence) constraint.
+            phase_index = int(outcome.get("phase_index", sequence))
+            event_key = f"phase:{phase_index}"
+            await session.execute(
+                pg_insert(ArenaMatchEvent)
+                .values(
+                    match_id=stored.id,
+                    sequence=phase_index,
+                    event_key=event_key,
+                    event_type="phase_resolved",
+                    phase_index=phase_index,
+                    payload=outcome,
+                )
+                .on_conflict_do_nothing()
+            )
+
+        if state.get("terminal"):
+            terminal_payload = {
+                "result": state.get("result"),
+                "winner_id": state.get("winner_id"),
+                "loser_id": state.get("loser_id"),
+                "reason": state.get("reason"),
+                "refund_required": bool(state.get("refund_required")),
+                "finished_at": state.get("finished_at"),
+            }
+            terminal_sequence = int(state.get("phase_index", len(history))) + 1
+            await session.execute(
+                pg_insert(ArenaMatchEvent)
+                .values(
+                    match_id=stored.id,
+                    sequence=terminal_sequence,
+                    event_key="terminal",
+                    event_type="match_terminal",
+                    phase_index=int(state.get("phase_index", 0)),
+                    payload=terminal_payload,
+                )
+                .on_conflict_do_nothing()
+            )
+
         stored.phase_count = state.get("phase_index", stored.phase_count)
         await session.commit()
 

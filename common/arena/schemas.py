@@ -1,6 +1,17 @@
 from __future__ import annotations
 
-from enum import StrEnum
+from enum import Enum
+
+try:
+    from enum import StrEnum
+except ImportError:  # Python 3.10 compatibility; production images use 3.11+
+    class StrEnum(str, Enum):
+        """Small compatibility shim for Python versions before 3.11."""
+
+        def __str__(self) -> str:
+            return self.value
+
+
 
 
 class ArenaPlayerAction(StrEnum):

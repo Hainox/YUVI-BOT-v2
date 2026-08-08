@@ -1,8 +1,10 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
+	import { goto } from '$app/navigation';
 	import { apiFetch, apiStream, ApiError } from '$lib/api';
 	import { haptic } from '$lib/tg';
+	import ArenaFighter from '$lib/components/ArenaFighter.svelte';
 
 	type Action = 'fast_attack' | 'heavy_attack' | 'block' | 'dodge' | 'special';
 	type EngineCombatant = {
@@ -84,6 +86,7 @@
 	function applyState(next: ArenaState): void {
 		if (next.match_id !== matchId) return;
 		if (matchState && next.phase_index < matchState.phase_index) return;
+		if (matchState && next.phase_index > matchState.phase_index) selectedAction = null;
 		matchState = next;
 		secondsLeft = Math.max(0, Math.ceil((Date.parse(next.phase_deadline) - Date.now()) / 1000));
 		if (next.last_outcome && (!lastOutcome || next.last_outcome.phase_index > lastOutcome.phase_index)) {
@@ -304,6 +307,10 @@
 	const dealtDamage = $derived(lastOutcome ? (viewerSide === 'player' ? lastOutcome.player_damage : lastOutcome.opponent_damage) : 0);
 	const incomingDamage = $derived(lastOutcome ? (viewerSide === 'player' ? lastOutcome.opponent_damage : lastOutcome.player_damage) : 0);
 	const phaseLocked = $derived(Boolean(matchState?.actions && Object.keys(matchState.actions).length > 0));
+	const viewerVisualState = $derived(matchState?.terminal ? (matchState.winner_id === matchState.viewer_id ? 'victory' : matchState.refund_required ? 'idle' : 'defeat') : selectedAction ? 'attack' : 'idle');
+	const enemyVisualState = $derived(matchState?.terminal ? (matchState.winner_id === matchState.viewer_id ? 'defeat' : matchState.refund_required ? 'idle' : 'victory') : lastOutcome ? 'hit' : 'idle');
+	const viewerAction = $derived(selectedAction ?? (viewerSide === 'player' ? lastOutcome?.player_action : lastOutcome?.opponent_action) ?? '');
+	const enemyAction = $derived(viewerSide === 'player' ? lastOutcome?.opponent_action ?? '' : lastOutcome?.player_action ?? '');
 	const resultLabel = $derived(
 		matchState?.refund_required
 			? 'ВОЗВРАТ СТАВОК'
@@ -328,17 +335,32 @@
 		</div>
 
 		<div class="fight-hud">
-			<div class="fighter-hud">
+			<div class="fighter-hud fighter-hud-with-visual">
+				<ArenaFighter fighter={viewerFighter as 'tank' | 'assassin' | 'berserker' | 'tactician'} size="sm" state={viewerVisualState} action={viewerAction} />
 				<div class="fighter-hud-name">{viewerFighter}</div>
 				<div class="bar"><span style={`width: ${Math.max(0, Math.min(100, (playerHp / playerMaxHp) * 100))}%`}></span></div>
 				<div class="bar-label">{playerHp} HP · {playerEnergy} EN</div>
 			</div>
 			<div class="fight-timer">{matchState.terminal ? '—' : secondsLeft}</div>
-			<div class="fighter-hud opponent">
+			<div class="fighter-hud opponent fighter-hud-with-visual">
+				<ArenaFighter fighter={enemyFighter as 'tank' | 'assassin' | 'berserker' | 'tactician'} size="sm" side="opponent" state={enemyVisualState} action={enemyAction} />
 				<div class="fighter-hud-name">{enemyFighter}</div>
 				<div class="bar"><span style={`width: ${Math.max(0, Math.min(100, (opponentHp / opponentMaxHp) * 100))}%`}></span></div>
 				<div class="bar-label">{opponentHp} HP</div>
 			</div>
+		</div>
+
+		<div class="arena-stage" aria-hidden="true">
+			<div class="stage-grid"></div>
+			<div class="stage-name stage-name-player">{viewerFighter}</div>
+			<ArenaFighter fighter={viewerFighter as 'tank' | 'assassin' | 'berserker' | 'tactician'} size="lg" state={viewerVisualState} action={viewerAction} />
+			<div class="stage-vs">VS</div>
+			<ArenaFighter fighter={enemyFighter as 'tank' | 'assassin' | 'berserker' | 'tactician'} size="lg" side="opponent" state={enemyVisualState} action={enemyAction} />
+			<div class="stage-name stage-name-opponent">{enemyFighter}</div>
+			{#if lastOutcome}
+				<div class="damage-pop damage-pop-player">-{dealtDamage}</div>
+				<div class="damage-pop damage-pop-opponent">-{incomingDamage}</div>
+			{/if}
 		</div>
 
 		<div class="phase-card">
@@ -359,6 +381,7 @@
 				<div class="terminal-title">{resultLabel}</div>
 				<div>{matchState.reason === 'both_disconnected' ? 'Оба игрока отключились.' : matchState.reason ?? 'Матч завершён.'}</div>
 				{#if matchState.refund_required}<div class="refund-note">Ставки будут возвращены финансовым контуром.</div>{/if}
+				<button type="button" class="result-link" onclick={() => goto(`/arena/result/${matchId}`)}>ПОКАЗАТЬ ФИНАЛЬНЫЙ ИТОГ</button>
 			</div>
 		{:else}
 			<div class="actions-grid">
@@ -386,7 +409,10 @@
 	.connection-dot { width: 12px; height: 12px; margin-top: 8px; border-radius: 50%; background: var(--accent-yellow); box-shadow: 0 0 12px currentColor; }
 	.connection-dot.live { color: var(--positive); background: var(--positive); }
 	.connection-dot.offline { color: var(--destructive); background: var(--destructive); }
-	.fight-hud { display: grid; grid-template-columns: 1fr 48px 1fr; align-items: center; gap: var(--space-sm); padding: var(--space-md); background: var(--bg-secondary-2); border: 1px solid var(--border-secondary); border-radius: 14px; }
+	.fight-hud { display: grid; grid-template-columns: minmax(0, 1fr) 48px minmax(0, 1fr); align-items: center; gap: var(--space-sm); padding: var(--space-md); background: linear-gradient(180deg, rgba(28,24,39,.98), rgba(13,10,24,.98)); border: 1px solid var(--border-secondary); border-radius: 14px; }
+	.fighter-hud-with-visual { position: relative; min-width: 0; }
+	.fighter-hud-with-visual :global(.fighter-visual) { width: 56px; height: 60px; margin: -4px 0 -7px; }
+	.fighter-hud-with-visual.opponent :global(.fighter-visual) { margin-left: auto; }
 	.fighter-hud.opponent { text-align: right; }
 	.fighter-hud-name { overflow: hidden; color: var(--text-primary); font: 700 13px var(--font-chrome); text-overflow: ellipsis; white-space: nowrap; }
 	.bar { height: 9px; margin-top: 8px; overflow: hidden; border-radius: 5px; background: var(--bg-dominant); }
@@ -394,6 +420,15 @@
 	.opponent .bar span { margin-left: auto; background: var(--accent-pink); }
 	.bar-label { margin-top: 4px; color: var(--text-muted); font: 11px var(--font-body); }
 	.fight-timer { color: var(--accent-yellow); font: 900 28px var(--font-numeric); text-align: center; }
+	.arena-stage { position: relative; min-height: 224px; display: flex; align-items: flex-end; justify-content: space-around; gap: 4px; overflow: hidden; padding: 12px 4px 8px; border: 1px solid var(--border-secondary); border-radius: 16px; background: radial-gradient(ellipse at 50% 80%, rgba(123,230,255,.12), transparent 48%), linear-gradient(180deg, #151225 0%, #0b0914 100%); }
+	.stage-grid { position: absolute; inset: 42% 0 0; opacity: .32; background: linear-gradient(rgba(123,230,255,.22) 1px, transparent 1px), linear-gradient(90deg, rgba(123,230,255,.22) 1px, transparent 1px); background-size: 26px 18px; transform: perspective(120px) rotateX(58deg) scale(1.35); transform-origin: bottom; mask-image: linear-gradient(to top, black, transparent); }
+	.stage-name { position: absolute; top: 10px; color: var(--text-muted); font: 10px var(--font-body); letter-spacing: .08em; text-transform: uppercase; }
+	.stage-name-player { left: 12px; color: var(--accent-cyan); }
+	.stage-name-opponent { right: 12px; color: var(--accent-pink); }
+	.stage-vs { position: absolute; left: 50%; top: 44%; z-index: 1; color: var(--accent-yellow); font: 24px var(--font-numeric); opacity: .75; transform: translate(-50%, -50%) rotate(-8deg); text-shadow: 0 0 16px rgba(255,216,74,.7); }
+	.damage-pop { position: absolute; z-index: 3; top: 45%; color: var(--accent-pink); font: 28px var(--font-numeric); text-shadow: 2px 2px 0 #080812, 0 0 12px var(--accent-pink); animation: damage-rise .65s ease-out both; }
+	.damage-pop-player { left: 24%; }
+	.damage-pop-opponent { right: 24%; color: var(--accent-yellow); }
 	.phase-card, .outcome-card, .terminal-card { padding: var(--space-md); background: var(--bg-secondary-2); border: 1px solid var(--border-secondary); border-radius: 12px; }
 	.phase-label { color: var(--text-primary); font: 13px var(--font-chrome); text-align: center; }
 	.phase-track { height: 6px; margin-top: 10px; overflow: hidden; border-radius: 4px; background: var(--bg-dominant); }
@@ -406,11 +441,14 @@
 	.terminal-card { border-color: var(--accent-pink); text-align: center; }
 	.terminal-title { color: var(--accent-pink); font: 700 28px var(--font-numeric); }
 	.refund-note { margin-top: 8px; color: var(--accent-yellow); }
+	.result-link { margin-top: 10px; min-height: 44px; border: 0; border-radius: 8px; background: var(--accent-yellow); color: #17120a; cursor: pointer; font: 700 12px var(--font-chrome); }
 	.actions-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-sm); }
-	.action-button { min-height: 76px; padding: 10px; border: 1px solid var(--border-secondary); border-radius: 12px; background: var(--bg-secondary-2); color: var(--text-primary); cursor: pointer; font-family: var(--font-chrome); }
+	.action-button { position: relative; min-height: 82px; padding: 10px; border: 1px solid var(--border-secondary); border-radius: 12px; background: linear-gradient(145deg, rgba(28,24,39,.98), rgba(13,10,24,.98)); color: var(--text-primary); cursor: pointer; font-family: var(--font-chrome); transition: transform .12s ease, border-color .15s ease, box-shadow .15s ease, background .15s ease; }
+	.action-button::before { content: ''; position: absolute; left: 10px; right: 10px; top: 8px; height: 2px; border-radius: 2px; background: currentColor; opacity: .35; }
+	.action-button:hover:not(:disabled) { transform: translateY(-2px); border-color: currentColor; box-shadow: 0 8px 22px rgba(0,0,0,.25); }
 	.action-button span, .action-button small { display: block; }
 	.action-button small { margin-top: 5px; color: var(--text-muted); font: 11px var(--font-body); }
-	.action-button.selected { border-color: var(--accent-yellow); box-shadow: inset 0 0 0 1px var(--accent-yellow); }
+	.action-button.selected { border-color: var(--accent-yellow); box-shadow: inset 0 0 0 1px var(--accent-yellow), 0 0 18px rgba(255,216,74,.16); background: rgba(255,216,74,.09); }
 	.action-fast_attack { border-color: rgba(123, 230, 255, .45); }
 	.action-heavy_attack { border-color: rgba(255, 91, 141, .45); }
 	.action-block { border-color: rgba(255, 216, 74, .45); }
@@ -419,5 +457,7 @@
 	.forfeit-button { min-height: 44px; border: 0; background: transparent; color: var(--text-muted); cursor: pointer; font: 12px var(--font-body); }
 	.fight-inline-error, .fight-error { padding: var(--space-sm) var(--space-md); border-radius: 8px; background: var(--destructive-bg); color: var(--destructive-text); font: 13px/1.5 var(--font-body); }
 	.fight-error { min-height: 40vh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--space-sm); text-align: center; }
-	@media (max-width: 360px) { .fight-hud { grid-template-columns: 1fr 38px 1fr; padding: 10px; } .fighter-hud-name { font-size: 11px; } .fight-timer { font-size: 23px; } }
+	@keyframes damage-rise { from { opacity: 0; transform: translateY(12px) scale(.75); } 20% { opacity: 1; } to { opacity: 0; transform: translateY(-34px) scale(1.08); } }
+	@media (prefers-reduced-motion: reduce) { .action-button, .damage-pop { transition: none; animation: none; } }
+	@media (max-width: 360px) { .fight-hud { grid-template-columns: 1fr 38px 1fr; padding: 10px; } .fighter-hud-name { font-size: 11px; } .fight-timer { font-size: 23px; } .arena-stage { min-height: 190px; } .arena-stage :global(.fighter-lg) { width: 132px; height: 140px; } }
 </style>

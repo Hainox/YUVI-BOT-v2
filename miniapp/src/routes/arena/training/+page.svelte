@@ -7,6 +7,7 @@
 	// one POST fully resolves one phase.
 	import { apiFetch, ApiError } from '$lib/api';
 	import { haptic } from '$lib/tg';
+	import ArenaFighter from '$lib/components/ArenaFighter.svelte';
 
 	type Action = 'fast_attack' | 'heavy_attack' | 'block' | 'dodge' | 'special';
 	type FighterType = 'tank' | 'assassin' | 'berserker' | 'tactician';
@@ -156,8 +157,8 @@
 						aria-pressed={selectedFighter === fighter.id}
 						onclick={() => (selectedFighter = fighter.id)}
 					>
-						<span class="fighter-name">{fighter.name}</span>
-						<span class="fighter-role">{fighter.role}</span>
+						<ArenaFighter fighter={fighter.id} size="sm" state={selectedFighter === fighter.id ? 'selected' : 'idle'} />
+						<span class="fighter-copy"><span class="fighter-name">{fighter.name}</span><span class="fighter-role">{fighter.role}</span></span>
 					</button>
 				{/each}
 			</div>
@@ -193,6 +194,7 @@
 	{:else}
 		<div class="fight-hud">
 			<div class="fighter-hud">
+				<ArenaFighter fighter={training.fighters.player} size="sm" state={training.last_outcome?.player_damage ? 'hit' : 'idle'} />
 				<div class="fighter-hud-name">{fighterName(training.fighters.player)}</div>
 				<div class="bar">
 					<span
@@ -203,6 +205,7 @@
 			</div>
 			<div class="fight-vs">VS</div>
 			<div class="fighter-hud opponent">
+				<ArenaFighter fighter={training.fighters.opponent} size="sm" side="opponent" state={training.last_outcome?.opponent_damage ? 'hit' : 'idle'} />
 				<div class="fighter-hud-name">{fighterName(training.fighters.opponent)}</div>
 				<div class="bar">
 					<span
@@ -211,6 +214,13 @@
 				</div>
 				<div class="bar-label">{training.engine.opponent.hp} HP</div>
 			</div>
+		</div>
+
+		<div class="training-stage" aria-hidden="true">
+			<div class="training-stage-grid"></div>
+			<ArenaFighter fighter={training.fighters.player} size="lg" />
+			<div class="stage-vs">VS</div>
+			<ArenaFighter fighter={training.fighters.opponent} size="lg" side="opponent" />
 		</div>
 
 		<div class="phase-card">
@@ -303,10 +313,13 @@
 		gap: var(--space-sm);
 	}
 	.fighter-card {
-		min-height: 84px;
-		padding: 12px;
+		min-height: 112px;
+		padding: 10px;
 		border: 1px solid var(--border-secondary);
 		border-radius: 10px;
+		display: flex;
+		align-items: center;
+		gap: 8px;
 		background: var(--bg-secondary-1);
 		text-align: left;
 		font-family: inherit;
@@ -316,6 +329,7 @@
 		border-color: var(--accent-yellow);
 		box-shadow: inset 0 0 0 1px var(--accent-yellow);
 	}
+	.fighter-copy { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 	.fighter-name {
 		display: block;
 		font-family: var(--font-chrome);
@@ -372,6 +386,9 @@
 		line-height: 1.5;
 	}
 
+	.training-stage { position: relative; min-height: 190px; display: flex; align-items: flex-end; justify-content: space-around; overflow: hidden; padding: 8px 4px; border: 1px solid var(--border-secondary); border-radius: 16px; background: radial-gradient(ellipse at 50% 90%, rgba(123,230,255,.12), transparent 48%), linear-gradient(180deg, #151225, #0b0914); }
+	.training-stage-grid { position: absolute; inset: 42% 0 0; opacity: .28; background: linear-gradient(rgba(123,230,255,.22) 1px, transparent 1px), linear-gradient(90deg, rgba(123,230,255,.22) 1px, transparent 1px); background-size: 26px 18px; transform: perspective(120px) rotateX(58deg) scale(1.35); transform-origin: bottom; mask-image: linear-gradient(to top, black, transparent); }
+	.training-stage .stage-vs { position: absolute; left: 50%; top: 45%; z-index: 1; transform: translate(-50%, -50%) rotate(-8deg); }
 	.fight-hud {
 		display: grid;
 		grid-template-columns: 1fr 40px 1fr;
