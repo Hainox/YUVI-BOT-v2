@@ -24,6 +24,7 @@ from api.arena_rate_limit import enforce_arena_rate_limit
 from bot.services import arena_service
 from bot.services import balance_events
 from bot.services import economy_service
+from common.arena.config import ArenaConfig
 from common.arena.schemas import FighterType
 from common.db.session import SessionLocal
 from common.models.arena import ArenaFighterProgress
@@ -32,6 +33,15 @@ from common.models.arena import ArenaProfile
 from common.models.user import User
 
 router = APIRouter()
+
+# Same defaults arena_service uses for the real settlement math (that module's
+# own `_CONFIG`) — instantiated separately here because this router only ever
+# *displays* already-applied results, it must never move money. Reading from
+# ArenaConfig instead of hardcoding literals keeps this display path from
+# silently drifting out of sync with the real payout/rating/XP rules if they
+# are ever retuned (FIGHTING_SPEC.md 15: "изменение правил только через
+# код/конфигурацию").
+_ARENA_CONFIG = ArenaConfig()
 
 
 class CreateArenaMatchBody(BaseModel):
@@ -139,8 +149,27 @@ def _serialize_arena_match_result(
     lost = match.loser_id == viewer_id
     is_draw = match.match_result == "draw"
     technical_loss = match.match_result == "technical_loss" and lost
-    rating_delta = 0 if is_draw else 25 if won else -30 if technical_loss else -20 if lost else 0
-    xp_gained = 0 if technical_loss else 150 if won else 100 if is_draw or lost else 0
+    win_xp = _ARENA_CONFIG.base_match_xp + _ARENA_CONFIG.win_bonus_xp
+    rating_delta = (
+        0
+        if is_draw
+        else _ARENA_CONFIG.win_rating_delta
+        if won
+        else -_ARENA_CONFIG.technical_loss_rating_delta
+        if technical_loss
+        else -_ARENA_CONFIG.loss_rating_delta
+        if lost
+        else 0
+    )
+    xp_gained = (
+        0
+        if technical_loss
+        else win_xp
+        if won
+        else _ARENA_CONFIG.base_match_xp
+        if is_draw or lost
+        else 0
+    )
     user_refund = viewer_bet if match.settlement_status == "refunded" else 0
     user_payout = match.payout_amount if won and match.settlement_status == "paid" else 0
     return {
@@ -186,12 +215,22 @@ async def get_arena_profile(auth: AuthContext = Depends(require_membership)) -> 
                 )
             ).scalars().all()
             progress = [
-                {"fighter": row.fighter_type, "xp": row.xp, "level": row.level, "cosmetics": row.cosmetics}
+                {
+                    "fighter": row.fighter_type,
+                    "xp": row.xp,
+                    "level": row.level,
+                    "cosmetics": row.cosmetics,
+                    "xp_to_next_level": (
+                        None
+                        if row.level >= _ARENA_CONFIG.max_fighter_level
+                        else arena_service._xp_threshold(row.level)
+                    ),
+                }
                 for row in rows
             ]
     return {
         "user_id": auth.user_id,
-        "rating": profile.rating if profile is not None else 1000,
+        "rating": profile.rating if profile is not None else _ARENA_CONFIG.initial_rating,
         "total_matches": profile.total_matches if profile is not None else 0,
         "wins": profile.wins if profile is not None else 0,
         "losses": profile.losses if profile is not None else 0,

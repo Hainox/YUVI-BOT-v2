@@ -47,6 +47,7 @@ from urllib.parse import urlencode
 import pytest
 from httpx import ASGITransport
 from httpx import AsyncClient
+from sqlalchemy import delete
 from sqlalchemy import select
 from sqlalchemy import update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -64,6 +65,7 @@ from common.db.session import engine
 from common.db.session import SessionLocal
 from common.models.casino_game import CasinoGame
 from common.models.chat_bank import ChatBank
+from common.models.slot_jackpot import SlotJackpot
 from common.models.user import User
 
 CHAT_ID = -900301
@@ -1329,6 +1331,17 @@ async def test_jackpot_pool_get_returns_seed_for_fresh_chat(monkeypatch):
     user_id = 300406
     await _ensure_user(user_id)
     init_data = _build_init_data(user_id=user_id)
+
+    # This test (unlike the ones below it in this file) asserts the true seed
+    # value for a chat that has NEVER spun the jackpot slot before, so
+    # JACKPOT_CHAT_ID must start with no `slot_jackpots` row at all — this
+    # file uses real ASGITransport requests with real commits (not the
+    # rolled-back `session` fixture), so a row left behind by a previous
+    # full-suite run against this same DB would otherwise make the pool look
+    # already-accumulated and fail this specific assertion.
+    async with SessionLocal() as cleanup_session:
+        await cleanup_session.execute(delete(SlotJackpot).where(SlotJackpot.chat_id == JACKPOT_CHAT_ID))
+        await cleanup_session.commit()
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
