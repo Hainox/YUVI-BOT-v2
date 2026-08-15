@@ -32,7 +32,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 # закоммитили ~125 синтетических "Тест"-пользователей и их дуэли/маркеты/
 # фидбек/economy_tx прямо в живую БД (см. cleanup-скрипт в истории чата).
 # Прод по .env.example всегда резолвит Postgres через docker-compose хост
-# `postgres` (внутренняя сеть контейнеров); localhost/127.0.0.1 — только
+# `postgres-test` (отдельная сеть/volume test-профиля); localhost/127.0.0.1 — только
 # локальная разработка и CI (.github/workflows/ci.yml). Стоп-кран ниже не
 # даёт тестам стартовать, если хост не входит в этот список.
 _SAFE_DATABASE_HOSTS = {"localhost", "127.0.0.1"}
@@ -57,13 +57,13 @@ def pytest_sessionstart(session: pytest.Session) -> None:
 
 
 _ALLOWED_TEST_DB_HOSTS = {"127.0.0.1", "localhost"}
-_COMPOSE_TEST_DB_HOSTS = {"postgres"}
+_COMPOSE_TEST_DB_HOSTS = {"postgres-test"}
 
 
 def _assert_safe_test_database(database_url: str) -> None:
     """Не даёт случайно направить destructive-тесты в production.
 
-    `postgres` разрешён только из явного Compose test-профиля, который
+    `postgres-test` разрешён только из явного Compose test-профиля, который
     выставляет `YUVI_TEST_ISOLATED=1`; обычный запуск принимает только
     localhost/127.0.0.1.
     """

@@ -245,7 +245,8 @@ Bot API не отдаёт сообщения старше момента доб�
 
 ```bash
 # Вариант без установки Python/pytest на хосте: отдельный test-профиль
-# сам соберёт тестовый образ и дождётся Postgres, Redis и миграций.
+# создаст отдельные test-Postgres/Redis/volume, соберёт образ и применит миграции.
+# Production-БД и Redis при этом не используются.
 docker compose --profile test run --rm --build test
 ```
 
