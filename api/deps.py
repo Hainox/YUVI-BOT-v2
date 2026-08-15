@@ -49,16 +49,24 @@ class AuthContext:
     status: str
 
 
+_MAX_CLOCK_SKEW_SECONDS = 60
+
+
 def validate_init_data(init_data: str, bot_token: str, ttl_seconds: int) -> dict:
     """Проверяет HMAC-подпись initData и её срок годности (T-04-04/T-04-05).
 
     Возвращает распарсенные поля (без `hash`) при успехе; иначе поднимает
-    `InvalidInitData` с коротким машинным описанием причины.
+    `InvalidInitData` с коротким машинным описанием причины. Повторяющиеся
+    ключи запрещены: простое ``dict(parse_qsl(...))`` иначе позволяло бы
+    незаметно заменить значение поля после проверки подписи.
     """
     try:
-        parsed = dict(parse_qsl(init_data, strict_parsing=True))
+        pairs = parse_qsl(init_data, strict_parsing=True, keep_blank_values=True)
     except ValueError as exc:
         raise InvalidInitData("malformed init data") from exc
+    if not pairs or len({key for key, _ in pairs}) != len(pairs):
+        raise InvalidInitData("duplicate or malformed fields")
+    parsed = dict(pairs)
     received_hash = parsed.pop("hash", None)
     if received_hash is None:
         raise InvalidInitData("no hash")
@@ -70,8 +78,15 @@ def validate_init_data(init_data: str, bot_token: str, ttl_seconds: int) -> dict
     if not hmac.compare_digest(computed_hash, received_hash):
         raise InvalidInitData("hash mismatch")
 
-    auth_date = int(parsed.get("auth_date", 0))
-    if time.time() - auth_date > ttl_seconds:
+    try:
+        auth_date = int(parsed["auth_date"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise InvalidInitData("malformed auth date") from exc
+
+    now = time.time()
+    if auth_date <= 0 or auth_date > now + _MAX_CLOCK_SKEW_SECONDS:
+        raise InvalidInitData("invalid auth date")
+    if ttl_seconds < 0 or now - auth_date > ttl_seconds:
         raise InvalidInitData("expired")
 
     return parsed

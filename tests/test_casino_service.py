@@ -325,7 +325,7 @@ async def test_idempotent_replay_same_idem_key(session, monkeypatch):
     chat_id = -100900009
     user_id = 900009
     await _ensure_user(session, user_id)
-    balance_before = await _fund(session, chat_id, user_id)
+    await _fund(session, chat_id, user_id)
     await economy_service.credit_bank(
         session, chat_id, 100_000, kind="test_seed", ref_id="test_idempotent_seed_bank"
     )

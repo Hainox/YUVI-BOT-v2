@@ -220,7 +220,7 @@ async def test_optin_writes_only_caller_row(session):
     await _ensure_user(session, caller_id, "Вызывающий")
     await _ensure_user(session, other_target_id, "Другая-цель")
 
-    message = _fake_message(chat_id, caller_id, "Вызывающий", f"/twin_optin @other_target")
+    message = _fake_message(chat_id, caller_id, "Вызывающий", "/twin_optin @other_target")
 
     await twin_handlers.twin_optin(message, session)
     await session.commit()

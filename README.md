@@ -196,7 +196,16 @@ Bot API не отдаёт сообщения старше момента доб�
 ## Тесты
 
 ```bash
-docker run --rm --network yuvibotv2_default --env-file .env -v "$(pwd)":/app -w /app yuvi-bot-dev:py311 pytest -q
+# Вариант без установки Python/pytest на хосте: отдельный test-профиль
+# сам соберёт тестовый образ и дождётся Postgres, Redis и миграций.
+docker compose --profile test run --rm --build test
+```
+
+Если на сервере уже есть образ `yuvi-bot-dev:py311`, можно использовать его напрямую:
+
+```bash
+docker run --rm --network yuvibotv2_default --env-file .env \\
+  -v "$(pwd)":/app -w /app yuvi-bot-dev:py311 python -m pytest -q
 ```
 
 Держим ~250+ pytest-тестов на бизнес-логику против живого Postgres/Redis (не моки).

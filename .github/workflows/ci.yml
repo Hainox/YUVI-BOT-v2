@@ -22,10 +22,21 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     env:
       DATABASE_URL: postgresql+asyncpg://yuvi:yuvi@localhost:5432/yuvi
+      REDIS_URL: redis://localhost:6379/0
       BOT_TOKEN: test_token
       CHAT_ID: "-1000000000000"
+      OWNER_ID: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -33,6 +44,8 @@ jobs:
           python-version: "3.11"
       - name: Install deps
         run: pip install -r requirements.txt -r requirements-dev.txt -r api/requirements.txt
+      - name: Lint
+        run: ruff check bot api common nlp tests
       - name: Syntax check
         run: python -m compileall bot api nlp common
       - name: Run migrations

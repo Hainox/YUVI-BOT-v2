@@ -1,10 +1,13 @@
 --index-url https://download.pytorch.org/whl/cpu
 --extra-index-url https://pypi.org/simple
 
-fastapi==0.116.1
-uvicorn[standard]==0.35.0
-transformers==4.53.1
-torch==2.7.1
-sentence-transformers==5.6.0
+fastapi==0.141.1
+uvicorn[standard]==0.52.3
+transformers==4.57.6
+torch==2.12.1
+sentence-transformers==5.7.0
 sentencepiece==0.2.2
+numpy==2.4.6
+pydantic==2.13.4
+protobuf==7.35.1
 

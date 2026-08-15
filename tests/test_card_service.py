@@ -11,7 +11,6 @@ stats_service.get_user_stats/get_streak/get_top_words НАПРЯМУЮ — бе�
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from datetime import date
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
