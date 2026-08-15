@@ -22,6 +22,7 @@
 	// be owned=true in the roster.
 	import { onMount, onDestroy } from 'svelte';
 	import { apiFetch, ApiError } from '$lib/api';
+	import { holdBalanceUpdates } from '$lib/balance';
 	import { haptic } from '$lib/tg';
 
 	const ROLL_COST = 300;
@@ -174,12 +175,19 @@
 	// Порядок раскрытия карточек результата: по возрастанию тира (худшие
 	// первыми), лучшая карточка — последней (deploy/index.html:1277). Для x1
 	// сортировка не нужна — там всего одна карточка.
+	//
+	// Каждый элемент несёт исходный индекс `i` в ответе сервера — это и есть
+	// ключ {#each} ниже. char_id/stars/refunded НЕ годятся в качестве ключа:
+	// если игрок роллит одного и того же уже прокачанного до MAX_STARS (5★)
+	// персонажа дважды в одной десятке, оба гранта получают ОДИНАКОВЫЕ
+	// char_id+stars(=5, дальше не растёт)+refunded(фикс. DUPE_REFUND[tier])
+	// — с ключом по контенту Svelte схлопывал такие дубликаты в одну
+	// карточку, хотя сервер честно начислил (и рефанднул) оба грант. Индекс
+	// в массиве всегда уникален независимо от содержимого.
 	let orderedReveal = $derived.by(() => {
-		if (!reveal || reveal.length <= 1) return reveal ?? [];
-		return reveal
-			.map((grant, i) => ({ grant, i }))
-			.sort((a, b) => TIER_RANK[a.grant.tier] - TIER_RANK[b.grant.tier] || a.i - b.i)
-			.map((entry) => entry.grant);
+		const items = (reveal ?? []).map((grant, i) => ({ grant, i }));
+		if (items.length <= 1) return items;
+		return items.sort((a, b) => TIER_RANK[a.grant.tier] - TIER_RANK[b.grant.tier] || a.i - b.i);
 	});
 
 	function bestTierOf(results: RollGrant[]): Tier {
@@ -220,70 +228,88 @@
 		// следующего ролла, п.10 задачи), а не возвращается в 'idle'.
 		if (rolling) return;
 		rolling = true;
-		error = null;
-		reveal = null;
-		pullCount = count;
-		pullResults = null;
-		skipRequested = false;
-		rollPhase = 'charge';
-		// Таймеры прошлого ролла уже отработали к этому моменту (rolling
-		// гарантирует, что новый roll() не стартует поверх незавершённого) —
-		// сбрасываем массив, а не аккумулируем в нём отработавшие id вечно.
-		rollTimers = [];
-
-		// Тайминги — абсолютное смещение от старта ролла (не дельты между
-		// фазами), verbatim из дизайн-прототипа: x1 короче и резче, x10 тратит
-		// лишнюю секунду на осколки, которые игрок успевает пересчитать.
-		const timing =
-			count === 10 ? { rift: 900, flash: 1950, reveal: 2200 } : { rift: 800, flash: 1550, reveal: 1800 };
-
-		const animationDone = new Promise<void>((resolve) => {
-			resolveAnimation = resolve;
-			rollTimers.push(
-				setTimeout(() => {
-					rollPhase = 'rift';
-				}, timing.rift)
-			);
-			rollTimers.push(
-				setTimeout(() => {
-					rollPhase = 'flash';
-				}, timing.flash)
-			);
-			rollTimers.push(setTimeout(resolve, timing.reveal));
-		});
-
-		// ОТКЛОНЕНИЕ ОТ ПРОТОТИПА (сознательное, см. задачу): в прототипе
-		// результат ролла был известен мгновенно — мок-данные генерировались
-		// локально ещё до старта таймеров, поэтому разрыв/вспышку можно было
-		// красить под лучший тир сразу. Здесь результат — ответ реального
-		// сервера (POST /api/v1/gacha/roll), который может прийти в любой
-		// момент анимации. Поэтому reveal-фаза наступает только когда готовы
-		// ОБА условия — Promise.all ждёт более медленное из двух: минимальную
-		// длительность анимации (таймеры выше) и реальный ответ API. Ни разу
-		// не показываем локально угаданный результат раньше настоящего.
-		const fetchPromise = apiFetch<RollResult>('/api/v1/gacha/roll', {
-			method: 'POST',
-			body: JSON.stringify({ count, ref_id: 'gacha_roll:' + crypto.randomUUID() })
-		}).then((res) => {
-			pullResults = res.results;
-			// Игрок тапнул "скип" ещё до ответа сервера — таймеры анимации уже
-			// отменены в skipBuild(), поэтому сами будим reveal-фазу сейчас.
-			if (skipRequested && resolveAnimation) {
-				clearRollTimers();
-				resolveAnimation();
-				resolveAnimation = null;
-			}
-			return res;
-		});
-
+		// ВЕСЬ корпус — внутри try/finally от старта до конца: сборка
+		// fetchPromise/animationDone ниже тоже может синхронно бросить
+		// (например apiFetch на плохом входе, crypto.randomUUID в редком
+		// WebView) — раньше такой бросок происходил ДО try и оставлял
+		// rolling=true навсегда без ошибки на экране (кнопки зависали в '…',
+		// помогал только перезаход на экран). Теперь любой сбой на любом
+		// шаге гарантированно освобождает rolling и показывает error.
 		try {
+			error = null;
+			reveal = null;
+			pullCount = count;
+			pullResults = null;
+			skipRequested = false;
+			rollPhase = 'charge';
+			// Таймеры прошлого ролла уже отработали к этому моменту (rolling
+			// гарантирует, что новый roll() не стартует поверх незавершённого) —
+			// сбрасываем массив, а не аккумулируем в нём отработавшие id вечно.
+			rollTimers = [];
+
+			// Тайминги — абсолютное смещение от старта ролла (не дельты между
+			// фазами), verbatim из дизайн-прототипа: x1 короче и резче, x10 тратит
+			// лишнюю секунду на осколки, которые игрок успевает пересчитать.
+			const timing =
+				count === 10 ? { rift: 900, flash: 1950, reveal: 2200 } : { rift: 800, flash: 1550, reveal: 1800 };
+
+			const animationDone = new Promise<void>((resolve) => {
+				resolveAnimation = resolve;
+				rollTimers.push(
+					setTimeout(() => {
+						rollPhase = 'rift';
+					}, timing.rift)
+				);
+				rollTimers.push(
+					setTimeout(() => {
+						rollPhase = 'flash';
+					}, timing.flash)
+				);
+				rollTimers.push(setTimeout(resolve, timing.reveal));
+			});
+
+			// ОТКЛОНЕНИЕ ОТ ПРОТОТИПА (сознательное, см. задачу): в прототипе
+			// результат ролла был известен мгновенно — мок-данные генерировались
+			// локально ещё до старта таймеров, поэтому разрыв/вспышку можно было
+			// красить под лучший тир сразу. Здесь результат — ответ реального
+			// сервера (POST /api/v1/gacha/roll), который может прийти в любой
+			// момент анимации. Поэтому reveal-фаза наступает только когда готовы
+			// ОБА условия — Promise.all ждёт более медленное из двух: минимальную
+			// длительность анимации (таймеры выше) и реальный ответ API. Ни разу
+			// не показываем локально угаданный результат раньше настоящего.
+			//
+			// Held until the reveal below actually sets `reveal` — otherwise the
+			// header balance jumps to the new total via api.ts's sniff of
+			// `user_balance_after` (this endpoint carries exactly that field)
+			// before the charge->rift->flash->card-flip sequence even finishes,
+			// spoiling whether the roll was a win/rare pull. See lib/balance.ts.
+			holdBalanceUpdates(true);
+			const fetchPromise = apiFetch<RollResult>('/api/v1/gacha/roll', {
+				method: 'POST',
+				body: JSON.stringify({ count, ref_id: 'gacha_roll:' + crypto.randomUUID() })
+			}).then((res) => {
+				pullResults = res.results;
+				// Игрок тапнул "скип" ещё до ответа сервера — таймеры анимации уже
+				// отменены в skipBuild(), поэтому сами будим reveal-фазу сейчас.
+				if (skipRequested && resolveAnimation) {
+					clearRollTimers();
+					resolveAnimation();
+					resolveAnimation = null;
+				}
+				return res;
+			});
+
 			const [res] = await Promise.all([fetchPromise, animationDone]);
 			rollPhase = 'reveal';
 			await loadCollection();
 			reveal = res.results;
+			// Карточки реально видны игроку — теперь можно отпустить холд
+			// шапки-баланса, см. holdBalanceUpdates(true) выше.
+			holdBalanceUpdates(false);
 			const hasUur = res.results.some((r) => r.tier === 'UUR');
 			haptic(hasUur ? 'big-win' : 'win');
 		} catch (err) {
+			holdBalanceUpdates(false);
 			clearRollTimers();
 			rollPhase = 'idle';
 			error = describeError(err);
@@ -326,6 +352,10 @@
 
 	onDestroy(() => {
 		clearRollTimers();
+		// Если экран размонтировали посреди ролла/анимации — код после
+		// Promise.all выше никогда не выполнится, значит холд баланса больше
+		// некому отпустить, кроме как здесь (см. holdBalanceUpdates(true) в roll()).
+		holdBalanceUpdates(false);
 	});
 </script>
 
@@ -441,7 +471,8 @@
 
 			{#if reveal}
 				<div class="gacha-reveal">
-					{#each orderedReveal as grant, order (grant.char_id + ':' + grant.stars + ':' + grant.refunded)}
+					{#each orderedReveal as entry, order (entry.i)}
+						{@const grant = entry.grant}
 						{@const isTop = TIER_RANK[grant.tier] >= 2}
 						{@const isUur = grant.tier === 'UUR'}
 						<div
@@ -559,8 +590,9 @@
 									class:gacha-region-pill-locked={!char.owned}
 									style="border-color: {group.color}"
 								>
-									<span class={`gacha-region-pill-dot gacha-tier-wash-${char.tier.toLowerCase()}`}
-									></span>
+									<span class={`gacha-region-pill-tier gacha-tier-pill-${char.tier.toLowerCase()}`}
+										>{char.tier}</span
+									>
 									<span class="gacha-region-pill-name">{char.owned ? char.name : '???'}</span>
 								</div>
 							{/each}
@@ -1471,11 +1503,21 @@
 	.gacha-region-pill-locked {
 		opacity: 0.55;
 	}
-	.gacha-region-pill-dot {
-		width: 18px;
-		height: 18px;
-		border-radius: 50%;
-		display: block;
+	/* Текстовая метка тира вместо простой цветной точки (было слишком мелко
+	   отличить визуально, особенно в "Легендах" — там тиры намеренно
+	   смешаны, а не идут по одному на регион, см. mapGroups) — переиспользует
+	   те же .gacha-tier-pill-{tier} цвета фона, что и групповая шапка
+	   тир-листа выше, просто мельче. */
+	.gacha-region-pill-tier {
+		font-family: var(--font-numeric);
+		font-size: 9px;
+		font-weight: 900;
+		letter-spacing: 0.02em;
+		padding: 2px 5px;
+		border-radius: 5px;
+		color: #0d0a18;
+		line-height: 1.3;
+		white-space: nowrap;
 	}
 	.gacha-region-pill-name {
 		font-family: var(--font-chrome);

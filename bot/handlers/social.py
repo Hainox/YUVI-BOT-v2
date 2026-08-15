@@ -183,6 +183,20 @@ async def joke_order_command(message: Message, session: AsyncSession) -> None:
     except economy_service.InsufficientFunds:
         await message.answer("Недостаточно ювиков.")
         return
+    except Exception:  # noqa: BLE001 - social_service._run_llm's ai_client.stream()
+        # call has no try/except of its own (unlike twin_service.py's guarded
+        # second call) - AIEmptyResponseError or any other AI hiccup there
+        # previously crashed this handler silently, with no reply at all (same
+        # class of bug as bot/handlers/twin.py::twin_command, fixed in
+        # 2082287). debit_to_bank already ran inside do_joke_order but the
+        # session is never committed on this path, so it rolls back when the
+        # per-update session closes (bot/middleware/db_session.py) - no money
+        # actually lost.
+        logger.exception(
+            "do_joke_order упал для chat_id=%s target_id=%s", message.chat.id, target_id
+        )
+        await message.answer("Не получилось заказать анекдот — деньги не списаны, попробуйте ещё раз.")
+        return
 
     await session.commit()
     if text is None:
@@ -218,6 +232,14 @@ async def roast_command(message: Message, session: AsyncSession) -> None:
         )
     except economy_service.InsufficientFunds:
         await message.answer("Недостаточно ювиков.")
+        return
+    except Exception:  # noqa: BLE001 - same unguarded ai_client.stream() gap as
+        # do_joke_order above (see that except block's comment); no money
+        # actually lost, the uncommitted debit rolls back on session close.
+        logger.exception(
+            "do_roast упал для chat_id=%s target_id=%s", message.chat.id, target_id
+        )
+        await message.answer("Не получилось сделать роаст — деньги не списаны, попробуйте ещё раз.")
         return
 
     await session.commit()

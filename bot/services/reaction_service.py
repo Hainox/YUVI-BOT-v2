@@ -12,6 +12,7 @@ messages.id ДО записи (не пишет сырые Telegram id во вн�
 from __future__ import annotations
 
 from sqlalchemy import delete
+from sqlalchemy import func
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -89,3 +90,41 @@ async def save_reaction(
         await session.execute(insert_stmt)
 
     return True
+
+
+async def get_top_reactions_received(
+    session: AsyncSession, chat_id: int, user_id: int, limit: int = 5
+) -> list[dict]:
+    """Топ эмодзи-реакций, полученных на СВОИ сообщения этого участника в этом
+    чате (для /card, WHATSNEW-подобной карточки участника) — join reactions ->
+    messages по message_id, фильтр по messages.user_id (автор сообщения =
+    получатель реакции). reactions не хранит chat_id напрямую, поэтому область
+    чата задаётся через messages.chat_id."""
+    stmt = (
+        select(Reaction.emoji, func.count().label("cnt"))
+        .join(Message, Message.id == Reaction.message_id)
+        .where(Message.chat_id == chat_id, Message.user_id == user_id)
+        .group_by(Reaction.emoji)
+        .order_by(func.count().desc())
+        .limit(limit)
+    )
+    result = await session.execute(stmt)
+    return [{"emoji": row.emoji, "count": int(row.cnt)} for row in result.all()]
+
+
+async def get_top_reactions_given(
+    session: AsyncSession, chat_id: int, user_id: int, limit: int = 5
+) -> list[dict]:
+    """Топ эмодзи-реакций, ПОСТАВЛЕННЫХ этим участником на чужие сообщения в
+    этом чате — фильтр по reactions.actor_user_id (кто поставил), область чата
+    так же через join на messages.chat_id (reactions своего chat_id не несёт)."""
+    stmt = (
+        select(Reaction.emoji, func.count().label("cnt"))
+        .join(Message, Message.id == Reaction.message_id)
+        .where(Message.chat_id == chat_id, Reaction.actor_user_id == user_id)
+        .group_by(Reaction.emoji)
+        .order_by(func.count().desc())
+        .limit(limit)
+    )
+    result = await session.execute(stmt)
+    return [{"emoji": row.emoji, "count": int(row.cnt)} for row in result.all()]

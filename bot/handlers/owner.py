@@ -7,9 +7,33 @@
 только выдача (не списание) — на отбор ювиков у пользователя существующих
 команд/прав достаточно, а спор почти всегда решается в пользу компенсации.
 
+/grant_all (запрошено 2026-07-28): та же выдача, но всем участникам
+экономики ТЕКУЩЕГО чата разом (напр. компенсация/подарок по случаю после
+инцидента вроде поломки гачи/слотов) — "участник" здесь тот же критерий,
+что у /leaderboard (economy_service.credit_all_in_chat), не буквально
+каждый Telegram-аккаунт чата.
+
+/giveaway (версия 2.0, запрошено 2026-07-28): разовый случайный розыгрыш —
+владелец может запускать сколько угодно раз в день, каждый вызов независим
+(giveaway_service.run_giveaway, НЕ daily_pick_service — тому нужно "раз в
+день", здесь наоборот). Приз минтится, как /grant/grant_all, не капается
+банком чата.
+
 /post_update (WHATSNEW-01, запрошено 2026-07-24): публикация записи в ленту
 «Что нового» Mini App (`bot/services/changelog_service.py`) — первая строка
 текста команды становится заголовком, остальное — телом записи.
+
+/test_jackpot, /test_lurker (запрошено 2026-07-27): ручные тест-триггеры для
+проверки формата после деплоя, БЕЗ движения денег/реального RNG — реальный
+джекпот-выигрыш (1 к `slot_jackpot_odds`) и реальный ежедневный автопост
+(12:00 МСК) непрактично дожидаться вживую, чтобы просто свериться с тем, как
+оповещение выглядит в чате.
+
+/jackpot_event (запрошено 2026-08-07): ивент "ГИФТЕКИ ОТ ОСАКИ" — следующие
+N спинов слота Azumanga в ЭТОМ чате (по умолчанию 100) гарантированно
+завершатся выигрышем джекпота не позже N-го (jackpot_service.start_event/
+contribute_and_maybe_award, pity-механика). РЕАЛЬНОЕ движение денег на самом
+выигрыше, в отличие от /test_jackpot выше — не тест-триггер, настоящий ивент.
 """
 
 from __future__ import annotations
@@ -20,13 +44,19 @@ import logging
 from aiogram import Router
 from aiogram.filters import Command
 from aiogram.filters import CommandObject
+from aiogram.types import FSInputFile
 from aiogram.types import Message
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
 from bot.services import changelog_service
 from bot.services import economy_service
+from bot.services import giveaway_service
+from bot.services import jackpot_service
+from bot.services import lurker_service
 from bot.services.target_resolution_service import resolve_by_username_or_id
+from common.models.user import User
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +123,126 @@ async def grant_command(message: Message, session: AsyncSession) -> None:
     )
 
 
+def _parse_grant_all_args(message: Message) -> int | None:
+    """Парсит `/grant_all <сумма>` — ровно один токен, сумма положительное
+    целое (та же валидация, что `_parse_args` для /grant, без цели)."""
+    if message.text is None:
+        return None
+    parts = message.text.split()
+    if len(parts) != 2:
+        return None
+    amount_raw = parts[1]
+    if not amount_raw.lstrip("-").isdigit():
+        return None
+    amount = int(amount_raw)
+    if amount <= 0:
+        return None
+    return amount
+
+
+@router.message(Command("grant_all"))
+async def grant_all_command(message: Message, session: AsyncSession) -> None:
+    if message.from_user is None:
+        return
+    if message.from_user.id != settings.owner_id:
+        await message.reply("Эта команда доступна только владельцу бота.")
+        return
+
+    amount = _parse_grant_all_args(message)
+    if amount is None:
+        await message.answer("Использование: /grant_all <сумма>")
+        return
+
+    ref_id_prefix = f"owner_grant_all:{message.chat.id}:{message.message_id}"
+    total, credited = await economy_service.credit_all_in_chat(
+        session, message.chat.id, amount, kind="owner_grant_all", ref_id_prefix=ref_id_prefix
+    )
+    await session.commit()
+
+    if total == 0:
+        await message.answer("В чате пока нет ни одного участника экономики — начислять некому.")
+        return
+    if not credited:
+        await message.answer("Это начисление уже было применено ранее.")
+        return
+
+    await message.answer(f"Начислено {amount}¥ каждому участнику экономики чата ({len(credited)} из {total}).")
+    logger.info(
+        "grant_all_command: owner=%s amount=%s chat=%s credited=%d/%d",
+        message.from_user.id,
+        amount,
+        message.chat.id,
+        len(credited),
+        total,
+    )
+
+
+def _parse_giveaway_args(message: Message) -> int | None:
+    """Парсит `/giveaway <сумма>` — ровно один токен, сумма положительное
+    целое (та же валидация, что `_parse_grant_all_args`)."""
+    if message.text is None:
+        return None
+    parts = message.text.split()
+    if len(parts) != 2:
+        return None
+    amount_raw = parts[1]
+    if not amount_raw.lstrip("-").isdigit():
+        return None
+    amount = int(amount_raw)
+    if amount <= 0:
+        return None
+    return amount
+
+
+@router.message(Command("giveaway"))
+async def giveaway_command(message: Message, session: AsyncSession) -> None:
+    if message.from_user is None:
+        return
+    if message.from_user.id != settings.owner_id:
+        await message.reply("Эта команда доступна только владельцу бота.")
+        return
+
+    amount = _parse_giveaway_args(message)
+    if amount is None:
+        await message.answer("Использование: /giveaway <сумма>")
+        return
+
+    ref_id = f"owner_giveaway:{message.chat.id}:{message.message_id}"
+    result = await giveaway_service.run_giveaway(session, message.chat.id, amount, ref_id=ref_id)
+
+    if result["winner"] is None:
+        await message.answer(
+            "В чате пока нет ни одного участника экономики — разыгрывать не для кого."
+        )
+        return
+
+    name = (
+        await session.execute(select(User.first_name).where(User.id == result["winner"]))
+    ).scalar_one_or_none() or str(result["winner"])
+    name = html.escape(name)
+
+    if not result["credited"]:
+        await message.answer(
+            f"🎉 Этот розыгрыш уже проведён: <b>{name}</b> получил {amount}¥.",
+            parse_mode="HTML",
+        )
+        return
+
+    await message.answer(
+        f"🎉 <b>Розыгрыш!</b> Из {result['total_candidates']} участников экономики чата "
+        f"выиграл: <b>{name}</b>\nПриз: {amount}¥.",
+        parse_mode="HTML",
+    )
+    logger.info(
+        "giveaway_command: owner=%s winner=%s amount=%s chat=%s total_candidates=%d",
+        message.from_user.id,
+        result["winner"],
+        amount,
+        message.chat.id,
+        result["total_candidates"],
+    )
+
+
 def _parse_update_args(raw: str | None) -> tuple[str, str | None] | None:
     """Первая строка -> title, остальное (если есть) -> body."""
     if raw is None or not raw.strip():
@@ -126,3 +276,109 @@ async def post_update_command(
     await changelog_service.create_entry(session, title, body)
     await session.commit()
     await message.answer(f"Опубликовано в «Что нового»: {html.escape(title)}", parse_mode="HTML")
+
+
+@router.message(Command("test_jackpot"))
+async def test_jackpot_command(message: Message, session: AsyncSession) -> None:
+    """Ручной тест-триггер оповещения о джекпоте (CASINO-06): шлёт РЕАЛЬНУЮ
+    гифку + подпись с текущим размером пула этого чата в ТЕКУЩИЙ чат, БЕЗ
+    какого-либо движения денег и без броска кубика — чисто визуальная
+    проверка формата (реального выигрыша ждать 1 к `slot_jackpot_odds`
+    непрактично ради проверки, что текст/гифка выглядят как надо)."""
+    if message.from_user is None:
+        return
+    if message.from_user.id != settings.owner_id:
+        await message.reply("Эта команда доступна только владельцу бота.")
+        return
+
+    if not jackpot_service.JACKPOT_GIF_PATH.exists():
+        await message.answer("jackpot.gif не найден на диске — проверь деплой.")
+        return
+
+    pool = await jackpot_service.get_pool(session, message.chat.id)
+    name = html.escape(message.from_user.first_name or str(message.from_user.id))
+    caption = jackpot_service.build_announcement_caption(name, pool, settings.slot_jackpot_seed)
+    await message.answer_animation(
+        FSInputFile(jackpot_service.JACKPOT_GIF_PATH), caption=caption, parse_mode="HTML"
+    )
+
+
+_JACKPOT_EVENT_DEFAULT_SPINS = 100
+
+
+def _parse_jackpot_event_args(message: Message) -> int | None:
+    """Парсит `/jackpot_event [N]` — N опционален (по умолчанию
+    `_JACKPOT_EVENT_DEFAULT_SPINS`, запрошено владельцем как "100"), если
+    указан — положительное целое (та же валидация, что `_parse_grant_all_args`).
+    Возвращает `None` ТОЛЬКО на явно битый ввод (мусор/не-число/≤0) — команда
+    без аргумента вообще ВСЕГДА валидна, в отличие от /grant_all."""
+    if message.text is None:
+        return _JACKPOT_EVENT_DEFAULT_SPINS
+    parts = message.text.split()
+    if len(parts) == 1:
+        return _JACKPOT_EVENT_DEFAULT_SPINS
+    if len(parts) != 2:
+        return None
+    spins_raw = parts[1]
+    # Просто `.isdigit()` без lstrip — `str.isdigit()` уже отвергает ведущий
+    # минус целиком (в отличие от `.lstrip("-").isdigit()`, который ошибочно
+    # пропускает "--5"/"---3": лишние минусы схлопываются лишним lstrip'ом,
+    # а `int("--5")` падает необработанным ValueError — найдено ревью
+    # 2026-08-07). N здесь всегда положительное — минус не нужен вовсе.
+    if not spins_raw.isdigit():
+        return None
+    spins = int(spins_raw)
+    if spins <= 0:
+        return None
+    return spins
+
+
+@router.message(Command("jackpot_event"))
+async def jackpot_event_command(message: Message, session: AsyncSession) -> None:
+    """Запускает джекпот-ивент "ГИФТЕКИ ОТ ОСАКИ" (запрошено 2026-08-07,
+    владелец — пул слота Azumanga вырос до 800к+): следующие N спинов слота
+    в ЭТОМ чате гарантированно завершатся выигрышем джекпота не позже N-го
+    (jackpot_service.start_event/contribute_and_maybe_award — pity-механика,
+    read их докстринги за полным разбором формулы). Публикует в чат текст
+    анонса СРАЗУ здесь (не отдельной командой) — ивент без объявления никто
+    не побежит крутить, это его смысл."""
+    if message.from_user is None:
+        return
+    if message.from_user.id != settings.owner_id:
+        await message.reply("Эта команда доступна только владельцу бота.")
+        return
+
+    spins = _parse_jackpot_event_args(message)
+    if spins is None:
+        await message.answer(f"Использование: /jackpot_event [N] (по умолчанию {_JACKPOT_EVENT_DEFAULT_SPINS})")
+        return
+
+    pool = await jackpot_service.start_event(session, message.chat.id, spins)
+    await session.commit()
+
+    await message.answer(jackpot_service.build_event_start_caption(pool, spins))
+    logger.info(
+        "jackpot_event_command: owner=%s chat=%s spins=%s pool=%s",
+        message.from_user.id,
+        message.chat.id,
+        spins,
+        pool,
+    )
+
+
+@router.message(Command("test_lurker"))
+async def test_lurker_command(message: Message, session: AsyncSession) -> None:
+    """Ручной тест-триггер ежедневного автопоста про Дениску PC Nation и
+    Димочку Yuvi (LURKER-01) — генерирует и шлёт сегодняшний текст в ТЕКУЩИЙ
+    чат немедленно, не дожидаясь cron'а 12:00 МСК."""
+    if message.from_user is None:
+        return
+    if message.from_user.id != settings.owner_id:
+        await message.reply("Эта команда доступна только владельцу бота.")
+        return
+
+    text = await lurker_service.build_daily_message(session, message.chat.id)
+    if not text:
+        await message.answer("LLM вернул пустой ответ — попробуй ещё раз.")
+        return
+    await message.answer(text)

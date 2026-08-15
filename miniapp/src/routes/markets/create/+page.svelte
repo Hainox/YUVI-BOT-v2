@@ -13,9 +13,9 @@
 	// (QUESTION_MIN_LEN/MAX_LEN, MIN_OPTIONS/MAX_OPTIONS) and from
 	// bot/config.py's `market_creation_fee` (MARKET_CREATION_FEE env var,
 	// default 100) — same "hardcode the documented default, server enforces
-	// the real value" convention already used by BET_CHIPS/STAR_CHIPS on the
-	// sibling bet/donate screens (no dedicated GET /config route exists, and
-	// this task's backend scope is exactly the one POST route).
+	// the real value" convention already used elsewhere in this app (no
+	// dedicated GET /config route exists, and this task's backend scope is
+	// exactly the one POST route).
 	//
 	// Duration is chip-only (no free-text entry) — every chip value is a
 	// pre-validated token accepted by markets_service.parse_duration

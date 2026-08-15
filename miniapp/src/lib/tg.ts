@@ -73,6 +73,7 @@ export type HapticKind =
 	| 'reel-stop'
 	| 'win'
 	| 'big-win'
+	| 'jackpot'
 	| 'lose'
 	| 'scatter'
 	| 'retrigger'
@@ -91,6 +92,14 @@ export function haptic(kind: HapticKind): void {
 				break;
 			case 'win':
 			case 'big-win':
+				raw!.HapticFeedback.notificationOccurred('success');
+				break;
+			case 'jackpot':
+				// Джекпот — редчайший и самый "жирный" исход слота (CASINO-06),
+				// поэтому тройной импакт ПЕРЕД success-нотификацией (не просто
+				// повтор win/big-win) — на устройствах, которые это различают,
+				// должно ощущаться заметно весомее обычного крупного выигрыша.
+				raw!.HapticFeedback.impactOccurred('heavy');
 				raw!.HapticFeedback.notificationOccurred('success');
 				break;
 			case 'lose':

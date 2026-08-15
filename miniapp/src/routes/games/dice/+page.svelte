@@ -21,10 +21,12 @@
 	// visually settle, followed by a timed reveal of the payout panel — the
 	// same "swap to true state, then timed reveal" idiom as games/slots'
 	// SPIN_BASE_MS/REVEAL_DELAY_MS.
+	import { onDestroy } from 'svelte';
 	import { apiFetch, ApiError } from '$lib/api';
+	import { holdBalanceUpdates } from '$lib/balance';
 	import { haptic } from '$lib/tg';
+	import BetControl from '$lib/components/BetControl.svelte';
 
-	const BET_CHIPS = [10, 50, 100, 500, 1000];
 	const DICE_HOUSE_EDGE = 0.02; // casino_service.DICE_HOUSE_EDGE, informational mirror only
 	const SEEK_INTERVAL_MS = 55; // cosmetic jitter tick while the request is in flight
 	const SETTLE_MS = 650; // needle deceleration duration before the payout panel reveals
@@ -37,7 +39,7 @@
 		bank_capped?: boolean;
 	};
 
-	let bet = $state(BET_CHIPS[0]);
+	let bet = $state(10);
 	let target = $state(50);
 	let direction = $state<'over' | 'under'>('under');
 	let rolling = $state(false);
@@ -96,6 +98,13 @@
 			}, SEEK_INTERVAL_MS);
 		}
 
+		// Held until this screen's own reveal below (needle settle + payout
+		// panel) actually finishes — otherwise the header balance jumps to the
+		// new total via api.ts's sniff the instant the response resolves,
+		// spoiling the result before SETTLE_MS's delayed reveal shows it. See
+		// lib/balance.ts.
+		holdBalanceUpdates(true);
+
 		let res: DiceResult;
 		try {
 			res = await apiFetch<DiceResult>('/api/v1/games/dice', {
@@ -108,6 +117,7 @@
 				})
 			});
 		} catch (err) {
+			holdBalanceUpdates(false);
 			if (seekTimer !== null) window.clearInterval(seekTimer);
 			phase = 'idle';
 			rolling = false;
@@ -127,6 +137,9 @@
 			result = res;
 			rolling = false;
 			haptic(res.outcome.won ? 'win' : 'lose');
+			// Reveal is immediate here (no SETTLE_MS delay) — release the hold
+			// the moment it actually happens, see holdBalanceUpdates(true) above.
+			holdBalanceUpdates(false);
 			return;
 		}
 
@@ -136,8 +149,16 @@
 			result = res;
 			rolling = false;
 			haptic(res.outcome.won ? 'win' : 'lose');
+			// The delayed local reveal (payout panel) just actually happened —
+			// now it's safe to let the header balance catch up.
+			holdBalanceUpdates(false);
 		}, SETTLE_MS);
 	}
+
+	// Если экран размонтировали посреди броска/settle-паузы — код внутри
+	// window.setTimeout выше никогда не выполнится, значит холд баланса
+	// больше некому отпустить, кроме как здесь.
+	onDestroy(() => holdBalanceUpdates(false));
 </script>
 
 <div class="dice-screen">
@@ -236,24 +257,7 @@
 		<div class="dice-error">{error}</div>
 	{/if}
 
-	<div class="bet-row">
-		<div class="bet-display">
-			<span class="bet-label">ставка</span>
-			<div class="bet-amount">{bet}<small>¥</small></div>
-		</div>
-		<div class="bet-chips">
-			{#each BET_CHIPS as v (v)}
-				<button
-					type="button"
-					class={`chip ${bet === v ? 'chip-on' : ''}`}
-					disabled={rolling}
-					onclick={() => (bet = v)}
-				>
-					{v}
-				</button>
-			{/each}
-		</div>
-	</div>
+	<BetControl bind:bet disabled={rolling} />
 
 	<button type="button" class="dice-cta" disabled={rolling} onclick={roll}>
 		<span class="dice-cta-label">{rolling ? 'бросаем…' : 'БРОСИТЬ КОСТИ'}</span>
@@ -522,39 +526,6 @@
 		padding: var(--space-sm) var(--space-md);
 		font-size: var(--font-body-size);
 		font-family: var(--font-body);
-	}
-
-	.bet-row {
-		display: flex;
-		align-items: center;
-		gap: var(--space-md);
-	}
-	.bet-display {
-		display: flex;
-		flex-direction: column;
-	}
-	.bet-label {
-		font-size: var(--font-label-size);
-		text-transform: uppercase;
-		letter-spacing: 0.08em;
-		color: var(--text-muted);
-	}
-	.bet-amount {
-		font-family: var(--font-numeric);
-		font-size: var(--font-display-size);
-		font-weight: 900;
-		color: var(--text-primary);
-	}
-	.bet-amount small {
-		font-size: 12px;
-		color: var(--accent-pink);
-		margin-left: 1px;
-	}
-	.bet-chips {
-		display: grid;
-		grid-template-columns: repeat(5, 1fr);
-		gap: var(--space-xs);
-		flex: 1;
 	}
 
 	.dice-cta {

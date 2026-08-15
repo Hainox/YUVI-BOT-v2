@@ -112,53 +112,43 @@ async def send_message(
         return {"ok": False, "description": f"telegram_bad_response_{resp.status_code}"}
 
 
-def is_admin_status(status: str) -> bool:
-    """True для 'administrator'/'creator' — та же семантика, что ADMINS в aiogram."""
-    return status in ("administrator", "creator")
-
-
-def reset_cache() -> None:
-    """Очищает module-level кэш членства — для детерминированности тестов."""
-    _cache.clear()
-
-
-async def send_invoice(
+async def send_animation(
     client: httpx.AsyncClient,
     bot_token: str,
     chat_id: int,
-    title: str,
-    description: str,
-    payload: str,
-    prices: list[dict],
+    animation_bytes: bytes,
+    filename: str,
+    caption: str | None = None,
+    parse_mode: str | None = None,
 ) -> dict:
-    """Raw HTTP `sendInvoice` для Telegram Stars (XTR) — второй UI-вход
-    доната из Mini App (STARS-01, D-10). `api`-процесс не держит aiogram
-    `Bot`-инстанс, поэтому инвойс отправляется тем же raw-httpx способом,
-    что `get_chat_member_status`/`api/duel_mute.py::apply_mute_from_api`.
+    """Raw HTTP `sendAnimation` (multipart) — та же причина, что у
+    `send_message`/`send_invoice` выше: `api`-процесс не держит aiogram `Bot`
+    (используется для оповещения чата о сорванном джекпоте слота, CASINO-06,
+    `api/routes/games.py::_announce_jackpot_win`). Файл шлётся как raw bytes
+    (`multipart/form-data`), а не по `file_id`/URL — гифка живёт локально на
+    диске образа `api` (COPY . /app в api/Dockerfile копирует весь репозиторий,
+    включая `miniapp/static/`), а не на публично доступном URL, который
+    Telegram мог бы зафетчить сам.
 
-    `currency="XTR"`/`provider_token=""` — обязательны для Stars (та же
-    семантика, что `bot/services/stars_service.py::build_invoice_kwargs`,
-    только без aiogram `LabeledPrice` — `prices` здесь уже плоские dict'ы
-    `{"label": ..., "amount": ...}`).
+    Fail-closed на сетевой ошибке/невалидном JSON-ответе — та же дисциплина,
+    что у `send_message`/`send_invoice`: недоставленная гифка НЕ должна
+    ронять уже совершённую и закоммиченную выплату джекпота."""
+    data: dict = {"chat_id": chat_id}
+    if caption is not None:
+        data["caption"] = caption
+    if parse_mode is not None:
+        data["parse_mode"] = parse_mode
 
-    Fail-closed на сетевой ошибке/невалидном JSON-ответе — возвращает
-    `{"ok": False, "description": ...}` вместо поднятия исключения (та же
-    дисциплина, что `get_chat_member_status`); вызывающий (`api/routes/
-    donate.py`) маппит `ok=False` в `HTTPException`. `bot_token` никогда не
-    логируется.
-    """
     try:
         resp = await client.post(
-            f"https://api.telegram.org/bot{bot_token}/sendInvoice",
-            json={
-                "chat_id": chat_id,
-                "title": title,
-                "description": description,
-                "payload": payload,
-                "currency": "XTR",
-                "prices": prices,
-                "provider_token": "",
-            },
+            f"https://api.telegram.org/bot{bot_token}/sendAnimation",
+            data=data,
+            files={"animation": (filename, animation_bytes, "image/gif")},
+            # client-уровневый timeout (10с, api/main.py) рассчитан на мелкие
+            # JSON-запросы (getChatMember/sendMessage/sendInvoice) — multipart
+            # с несколькожмегабайтной гифкой на медленном аплинке легко в него
+            # не укладывается, оверрайдим только для этого вызова.
+            timeout=30.0,
         )
     except Exception:
         return {"ok": False, "description": "telegram_request_failed"}
@@ -167,3 +157,13 @@ async def send_invoice(
         return resp.json()
     except Exception:
         return {"ok": False, "description": f"telegram_bad_response_{resp.status_code}"}
+
+
+def is_admin_status(status: str) -> bool:
+    """True для 'administrator'/'creator' — та же семантика, что ADMINS в aiogram."""
+    return status in ("administrator", "creator")
+
+
+def reset_cache() -> None:
+    """Очищает module-level кэш членства — для детерминированности тестов."""
+    _cache.clear()

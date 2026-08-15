@@ -1,7 +1,7 @@
 """Интеграционные тесты clicker_service (фермы) против живого Postgres
 (фикстура `session` из tests/conftest.py — транзакция-на-тест). Доказывают
-farm-ядро плана 04.1-04: анти-чит тапов (accepted = min(count, max(1,
-MAX_CPS×elapsed_ms/1000))), оффлайн-накопление автокликера (min(elapsed, 4ч),
+farm-ядро плана 04.1-04: анти-чит тапов (accepted = min(count,
+MAX_CPS×elapsed_ms/1000)), оффлайн-накопление автокликера (min(elapsed, 4ч),
 без фоновых тиков на юзера), и формулу стоимости апгрейдов
 (int(round(base*1.15**level))) — все три из 04-CONTEXT.md D-03.
 
@@ -132,19 +132,82 @@ async def test_tap_anticheat_clamps_count(session):
 
 
 @pytest.mark.asyncio
-async def test_tap_anticheat_minimum_one(session):
+async def test_tap_anticheat_rejects_when_no_real_time_elapsed(session):
+    """Раньше здесь был "пол" анти-чита max(1, ...), гарантировавший минимум
+    1 принятый тап на любой запрос — эксплуатируемо шквалом запросов (см.
+    test_tap_flood_does_not_exceed_max_cps ниже). Теперь запрос без реально
+    прошедшего времени получает accepted=0, а last_tap_at не продвигается —
+    значит, накопленное время не теряется, а полноценно достаётся следующему
+    тапу того же игрока (см. test_tap_zero_accepted_preserves_elapsed_budget)."""
     chat_id = -100910004
     user_id = 910004
     await _ensure_user(session, user_id)
     await clicker_service.get_farm_state(session, chat_id, user_id)
-    await _set_farm(session, chat_id, user_id, last_tap_at=datetime.utcnow() - timedelta(seconds=5))
+    last_tap_at = datetime.utcnow()
+    await _set_farm(session, chat_id, user_id, last_tap_at=last_tap_at)
 
     count = 1000
-    elapsed_ms = 1  # int(30*1/1000) = 0 -> max(1, 0) = 1 (пол анти-чита)
+    elapsed_ms = 1  # int(30*~0/1000) = 0 -> accepted = 0 (не пол-1)
     result = await clicker_service.tap(session, chat_id, user_id, count, elapsed_ms)
 
-    assert result["accepted"] == 1
-    assert result["cp"] == clicker_service.tap_value(1)
+    assert result["accepted"] == 0
+    assert result["cp"] == 0
+
+    farm = await _get_farm(session, chat_id, user_id)
+    assert farm.cp == 0
+    assert farm.last_tap_at == last_tap_at  # часы не продвинулись впустую
+
+
+@pytest.mark.asyncio
+async def test_tap_zero_accepted_preserves_elapsed_budget(session):
+    """Запрос с accepted=0 не продвигает last_tap_at (см. тест выше) —
+    следующий вызов того же игрока видит НАКОПЛЕННОЕ реальное время с
+    последнего ПРИНЯТОГО тапа, а не с последнего вызова. Ставим last_tap_at
+    достаточно далеко в прошлое, чтобы округление MAX_CPS*elapsed/1000 дало
+    >=1 сразу — реального обнуления при accepted=0 быть не должно."""
+    chat_id = -100910014
+    user_id = 910014
+    await _ensure_user(session, user_id)
+    await clicker_service.get_farm_state(session, chat_id, user_id)
+    await _set_farm(session, chat_id, user_id, last_tap_at=datetime.utcnow() - timedelta(milliseconds=40))
+
+    # elapsed_ms клиента заведомо большой — trusted_elapsed_ms клэмпится
+    # РЕАЛЬНЫМ серверным интервалом (~40мс+), не этим заявленным значением.
+    result = await clicker_service.tap(session, chat_id, user_id, 1000, 60_000)
+    assert result["accepted"] >= 1
+
+    farm = await _get_farm(session, chat_id, user_id)
+    assert farm.cp == result["accepted"] * clicker_service.tap_value(1)
+
+
+@pytest.mark.asyncio
+async def test_tap_flood_does_not_exceed_max_cps(session):
+    """Регрессия на найденную уязвимость: раньше `max(1, ...)` в tap()
+    гарантировал >=1 accepted на КАЖДЫЙ вызов независимо от реального
+    интервала, а `last_tap_at` всё равно сбрасывался в `now` на каждом
+    вызове — шквал запросов чаще ~33мс друг за другом (в тесте — 50 вызовов
+    подряд без паузы) накручивал CP пропорционально числу запросов, а не
+    прошедшему времени, позволяя обменять CP на реальные ювики через AMM
+    фермы far в обход лимита MAX_CPS. Теперь суммарно принятые тапы за
+    короткий промежуток должны остаться в пределах, которые допускает
+    MAX_CPS за реально прошедшее время (с небольшим запасом на округление),
+    а не расти с числом запросов."""
+    chat_id = -100910015
+    user_id = 910015
+    await _ensure_user(session, user_id)
+    await clicker_service.get_farm_state(session, chat_id, user_id)
+    start = datetime.utcnow()
+    await _set_farm(session, chat_id, user_id, last_tap_at=start)
+
+    total_accepted = 0
+    for _ in range(50):
+        result = await clicker_service.tap(session, chat_id, user_id, 1000, 60_000)
+        total_accepted += result["accepted"]
+
+    real_elapsed_ms = (datetime.utcnow() - start).total_seconds() * 1000
+    # +1 — допуск на округление одного "пограничного" тапа, не x50 как было бы при эксплуатации.
+    max_allowed = int(clicker_service.MAX_CPS * real_elapsed_ms / 1000) + 1
+    assert total_accepted <= max_allowed
 
 
 @pytest.mark.asyncio
@@ -168,8 +231,8 @@ async def test_tap_anticheat_ignores_inflated_client_elapsed(session):
     second = await clicker_service.tap(session, chat_id, user_id, 5000, fabricated_elapsed_ms)
     # Второй тап случился практически сразу после первого (реальный elapsed ~0),
     # поэтому даже с тем же заявленным elapsed_ms=60000 клэмп должен схлопнуться
-    # к полу анти-чита (1), а не повторно принять до MAX_CPS*60 тапов.
-    assert second["accepted"] == 1
+    # к 0 (нет больше пола-1), а не повторно принять до MAX_CPS*60 тапов.
+    assert second["accepted"] == 0
 
 
 # --- оффлайн-накопление (D-03) -------------------------------------------------
@@ -243,7 +306,7 @@ async def test_upgrade_tap_cost_formula(session):
     # Достаточно CP на апгрейд — правим напрямую, без прохода через tap().
     await _set_farm(session, chat_id, user_id, cp=100_000)
 
-    result = await clicker_service.upgrade_tap(session, chat_id, user_id)
+    result = await clicker_service.upgrade_tap(session, chat_id, user_id, ref_id="upgrade_tap:test:1")
 
     expected_cost = int(round(clicker_service.TAP_UPGRADE_BASE * 1.15**1))
     assert result["tap_level"] == 2
@@ -264,7 +327,7 @@ async def test_upgrade_rejected_at_max_level(session, monkeypatch):
     await _set_farm(session, chat_id, user_id, cp=1_000_000_000, tap_level=50)
 
     with pytest.raises(clicker_service.ClickerError):
-        await clicker_service.upgrade_tap(session, chat_id, user_id)
+        await clicker_service.upgrade_tap(session, chat_id, user_id, ref_id="upgrade_tap:test:max-level")
 
     farm = await _get_farm(session, chat_id, user_id)
     assert farm.tap_level == 50
@@ -279,11 +342,70 @@ async def test_upgrade_rejected_insufficient_cp(session):
     await clicker_service.get_farm_state(session, chat_id, user_id)
 
     with pytest.raises(clicker_service.ClickerError):
-        await clicker_service.upgrade_tap(session, chat_id, user_id)
+        await clicker_service.upgrade_tap(session, chat_id, user_id, ref_id="upgrade_tap:test:insufficient")
 
     farm = await _get_farm(session, chat_id, user_id)
     assert farm.cp == 0
     assert farm.tap_level == 1
+
+
+# --- Идемпотентность апгрейдов по ref_id (bugfix аудита 2026-08-05) --------
+#
+# upgrade_tap/upgrade_auto/upgrade_character были единственными
+# CP-движущими путями clicker_service.py без ref_id-защиты от повтора
+# (в отличие от convert_cp/buy_cp, см. test_swap_is_idempotent_on_ref_id в
+# test_clicker_amm.py, тот же стиль теста здесь).
+
+
+@pytest.mark.asyncio
+async def test_upgrade_tap_is_idempotent_on_ref_id(session):
+    chat_id = -100910026
+    user_id = 910029
+    await _ensure_user(session, user_id)
+    await clicker_service.get_farm_state(session, chat_id, user_id)
+    await _set_farm(session, chat_id, user_id, cp=100_000)
+
+    ref_id = "upgrade_tap:test:idempotent"
+    first = await clicker_service.upgrade_tap(session, chat_id, user_id, ref_id=ref_id)
+    second = await clicker_service.upgrade_tap(session, chat_id, user_id, ref_id=ref_id)
+
+    expected_cost = int(round(clicker_service.TAP_UPGRADE_BASE * 1.15**1))
+    assert first["tap_level"] == 2
+    assert first["cp"] == 100_000 - expected_cost
+
+    # Повтор с тем же ref_id — CP и tap_level НЕ двигаются повторно.
+    assert second.get("status") == "duplicate"
+    assert second["tap_level"] == 2
+    assert second["cp"] == 100_000 - expected_cost
+
+    farm = await _get_farm(session, chat_id, user_id)
+    assert farm.tap_level == 2
+    assert farm.cp == 100_000 - expected_cost
+
+
+@pytest.mark.asyncio
+async def test_upgrade_auto_is_idempotent_on_ref_id(session):
+    chat_id = -100910027
+    user_id = 910030
+    await _ensure_user(session, user_id)
+    await clicker_service.get_farm_state(session, chat_id, user_id)
+    await _set_farm(session, chat_id, user_id, cp=100_000)
+
+    ref_id = "upgrade_auto:test:idempotent"
+    first = await clicker_service.upgrade_auto(session, chat_id, user_id, ref_id=ref_id)
+    second = await clicker_service.upgrade_auto(session, chat_id, user_id, ref_id=ref_id)
+
+    expected_cost = int(round(clicker_service.AUTO_UPGRADE_BASE * 1.15**0))
+    assert first["auto_level"] == 1
+    assert first["cp"] == 100_000 - expected_cost
+
+    assert second.get("status") == "duplicate"
+    assert second["auto_level"] == 1
+    assert second["cp"] == 100_000 - expected_cost
+
+    farm = await _get_farm(session, chat_id, user_id)
+    assert farm.auto_level == 1
+    assert farm.cp == 100_000 - expected_cost
 
 
 # --- wipe_farm (FARM-03: /farmwipe backend) ------------------------------
@@ -559,7 +681,7 @@ async def test_upgrade_succeeds_when_quest_completions_raise_effective_cap(sessi
     effective = await clicker_service.get_effective_max_level(session, chat_id, user_id)
     assert effective == 55  # sanity: потолок реально поднят перед апгрейдом
 
-    result = await clicker_service.upgrade_tap(session, chat_id, user_id)
+    result = await clicker_service.upgrade_tap(session, chat_id, user_id, ref_id="upgrade_tap:test:cap-raised")
 
     assert result["tap_level"] == 51
 
@@ -648,7 +770,9 @@ async def test_upgrade_character_rejected_if_not_owned(session):
     char = next(c for c in gacha_catalog.CATALOG.values() if c.tier == "S")
 
     with pytest.raises(clicker_service.ClickerError, match="ещё не собрана"):
-        await clicker_service.upgrade_character(session, chat_id, user_id, char.char_id)
+        await clicker_service.upgrade_character(
+            session, chat_id, user_id, char.char_id, ref_id="upgrade_char:test:not-owned"
+        )
 
 
 @pytest.mark.asyncio
@@ -659,7 +783,9 @@ async def test_upgrade_character_rejected_unknown_char_id(session):
     await clicker_service.get_farm_state(session, chat_id, user_id)
 
     with pytest.raises(clicker_service.ClickerError, match="Неизвестный персонаж"):
-        await clicker_service.upgrade_character(session, chat_id, user_id, "not_a_real_char")
+        await clicker_service.upgrade_character(
+            session, chat_id, user_id, "not_a_real_char", ref_id="upgrade_char:test:unknown"
+        )
 
 
 @pytest.mark.asyncio
@@ -674,7 +800,9 @@ async def test_upgrade_character_rejected_insufficient_cp(session):
     await _set_farm(session, chat_id, user_id, cp=0)
 
     with pytest.raises(clicker_service.ClickerError, match="Недостаточно CP"):
-        await clicker_service.upgrade_character(session, chat_id, user_id, char.char_id)
+        await clicker_service.upgrade_character(
+            session, chat_id, user_id, char.char_id, ref_id="upgrade_char:test:insufficient"
+        )
 
 
 @pytest.mark.asyncio
@@ -695,7 +823,9 @@ async def test_upgrade_character_succeeds_and_debits_cost(session):
     )
     await _set_farm(session, chat_id, user_id, cp=expected_cost)
 
-    result = await clicker_service.upgrade_character(session, chat_id, user_id, char.char_id)
+    result = await clicker_service.upgrade_character(
+        session, chat_id, user_id, char.char_id, ref_id="upgrade_char:test:succeeds"
+    )
 
     assert result["farm_level"] == 2
     assert result["char_id"] == char.char_id
@@ -735,7 +865,62 @@ async def test_upgrade_character_rejected_at_max_level(session):
     session.expire_all()
 
     with pytest.raises(clicker_service.ClickerError, match="максимальный уровень"):
-        await clicker_service.upgrade_character(session, chat_id, user_id, char.char_id)
+        await clicker_service.upgrade_character(
+            session, chat_id, user_id, char.char_id, ref_id="upgrade_char:test:max-level"
+        )
+
+
+@pytest.mark.asyncio
+async def test_upgrade_character_is_idempotent_on_ref_id(session):
+    """Сетевой ретрай upgrade_character с тем же ref_id не должен списать
+    CP и поднять farm_level героини дважды (bugfix аудита 2026-08-05, тот же
+    стиль, что test_swap_is_idempotent_on_ref_id в test_clicker_amm.py)."""
+    chat_id = -100910028
+    user_id = 910031
+    await _ensure_user(session, user_id)
+    await clicker_service.get_farm_state(session, chat_id, user_id)
+
+    char = next(c for c in gacha_catalog.CATALOG.values() if c.tier == "S")
+    await _grant_char(session, chat_id, user_id, char.char_id, stars=1)
+
+    # Сеем CP с запасом НАД стоимостью (не впритык): affordability-проверка
+    # `_upgrade`/`upgrade_character` (как и у convert_cp/buy_cp) читает
+    # ТЕКУЩИЙ farm.cp ДО клейма ref_id — если бы баланс тратился ЦЕЛИКОМ
+    # первым вызовом, повтор увидел бы farm.cp=0 и упал бы на "Недостаточно
+    # CP" ДО того, как дошёл бы до replay-проверки. Это тот же порядок
+    # проверок, что уже есть у convert_cp/buy_cp (insufficient-funds
+    # проверяется раньше credit/claim) — здесь тестируем именно replay-путь,
+    # не этот отдельный (уже существующий, не введённый этим фиксом) edge case.
+    expected_cost = clicker_service._upgrade_cost(clicker_service.FARM_LEVEL_BASE_COST[char.tier], 1)
+    seeded_cp = expected_cost + 100_000
+    await _set_farm(session, chat_id, user_id, cp=seeded_cp)
+
+    ref_id = "upgrade_char:test:idempotent"
+    first = await clicker_service.upgrade_character(
+        session, chat_id, user_id, char.char_id, ref_id=ref_id
+    )
+    second = await clicker_service.upgrade_character(
+        session, chat_id, user_id, char.char_id, ref_id=ref_id
+    )
+
+    assert first["farm_level"] == 2
+    assert first["cp"] == seeded_cp - expected_cost
+
+    assert second.get("status") == "duplicate"
+    assert second["farm_level"] == 2
+    # Повтор — CP НЕ списывается второй раз, состояние то же, что после первого вызова.
+    assert second["cp"] == seeded_cp - expected_cost
+
+    row = (
+        await session.execute(
+            select(GachaCollection).where(
+                GachaCollection.chat_id == chat_id,
+                GachaCollection.user_id == user_id,
+                GachaCollection.char_id == char.char_id,
+            )
+        )
+    ).scalar_one()
+    assert row.farm_level == 2  # не 3 — второй вызов реально no-op
 
 
 @pytest.mark.asyncio

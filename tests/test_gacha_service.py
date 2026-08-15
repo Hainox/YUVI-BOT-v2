@@ -327,6 +327,157 @@ async def test_dupe_over_5_refunds(session, monkeypatch):
     assert row.copies == 6
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "tier,chat_id,user_id",
+    [
+        ("UR", -100910101, 910101),
+        ("UUR", -100910102, 910102),
+    ],
+)
+async def test_dupe_over_5_refunds_rare_tiers(session, tier, chat_id, user_id):
+    """Аудит-регрессия: test_dupe_over_5_refunds раньше форсировал рефанд
+    только для самого частого/дешёвого тира S (80) — редкий/дорогой UUR
+    (1500, в 18.75 раза больше) и UR (400) не проверялись ни разу. Белым
+    ящиком, минуя необходимость форсировать редкий тир через полный roll()
+    (UUR ~0.02 базового веса) — сразу вызываем _grant/_apply_dupe на уже
+    подготовленной строке GachaCollection(stars=5, copies=5), как предложено
+    в аудите, и проверяем как поле `refunded` в ответе, так и реальную
+    дельту баланса."""
+    await _ensure_user(session, user_id)
+    await _fund(session, chat_id, user_id)
+
+    char = gacha_catalog.chars_of_tier(tier)[0]
+    session.add(
+        GachaCollection(
+            chat_id=chat_id,
+            user_id=user_id,
+            char_id=char.char_id,
+            stars=gacha_catalog.MAX_STARS,
+            copies=gacha_catalog.MAX_STARS,
+        )
+    )
+    await session.commit()
+
+    balance_before = await _get_user_balance(session, chat_id, user_id)
+
+    grant = await gacha_service._grant(session, chat_id, user_id, char)
+    await session.commit()
+
+    assert grant["char_id"] == char.char_id
+    assert grant["stars"] == gacha_catalog.MAX_STARS  # звёзды не растут выше MAX_STARS
+    assert grant["refunded"] == gacha_catalog.DUPE_REFUND[tier]
+
+    balance_after = await _get_user_balance(session, chat_id, user_id)
+    assert balance_after - balance_before == gacha_catalog.DUPE_REFUND[tier]
+
+    row = await _get_gacha_row(session, chat_id, user_id, char.char_id)
+    assert row.stars == gacha_catalog.MAX_STARS
+    assert row.copies == gacha_catalog.MAX_STARS + 1
+
+
+@pytest.mark.asyncio
+async def test_dupe_refund_not_reported_when_credit_replays(session, monkeypatch):
+    """Аудит-регрессия: `economy_service.credit` — идемпотентная операция,
+    возвращающая False, если ref_id рефанда уже применялся (деньги НЕ
+    начисляются повторно). `_apply_dupe` раньше клал `refunded` в ответ
+    безусловно, не проверяя возврат credit — Mini App показал бы игроку
+    ложное "вам начислено N", хотя баланс не изменился. Монки-патчим
+    economy_service.credit так, чтобы вернуть False именно на ноге рефанда
+    гачи (kind="gacha_refund"), остальные вызовы (debit/credit_bank/старт-
+    бонус/top_up) проксируются к реальной реализации."""
+    chat_id = -100910104
+    user_id = 910104
+    await _ensure_user(session, user_id)
+    await _fund(session, chat_id, user_id)
+    await _top_up(session, chat_id, user_id, 10_000, "test_refund_replay_top_up")
+
+    monkeypatch.setattr(gacha_service, "_rng", _ForcedRng(random_value=0.0, choice_index=0))
+    char = gacha_catalog.chars_of_tier("S")[0]
+
+    for i in range(1, 6):
+        await gacha_service.roll(session, chat_id, user_id, 1, f"test_refund_replay_build_{i}")
+
+    real_credit = economy_service.credit
+
+    async def _fake_credit(session_, chat_id_, user_id_, amount, kind, ref_id):
+        if kind == "gacha_refund":
+            return False  # симулируем коллизию ref_id рефанда (идемпотентный replay)
+        return await real_credit(session_, chat_id_, user_id_, amount, kind=kind, ref_id=ref_id)
+
+    monkeypatch.setattr(economy_service, "credit", _fake_credit)
+
+    balance_before_6th = await _get_user_balance(session, chat_id, user_id)
+
+    result = await gacha_service.roll(session, chat_id, user_id, 1, "test_refund_replay_6th")
+    grant = result["results"][0]
+
+    assert grant["char_id"] == char.char_id
+    assert grant["stars"] == gacha_catalog.MAX_STARS
+    assert grant["refunded"] == 0  # credit вернул False -> рефанд НЕ считается применённым
+
+    balance_after_6th = await _get_user_balance(session, chat_id, user_id)
+    # Списана только стоимость ролла — рефанд НЕ начислен (в отличие от
+    # обычного случая, см. test_dupe_over_5_refunds_rare_tiers/_adds_star).
+    assert balance_after_6th - balance_before_6th == -gacha_service.ROLL_COST
+
+    row = await _get_gacha_row(session, chat_id, user_id, char.char_id)
+    assert row.stars == gacha_catalog.MAX_STARS
+    assert row.copies == 6
+
+
+@pytest.mark.asyncio
+async def test_grant_race_integrity_error_falls_back_to_dupe(session, monkeypatch):
+    """Аудит-регрессия: SAVEPOINT-рестарт в _grant на конкурентную гонку
+    (докстринг _grant: "race-safe SAVEPOINT-рестарт", форма
+    markets_service.import_market) не был покрыт ни одним тестом. Форсируем
+    РЕАЛЬНУЮ гонку: строка GachaCollection для этого char_id уже существует
+    и закоммичена (имитация "выигравшей" конкурентной транзакции), но
+    первый select-check внутри _grant монки-патчится, чтобы вернуть None
+    (имитация узкого окна гонки — SELECT не увидел ещё не видимую на тот
+    момент строку) — INSERT внутри session.begin_nested() тогда реально
+    конфликтует с UNIQUE(user_id, chat_id, char_id) и поднимает настоящий
+    IntegrityError; код обязан перехватить его, перечитать строку (второй
+    вызов _select_collection_row — уже НЕ монки-патченный) и корректно
+    переключиться на _apply_dupe, а не упасть необработанным исключением
+    или создать вторую строку."""
+    chat_id = -100910105
+    user_id = 910105
+    await _ensure_user(session, user_id)
+    await _fund(session, chat_id, user_id)
+
+    char = gacha_catalog.chars_of_tier("S")[0]
+    session.add(
+        GachaCollection(chat_id=chat_id, user_id=user_id, char_id=char.char_id, stars=1, copies=1)
+    )
+    await session.commit()
+
+    real_select = gacha_service._select_collection_row
+    call_count = 0
+
+    async def _select_first_none(session_, chat_id_, user_id_, char_id_):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return None  # окно гонки: конкурентная строка ещё "не видна"
+        return await real_select(session_, chat_id_, user_id_, char_id_)
+
+    monkeypatch.setattr(gacha_service, "_select_collection_row", _select_first_none)
+
+    grant = await gacha_service._grant(session, chat_id, user_id, char)
+    await session.commit()
+
+    assert grant["char_id"] == char.char_id
+    assert grant["stars"] == 2  # дубль применился к существующей строке
+    assert grant["refunded"] == 0
+
+    # scalar_one() внутри _get_gacha_row сам по себе доказывает отсутствие
+    # второй (дублирующей) строки — упал бы с MultipleResultsFound.
+    row = await _get_gacha_row(session, chat_id, user_id, char.char_id)
+    assert row.stars == 2
+    assert row.copies == 2
+
+
 # --- ×10 S-гарант (D-03) ------------------------------------------------------
 
 
@@ -356,6 +507,102 @@ async def test_roll10_guarantees_s(session, monkeypatch):
 
     tiers = [r["tier"] for r in result["results"]]
     assert any(t in gacha_service._S_OR_BETTER for t in tiers)
+
+
+# --- Откат на исключение между debit/credit_bank и финальным commit ---------
+
+
+@pytest.mark.asyncio
+async def test_roll_exception_mid_grant_does_not_fabricate_or_double_charge(session, monkeypatch):
+    """Аудит-регрессия: roll() списывает стоимость (debit+credit_bank), затем
+    крутит гранты — всё в ОДНОЙ незакоммиченной сессии, коммитя один раз в
+    самом конце (строка 259). Форсируем RuntimeError на 2-м гранте ×10-ролла
+    (уже ПОСЛЕ debit/credit_bank).
+
+    Прим. про рамки теста (форма
+    tests/test_casino_service.py::test_settle_payout_failure_after_rng_does_not_fabricate_or_double_charge
+    и tests/test_duel_service.py::test_accept_duel_payout_failure_after_rng_does_not_fabricate_or_double_charge):
+    фикстура `session` (tests/conftest.py) кладёт AsyncSession поверх уже
+    открытой внешней транзакции соединения — явный `session.rollback()`
+    здесь откатил бы ВСЮ транзакцию теста целиком (включая уже
+    закоммиченный сетап _ensure_user/_fund/_top_up), экспериментально
+    проверено (упомянутая гонка воспроизводится: после rollback() строка
+    UserBalance пропадает целиком). Поэтому здесь проверяем денежный
+    инвариант БЕЗ явного rollback: debit/credit_bank реально произошли (деньги
+    "в подвешенном" состоянии внутри текущей, ещё не завершённой транзакции,
+    ждут итога всего roll()) — а наивный повтор с ТЕМ ЖЕ ref_id (то, что
+    реально сделал бы клиент после сетевого таймаута) обязан вернуть
+    идемпотентный no-op (replay=True), а не списать стоимость повторно."""
+    chat_id = -100910103
+    user_id = 910103
+    await _ensure_user(session, user_id)
+    await _fund(session, chat_id, user_id)
+    balance_before = await _top_up(session, chat_id, user_id, 10_000, "test_rollback_mid_grant_top_up")
+    bank_before = await _get_bank_balance(session, chat_id)
+
+    # cycle=True — некритично здесь (падаем до дублей), но следует тому же
+    # паттерну, что test_roll10_costs_2700_and_returns_10.
+    monkeypatch.setattr(gacha_service, "_rng", _ForcedRng(random_value=0.0, cycle=True))
+
+    real_grant = gacha_service._grant
+    call_count = 0
+
+    async def _grant_boom_on_second(session_, chat_id_, user_id_, char):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 2:
+            raise RuntimeError("boom: симулированный сбой после debit/credit_bank, до commit")
+        return await real_grant(session_, chat_id_, user_id_, char)
+
+    monkeypatch.setattr(gacha_service, "_grant", _grant_boom_on_second)
+
+    ref_id = "test_rollback_mid_grant"
+    with pytest.raises(RuntimeError):
+        await gacha_service.roll(session, chat_id, user_id, 10, ref_id)
+
+    assert call_count == 2  # доказывает, что debit/credit_bank уже прошли (farm/tiers посчитаны)
+
+    # Списание уже реально произошло ДО сбоя гранта — деньги "в подвешенном"
+    # состоянии внутри текущей (пока не завершённой) транзакции.
+    assert await _get_user_balance(session, chat_id, user_id) == balance_before - gacha_service.ROLL10_COST
+    assert await _get_bank_balance(session, chat_id) == bank_before + gacha_service.ROLL10_COST
+
+    # Наивный повтор С ТЕМ ЖЕ ref_id (клиент после сетевого таймаута) не
+    # должен списать стоимость повторно — debit уже идемпотентно применён
+    # (ref_id занят в economy_tx), roll() обязан вернуть replay=True, не
+    # трогая гранты повторно.
+    monkeypatch.setattr(gacha_service, "_grant", real_grant)
+    replay = await gacha_service.roll(session, chat_id, user_id, 10, ref_id)
+
+    assert replay["replay"] is True
+    assert replay["results"] == []
+    assert await _get_user_balance(session, chat_id, user_id) == balance_before - gacha_service.ROLL10_COST
+    assert await _get_bank_balance(session, chat_id) == bank_before + gacha_service.ROLL10_COST
+
+
+# --- Float-boundary защитная ветка _weighted_choice ---------------------------
+
+
+def test_weighted_choice_float_boundary_falls_back_to_last_key(monkeypatch):
+    """Аудит-регрессия: `_weighted_choice` после цикла по всем тирам, если
+    `point < cumulative` ни разу не сработало (point >= total из-за
+    форсированного random_value=1.0), возвращает `next(reversed(weights))`
+    — эта fallback-строка сама маркирует себя в коде как защиту от
+    погрешности float, но ни один существующий _ForcedRng не форсировал
+    random_value=1.0 (только 0.0/0.999), поэтому ветка не выполнялась ни
+    разу ни в одном прогоне CI."""
+    monkeypatch.setattr(gacha_service, "_rng", _ForcedRng(random_value=1.0))
+    assert gacha_service._weighted_choice({"A": 0.5, "B": 0.5}) == "B"
+
+
+def test_pick_tier_float_boundary_falls_back_to_last_tier(monkeypatch):
+    """То же граничное значение (random_value=1.0), но через реальные
+    `gacha_catalog.TIER_WEIGHTS` (сумма 1.0) и честный (не-pity) путь
+    `_pick_tier` — fallback обязан вернуть именно последний ключ словаря
+    ("UUR"), а не первый по частоте/произвольный тир."""
+    monkeypatch.setattr(gacha_service, "_rng", _ForcedRng(random_value=1.0))
+    farm = SimpleNamespace(pity_ssr=0, pity_ur=0)
+    assert gacha_service._pick_tier(farm) == next(reversed(gacha_catalog.TIER_WEIGHTS)) == "UUR"
 
 
 # --- Идемпотентность replay (D-03/T-04.1-20) ---------------------------------

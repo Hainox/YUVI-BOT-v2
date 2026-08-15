@@ -44,14 +44,15 @@ async def build_phrase(session: AsyncSession, chat_id: int) -> str:
     system_prompt = await settings_service.get_active_prompt(session, chat_id)
     system_prompt += SYSTEM_PROMPT_SUFFIX
 
-    model = await settings_service.get_active_model(session, chat_id)
+    model = await settings_service.get_active_model(session, chat_id, default=settings.ai_structured_model)
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": context},
     ]
 
-    parts: list[str] = []
-    async for delta in ai_client.stream(messages, model=model, max_tokens=settings.ai_max_output_tokens):
-        parts.append(delta)
-    result = "".join(parts).strip()
+    result = (
+        await ai_client.complete_with_fallback(
+            messages, primary_model=model, max_tokens=settings.ai_max_output_tokens
+        )
+    ).strip()
     return result or NO_DATA_MESSAGE

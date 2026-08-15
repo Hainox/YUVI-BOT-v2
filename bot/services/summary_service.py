@@ -61,18 +61,31 @@ async def stream_summary(
 ) -> AsyncIterator[str]:
     """Стримит краткий пересказ последних N сообщений чата (опционально — с
     фокусом на конкретную тему). Модель и системный промпт читаются из
-    bot_settings (AI-08) — переключение модели админом сразу влияет на /summary."""
+    bot_settings (AI-08) — переключение модели админом сразу влияет на /summary.
+
+    Сознательно НЕ мигрирован на ai_client.complete_with_fallback (2026-07-28,
+    тех.долг "надёжность AI-фич"): это единственный вызов ai_client.stream в
+    проекте, который стримит построчно в живое Telegram-сообщение (throttled
+    live-edit), а не буферизует полный ответ перед показом. Fallback-по-моделям
+    работает по принципу "собрать весь ответ, проверить, что он непустой, и
+    только тогда его показать" — к тому моменту, когда стало ясно, что ответ
+    пуст, здесь уже показан пользователю частичный текст, откатывать нечего."""
     rows = await fetch_recent_texts(session, chat_id, n)
     char_budget = settings.ai_max_input_tokens * CHARS_PER_TOKEN
     context = build_context(rows, char_budget)
 
     system_prompt = await settings_service.get_active_prompt(session, chat_id)
-    system_prompt += "\n\nСделай краткий пересказ переписки на русском языке."
+    system_prompt += (
+        "\n\nСделай краткий пересказ переписки на русском языке — энергично, "
+        "иронично, в стиле разбора а-ля «+100500» (живой язык, мемы, "
+        "сарказм; мат уместен, участники чата 18+), но по сути, не превращай "
+        "пересказ в один сплошной прикол."
+    )
     if focus:
         clipped_focus = focus[: settings.ai_max_custom_prompt_chars]
         system_prompt += f" Сфокусируйся на: {clipped_focus}"
 
-    model = await settings_service.get_active_model(session, chat_id)
+    model = await settings_service.get_active_model(session, chat_id, default=settings.ai_structured_model)
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": context or "Сообщений нет."},

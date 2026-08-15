@@ -56,8 +56,18 @@ class BuyBody(BaseModel):
     ref_id: str
 
 
+class UpgradeBody(BaseModel):
+    """T-04.2-XX (bugfix аудита 2026-08-05): апгрейды тапа/автокликера
+    раньше не имели тела запроса вовсе — теперь несут обязательный `ref_id`,
+    та же idem-key-защита от сетевого ретрая, что уже была у Convert/BuyBody
+    (`clicker_service._claim_upgrade_ref`)."""
+
+    ref_id: str
+
+
 class UpgradeCharacterBody(BaseModel):
     char_id: str
+    ref_id: str
 
 
 @router.get("/api/v1/farm")
@@ -77,19 +87,23 @@ async def post_tap(
 
 
 @router.post("/api/v1/farm/upgrade/tap")
-async def post_upgrade_tap(auth: AuthContext = Depends(require_membership)) -> dict:
+async def post_upgrade_tap(
+    body: UpgradeBody, auth: AuthContext = Depends(require_membership)
+) -> dict:
     async with SessionLocal() as session:
         try:
-            return await clicker_service.upgrade_tap(session, auth.chat_id, auth.user_id)
+            return await clicker_service.upgrade_tap(session, auth.chat_id, auth.user_id, body.ref_id)
         except clicker_service.ClickerError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/api/v1/farm/upgrade/auto")
-async def post_upgrade_auto(auth: AuthContext = Depends(require_membership)) -> dict:
+async def post_upgrade_auto(
+    body: UpgradeBody, auth: AuthContext = Depends(require_membership)
+) -> dict:
     async with SessionLocal() as session:
         try:
-            return await clicker_service.upgrade_auto(session, auth.chat_id, auth.user_id)
+            return await clicker_service.upgrade_auto(session, auth.chat_id, auth.user_id, body.ref_id)
         except clicker_service.ClickerError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -101,7 +115,7 @@ async def post_upgrade_character(
     async with SessionLocal() as session:
         try:
             return await clicker_service.upgrade_character(
-                session, auth.chat_id, auth.user_id, body.char_id
+                session, auth.chat_id, auth.user_id, body.char_id, body.ref_id
             )
         except clicker_service.ClickerError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

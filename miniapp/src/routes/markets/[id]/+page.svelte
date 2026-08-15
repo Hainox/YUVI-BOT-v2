@@ -1,7 +1,7 @@
 <script lang="ts">
 	// Market Detail — option list with pool-share bars (AMM inline-graphic
 	// visual language, 04.2-UI-SPEC.md §Component Inventory "Market Detail"),
-	// BET_CHIPS amount picker, "ПОСТАВИТЬ" CTA (Copywriting Contract). No
+	// shared BetControl amount picker, "ПОСТАВИТЬ" CTA (Copywriting Contract). No
 	// confirm dialog per the Copywriting Contract ("Placing a market bet is a
 	// financial commitment but NOT gated behind a confirm dialog"). On
 	// resolution, the winning option gets a Hero-tier reveal banner (pink
@@ -15,8 +15,7 @@
 	import { page } from '$app/state';
 	import { apiFetch, ApiError } from '$lib/api';
 	import { haptic } from '$lib/tg';
-
-	const BET_CHIPS = [10, 50, 100, 500, 1000];
+	import BetControl from '$lib/components/BetControl.svelte';
 
 	type MarketOption = { id: number; position: number; label: string; pool: number; share_pct: number };
 	type MarketDetail = {
@@ -43,7 +42,7 @@
 	let market = $state<MarketDetail | null>(null);
 
 	let selectedPosition = $state<number | null>(null);
-	let bet = $state(BET_CHIPS[0]);
+	let bet = $state(10);
 	let placing = $state(false);
 	let placeError = $state<string | null>(null);
 	let placeResult = $state<BetResult | null>(null);
@@ -156,24 +155,7 @@
 		{/if}
 
 		{#if market.status === 'open'}
-			<div class="bet-row">
-				<div class="bet-display">
-					<span class="bet-label">ставка</span>
-					<div class="bet-amount">{bet}<small>¥</small></div>
-				</div>
-				<div class="bet-chips">
-					{#each BET_CHIPS as v (v)}
-						<button
-							type="button"
-							class={`chip ${bet === v ? 'chip-on' : ''}`}
-							disabled={placing}
-							onclick={() => (bet = v)}
-						>
-							{v}
-						</button>
-					{/each}
-				</div>
-			</div>
+			<BetControl bind:bet disabled={placing} />
 
 			<button type="button" class="mkd-cta" disabled={placing || selectedPosition == null} onclick={placeBet}>
 				<span class="mkd-cta-label">{placing ? 'ставим…' : 'ПОСТАВИТЬ'}</span>
@@ -329,39 +311,6 @@
 		font-size: var(--font-body-size);
 		color: var(--text-primary);
 		font-family: var(--font-body);
-	}
-
-	.bet-row {
-		display: flex;
-		align-items: center;
-		gap: var(--space-md);
-	}
-	.bet-display {
-		display: flex;
-		flex-direction: column;
-	}
-	.bet-label {
-		font-size: var(--font-label-size);
-		text-transform: uppercase;
-		letter-spacing: 0.08em;
-		color: var(--text-muted);
-	}
-	.bet-amount {
-		font-family: var(--font-numeric);
-		font-size: var(--font-display-size);
-		font-weight: 900;
-		color: var(--text-primary);
-	}
-	.bet-amount small {
-		font-size: 12px;
-		color: var(--accent-pink);
-		margin-left: 1px;
-	}
-	.bet-chips {
-		display: grid;
-		grid-template-columns: repeat(5, 1fr);
-		gap: var(--space-xs);
-		flex: 1;
 	}
 
 	.mkd-cta {

@@ -256,6 +256,7 @@ async def test_tick_mean_reverts_toward_anchor(session):
     await _set_pool_reserves(session, chat_id, skewed_r_cp, skewed_r_h)
 
     price_before = skewed_r_cp / skewed_r_h
+    k_before = skewed_r_cp * skewed_r_h
     anchor = Decimal(clicker_service.AMM_ANCHOR_CP_PER_HRYVNA)
     assert price_before > anchor  # sanity: пул реально скошен выше якоря
 
@@ -264,12 +265,114 @@ async def test_tick_mean_reverts_toward_anchor(session):
 
     pool = await _get_pool(session, chat_id)
     price_after = pool.r_cp / pool.r_h
+    k_after = pool.r_cp * pool.r_h
 
     # Цена сдвинулась В СТОРОНУ якоря (не обязательно достигла его за 1 тик).
     assert anchor < price_after < price_before
 
+    # BUG-1 (аудит 2026-08-05, HIGH): раньше прямая линейная интерполяция
+    # резервов между двумя точками одной гиперболы r_cp*r_h=k ВСЕГДА лежала
+    # НАД гиперболой (выпуклость) — k рос при каждом тике, пока цена не на
+    # якоре, без затухания. Фикс (лог-цена + реконструкция при фиксированном
+    # k) держит k тика неизменным — допуск здесь только под Decimal-погрешность
+    # округления/хранения Numeric(20,8), НЕ процентный, как для свопов
+    # (T-04.1-16 floor-округление выхода — отдельная, намеренная погрешность).
+    relative_error = abs(k_after - k_before) / k_before
+    assert relative_error < Decimal("1e-9")
+
     snapshot_count = await _count_price_snapshots(session, chat_id)
     assert snapshot_count >= 1
+
+
+@pytest.mark.asyncio
+async def test_tick_preserves_k_through_full_reversion(session, monkeypatch):
+    """BUG-1 numeric verification (аудит 2026-08-05): один большой своп
+    двигает цену от якоря, серия тиков возвращает её обратно почти вплотную
+    — k СРАЗУ ПОСЛЕ свопа (baseline для тика — своп сам по себе законно
+    двигает k на floor-округление выхода, T-04.1-16, это отдельная от BUG-1
+    погрешность) и k ПОСЛЕ ПОЛНОГО реверта должны совпасть с точностью до
+    ничтожной Decimal-погрешности (< 1e-9 относительной ошибки), а не
+    вырасти, как было до фикса.
+
+    `_MEAN_REVERSION_FACTOR` монкипатчится на агрессивное значение (0.1
+    вместо реальных ~0.959 на 10-минутный тик) — тот же код-путь `amm_tick`,
+    просто не нужно гонять сотни реальных тиков, чтобы дождаться полной
+    конвергенции в тесте."""
+    monkeypatch.setattr(clicker_service, "_MEAN_REVERSION_FACTOR", Decimal("0.1"))
+
+    chat_id = -100920011
+    user_id = 920011
+    await _ensure_user(session, user_id)
+    await _fund(session, chat_id, user_id)
+    await clicker_service.get_market_state(session, chat_id)  # seeds the pool row
+    await _seed_farm_cp(session, chat_id, user_id, cp=5_000_000)
+
+    await clicker_service.convert_cp(
+        session, chat_id, user_id, cp_in=2_000_000, ref_id="k-conservation:full-reversion"
+    )
+
+    pool = await _get_pool(session, chat_id)
+    k_after_swap = pool.r_cp * pool.r_h
+    price_after_swap = pool.r_cp / pool.r_h
+    anchor = Decimal(clicker_service.AMM_ANCHOR_CP_PER_HRYVNA)
+    assert price_after_swap > anchor * Decimal("1.05")  # sanity: своп реально сдвинул цену
+
+    for _ in range(20):
+        await clicker_service.amm_tick(session)
+
+    pool = await _get_pool(session, chat_id)
+    k_after_reversion = pool.r_cp * pool.r_h
+    price_after_reversion = pool.r_cp / pool.r_h
+
+    # Цена практически полностью вернулась к якорю ("fully converge").
+    assert abs(price_after_reversion / anchor - 1) < Decimal("0.0001")
+
+    relative_error = abs(k_after_reversion - k_after_swap) / k_after_swap
+    assert relative_error < Decimal("1e-9")
+
+
+@pytest.mark.asyncio
+async def test_tick_does_not_compound_k_over_many_cycles(session):
+    """BUG-1 numeric verification (аудит 2026-08-05): раньше 50 циклов
+    "своп -> частичный revert" (реальный `_MEAN_REVERSION_FACTOR`, без
+    монкипатча) компаундили рост k без естественного затухания (аудит
+    сообщал +27.5% на своих параметрах свопа; на параметрах этого теста —
+    2_000_000 CP за цикл, ~10% пула, тот же порядок, что "большой своп" в
+    test_tick_preserves_k_through_full_reversion — независимая numeric-
+    проверка автора фикса воспроизвела рост в СОТНИ процентов на буггующем
+    коде до фикса). После фикса k должен оставаться практически плоским —
+    рост здесь объясняется ТОЛЬКО floor-округлением выхода реальных свопов
+    (T-04.1-16, намеренная, независимая от BUG-1 погрешность порядка 1/r_h
+    за своп), а не тиками, поэтому допуск тут процентный (0.5%), а не 1e-9
+    (в отличие от test_tick_preserves_k_through_full_reversion выше, где
+    тики — ЕДИНСТВЕННЫЙ источник изменения k после фиксированного
+    baseline)."""
+    chat_id = -100920012
+    user_id = 920012
+    await _ensure_user(session, user_id)
+    await _fund(session, chat_id, user_id)
+    await clicker_service.get_market_state(session, chat_id)  # seeds the pool row
+
+    pool = await _get_pool(session, chat_id)
+    k_initial = pool.r_cp * pool.r_h
+
+    await _seed_farm_cp(session, chat_id, user_id, cp=200_000_000)
+
+    for i in range(50):
+        # "Реалистичный" своп, двигающий цену прочь от якоря...
+        await clicker_service.convert_cp(
+            session, chat_id, user_id, cp_in=2_000_000, ref_id=f"k-cycle:test:{i}"
+        )
+        # ...затем один реальный (не ускоренный) mean-reversion тик — частичный revert.
+        ticked = await clicker_service.amm_tick(session)
+        assert ticked >= 1
+
+    pool = await _get_pool(session, chat_id)
+    k_final = pool.r_cp * pool.r_h
+
+    relative_growth = (k_final - k_initial) / k_initial
+    # Раньше (баг): рост на порядок(и) больше. Теперь: на порядки меньше.
+    assert abs(relative_growth) < Decimal("0.005")
 
 
 # --- Идемпотентность по ref_id (economy_service) ----------------------------

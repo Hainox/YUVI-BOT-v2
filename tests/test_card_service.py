@@ -1,11 +1,9 @@
-"""Тесты bot/services/card_service.py (AI-03/D-04).
+"""Тесты bot/services/card_service.py (AI-03/D-04, формат карточки 2026-07-27).
 
-get_user_nlp_averages — интеграционный тест против живого Postgres (реальные
-SELECT AVG(...)/COUNT(...) FILTER над messages). test_card_reuses_stats_service
-мокает ai_client.stream (без реального похода к OpenCode Go — которого сейчас
-нет по биллингу) и spy-обёрткой доказывает, что build_card зовёт
-stats_service.get_user_stats/get_streak/get_top_words НАПРЯМУЮ — без
-дублирующего SQL по daily_stats/word_frequency внутри card_service.
+test_card_reuses_stats_service мокает ai_client.stream (без реального похода к
+OpenCode Go — которого сейчас нет по биллингу) и spy-обёрткой доказывает, что
+build_card зовёт stats_service.get_user_stats НАПРЯМУЮ — без дублирующего SQL
+по daily_stats внутри card_service.
 """
 
 from __future__ import annotations
@@ -21,7 +19,6 @@ from bot.services import stats_service
 from common.models.daily_stat import DailyStat
 from common.models.message import Message
 from common.models.user import User
-from common.models.word_frequency import WordFrequency
 
 MSK = ZoneInfo("Europe/Moscow")
 
@@ -63,55 +60,32 @@ async def _fake_stream(messages: list[dict], model: str, max_tokens: int) -> Asy
         yield part
 
 
-# --- get_user_nlp_averages --------------------------------------------------
+# --- get_user_avg_message_length ---------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_get_user_nlp_averages_returns_no_data_marker_when_nothing_classified(session):
+async def test_get_user_avg_message_length_computes_per_user_average(session):
     chat_id = -100931000001
     user_id = 700200001
-    await _ensure_user(session, user_id)
-    await _seed_message(session, chat_id, user_id, 1)  # не классифицировано
-
-    nlp = await card_service.get_user_nlp_averages(session, chat_id, user_id)
-
-    assert nlp == {"classified_count": 0, "avg_sentiment": None, "avg_toxicity": None}
-
-
-@pytest.mark.asyncio
-async def test_get_user_nlp_averages_computes_per_user_averages(session):
-    chat_id = -100931000002
-    user_id = 700200002
-    other_user_id = 700200003
+    other_user_id = 700200002
     await _ensure_user(session, user_id, "Целевой")
     await _ensure_user(session, other_user_id, "Другой")
 
-    await _seed_message(
-        session, chat_id, user_id, 1,
-        sentiment_score=1.0, toxicity_score=0.2, classified=True,
-    )
-    await _seed_message(
-        session, chat_id, user_id, 2,
-        sentiment_score=0.6, toxicity_score=0.4, classified=True,
-    )
-    # Сообщение ДРУГОГО участника того же чата — не должно попасть в средние.
-    await _seed_message(
-        session, chat_id, other_user_id, 3,
-        sentiment_score=0.0, toxicity_score=0.9, classified=True,
-    )
+    await _seed_message(session, chat_id, user_id, 1, text="1234")  # 4 симв.
+    await _seed_message(session, chat_id, user_id, 2, text="123456")  # 6 симв.
+    # Сообщение ДРУГОГО участника того же чата — не должно попасть в среднее.
+    await _seed_message(session, chat_id, other_user_id, 3, text="1")
 
-    nlp = await card_service.get_user_nlp_averages(session, chat_id, user_id)
+    avg_length = await card_service.get_user_avg_message_length(session, chat_id, user_id)
 
-    assert nlp["classified_count"] == 2
-    assert nlp["avg_sentiment"] == pytest.approx(0.8)
-    assert nlp["avg_toxicity"] == pytest.approx(0.3)
+    assert avg_length == pytest.approx(5.0)
 
 
 @pytest.mark.asyncio
-async def test_get_user_nlp_averages_returns_zero_for_unknown_chat(session):
-    nlp = await card_service.get_user_nlp_averages(session, chat_id=-1, user_id=-1)
+async def test_get_user_avg_message_length_zero_when_no_messages(session):
+    avg_length = await card_service.get_user_avg_message_length(session, chat_id=-1, user_id=-1)
 
-    assert nlp == {"classified_count": 0, "avg_sentiment": None, "avg_toxicity": None}
+    assert avg_length == 0.0
 
 
 # --- build_portrait ----------------------------------------------------------
@@ -149,64 +123,109 @@ async def test_build_portrait_returns_llm_text_when_messages_exist(session, monk
     assert portrait == "Душа компании, шутит в любое время дня и ночи."
 
 
+# --- build_profile_sections ---------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_build_profile_sections_returns_placeholder_when_no_messages(session, monkeypatch):
+    def _boom(*args, **kwargs):
+        raise AssertionError("build_profile_sections не должен звать ai_client.stream без сообщений")
+
+    monkeypatch.setattr(card_service.ai_client, "stream", _boom)
+
+    chat_id = -100931000006
+    user_id = 700200006
+    await _ensure_user(session, user_id)
+    stats = {
+        "total_messages": 0, "active_days": 0,
+        "first_active_date": None, "last_active_date": None,
+    }
+
+    profile = await card_service.build_profile_sections(
+        session, chat_id, user_id, "Тест", stats, 0.0, [], []
+    )
+
+    assert profile == card_service.NO_DATA_PROFILE
+
+
+@pytest.mark.asyncio
+async def test_build_profile_sections_embeds_real_numbers_in_prompt(session, monkeypatch):
+    """ЦИФРЫ-блок должен интерпретировать РЕАЛЬНЫЕ числа карточки — доказываем,
+    что build_profile_sections передаёт их в промпт, а не оставляет LLM
+    гадать/выдумывать."""
+    captured_messages: list[dict] = []
+
+    async def capturing_stream(messages, model, max_tokens):
+        captured_messages.extend(messages)
+        for chunk in ["ОБРАЗ\n", "текст"]:
+            yield chunk
+
+    monkeypatch.setattr(card_service.ai_client, "stream", capturing_stream)
+
+    chat_id = -100931000007
+    user_id = 700200007
+    await _ensure_user(session, user_id, "Числовой")
+    await _seed_message(session, chat_id, user_id, 1, text="привет")
+
+    stats = {
+        "total_messages": 42, "active_days": 7,
+        "first_active_date": "2026-01-01", "last_active_date": "2026-07-01",
+    }
+    reactions_received = [{"emoji": "❤️", "count": 3}]
+    reactions_given = [{"emoji": "🤣", "count": 1}]
+
+    profile = await card_service.build_profile_sections(
+        session, chat_id, user_id, "Числовой", stats, 12.5, reactions_received, reactions_given
+    )
+
+    assert profile == "ОБРАЗ\nтекст"
+    system_prompt = captured_messages[0]["content"]
+    assert "42" in system_prompt
+    assert "7" in system_prompt
+    assert "12" in system_prompt  # avg_length отформатирован :.0f
+    assert "❤️×3" in system_prompt
+    assert "🤣×1" in system_prompt
+
+
 # --- build_card: переиспользование stats_service (D-04) ---------------------
 
 
 @pytest.mark.asyncio
 async def test_card_reuses_stats_service(session, monkeypatch):
-    chat_id = -100931000006
-    user_id = 700200006
+    chat_id = -100931000008
+    user_id = 700200008
     today = datetime.now(MSK).date()
 
     await _ensure_user(session, user_id, "Карточкин")
     session.add(DailyStat(chat_id=chat_id, user_id=user_id, stat_date=today, message_count=5))
-    session.add(WordFrequency(chat_id=chat_id, user_id=user_id, word="привет", count=3))
     await session.flush()
-    await _seed_message(
-        session, chat_id, user_id, 1,
-        text="привет чат", sentiment_score=0.8, toxicity_score=0.1, classified=True,
-    )
+    await _seed_message(session, chat_id, user_id, 1, text="привет чат чат чат")  # 18 симв.
 
     monkeypatch.setattr(card_service.ai_client, "stream", _fake_stream)
 
-    calls = {"get_user_stats": 0, "get_streak": 0, "get_top_words": 0}
+    calls = {"get_user_stats": 0}
     orig_get_user_stats = stats_service.get_user_stats
-    orig_get_streak = stats_service.get_streak
-    orig_get_top_words = stats_service.get_top_words
 
     async def _tracking_get_user_stats(*args, **kwargs):
         calls["get_user_stats"] += 1
         return await orig_get_user_stats(*args, **kwargs)
 
-    async def _tracking_get_streak(*args, **kwargs):
-        calls["get_streak"] += 1
-        return await orig_get_streak(*args, **kwargs)
-
-    async def _tracking_get_top_words(*args, **kwargs):
-        calls["get_top_words"] += 1
-        return await orig_get_top_words(*args, **kwargs)
-
     monkeypatch.setattr(stats_service, "get_user_stats", _tracking_get_user_stats)
-    monkeypatch.setattr(stats_service, "get_streak", _tracking_get_streak)
-    monkeypatch.setattr(stats_service, "get_top_words", _tracking_get_top_words)
 
     card = await card_service.build_card(session, chat_id, user_id, "Карточкин")
 
     # D-04: stats-блок построен через stats_service, не собственным SQL.
-    assert calls == {"get_user_stats": 1, "get_streak": 1, "get_top_words": 1}
+    assert calls == {"get_user_stats": 1}
 
-    # Структура из трёх блоков.
-    assert set(card.keys()) == {"portrait", "stats", "nlp"}
-
-    assert card["portrait"] == "Душа компании, шутит в любое время дня и ночи."
+    assert set(card.keys()) == {
+        "stats", "avg_length", "reactions_received", "reactions_given", "profile",
+    }
 
     assert card["stats"]["total_messages"] == 5
-    assert card["stats"]["streak"] == 1
-    assert card["stats"]["top_words"] == [{"word": "привет", "count": 3}]
-
-    assert card["nlp"]["classified_count"] == 1
-    assert card["nlp"]["avg_sentiment"] == pytest.approx(0.8)
-    assert card["nlp"]["avg_toxicity"] == pytest.approx(0.1)
+    assert card["avg_length"] == pytest.approx(18.0)
+    assert card["reactions_received"] == []
+    assert card["reactions_given"] == []
+    assert card["profile"] == "Душа компании, шутит в любое время дня и ночи."
 
 
 @pytest.mark.asyncio

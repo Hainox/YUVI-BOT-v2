@@ -13,9 +13,13 @@ ai_client, "stream", ...)` — та же форма, что test_topics_service.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
 import pytest
 from sqlalchemy import select
 
+import bot.handlers.social as social_handlers
 from bot.config import settings
 from bot.services import economy_service
 from bot.services import social_service
@@ -303,3 +307,73 @@ async def test_charge_idempotent_by_message_id(session):
     assert result_second is None
     assert await _get_user_balance(session, chat_id, actor_id) == balance_after_first
     assert await _get_bank_balance(session, chat_id) == bank_after_first
+
+
+# --- хендлер: AI-сбой не должен падать молча (форма test_twin_service.py) ----
+
+
+def _fake_message(chat_id: int, actor_id: int, text: str, target_id: int, target_name: str):
+    """Минимальный aiogram-подобный Message с reply_to_message на цель — тот
+    же паттерн, что test_twin_service.py::_fake_message."""
+    return SimpleNamespace(
+        chat=SimpleNamespace(id=chat_id),
+        from_user=SimpleNamespace(id=actor_id, first_name="Актор"),
+        message_id=1,
+        text=text,
+        reply_to_message=SimpleNamespace(
+            from_user=SimpleNamespace(id=target_id, is_bot=False, first_name=target_name)
+        ),
+        entities=None,
+        answer=AsyncMock(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_roast_handler_survives_ai_hiccup(session, monkeypatch):
+    """До фикса do_roast'а необработанный AIEmptyResponseError/сетевой сбой из
+    _run_llm падал через хендлер молча (пользователь не получал ответа вообще
+    — тот же класс бага, что был у /twin, 2082287). Списание внутри do_roast
+    не коммитится на этом пути и откатится при закрытии сессии — деньги не
+    теряются, но хендлер обязан ответить в чат, а не упасть тихо."""
+    chat_id = -900607
+    actor_id, target_id = 967760, 967761
+    await _ensure_user(session, actor_id, "Актор")
+    await _ensure_user(session, target_id, "Цель")
+    await economy_service.get_balance(session, chat_id, actor_id)
+
+    async def _boom(*args, **kwargs):
+        raise RuntimeError("Модель вернула только reasoning без ответа")
+
+    monkeypatch.setattr(social_handlers.social_service, "do_roast", _boom)
+
+    message = _fake_message(chat_id, actor_id, "/roast", target_id, "Цель")
+
+    await social_handlers.roast_command(message, session)
+
+    message.answer.assert_awaited_once()
+    text = message.answer.await_args.args[0]
+    assert "не списаны" in text.lower()
+
+
+@pytest.mark.asyncio
+async def test_joke_order_handler_survives_ai_hiccup(session, monkeypatch):
+    """Тот же контракт, что test_roast_handler_survives_ai_hiccup, для
+    /joke_order — общий _run_llm, общий пробел до фикса."""
+    chat_id = -900608
+    actor_id, target_id = 967762, 967763
+    await _ensure_user(session, actor_id, "Актор")
+    await _ensure_user(session, target_id, "Цель")
+    await economy_service.get_balance(session, chat_id, actor_id)
+
+    async def _boom(*args, **kwargs):
+        raise RuntimeError("Модель вернула только reasoning без ответа")
+
+    monkeypatch.setattr(social_handlers.social_service, "do_joke_order", _boom)
+
+    message = _fake_message(chat_id, actor_id, "/joke_order про котиков", target_id, "Цель")
+
+    await social_handlers.joke_order_command(message, session)
+
+    message.answer.assert_awaited_once()
+    text = message.answer.await_args.args[0]
+    assert "не списаны" in text.lower()

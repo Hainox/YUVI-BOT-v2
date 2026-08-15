@@ -19,10 +19,11 @@
 	// `result` assigned, which is what reveals the existing text/payout panel
 	// below. `flipping` still gates the whole sequence exactly like before,
 	// it just now spans toss+spin+land instead of a single instant fetch.
+	import { onDestroy } from 'svelte';
 	import { apiFetch, ApiError } from '$lib/api';
+	import { holdBalanceUpdates } from '$lib/balance';
 	import { haptic } from '$lib/tg';
-
-	const BET_CHIPS = [10, 50, 100, 500, 1000];
+	import BetControl from '$lib/components/BetControl.svelte';
 
 	// Animation timings (ms) — kept as named constants so the JS sequencing
 	// and the CSS transition durations (bound in via inline custom
@@ -43,7 +44,7 @@
 		bank_capped?: boolean;
 	};
 
-	let bet = $state(BET_CHIPS[0]);
+	let bet = $state(10);
 	let choice = $state<'heads' | 'tails'>('heads');
 	let flipping = $state(false);
 	let result = $state<CoinflipResult | null>(null);
@@ -90,6 +91,12 @@
 			// coin left your hand" cue, does not depend on the server.
 			await sleep(reduced ? 0 : TOSS_MS);
 
+			// Held until this screen's own delayed reveal (below) actually
+			// happens — otherwise the header balance jumps to the new total via
+			// api.ts's sniff (or an SSE broadcast, published server-side at the
+			// same settle moment) before the coin even lands, spoiling the
+			// result. See lib/balance.ts.
+			holdBalanceUpdates(true);
 			const res = await apiFetch<CoinflipResult>('/api/v1/games/coinflip', {
 				method: 'POST',
 				body: JSON.stringify({
@@ -107,9 +114,14 @@
 
 			phase = 'land';
 			result = res;
+			// Реплей (тосс + спин) реально закончен, результат уже показан на
+			// экране — теперь можно отпустить шапку-баланс, см.
+			// holdBalanceUpdates(true) выше.
+			holdBalanceUpdates(false);
 			haptic(res.outcome.won ? 'win' : 'lose');
 			await sleep(reduced ? 0 : LAND_MS);
 		} catch (err) {
+			holdBalanceUpdates(false);
 			error = err instanceof ApiError ? err.message : String(err ?? 'unknown_error');
 			haptic('error');
 		} finally {
@@ -117,6 +129,12 @@
 			flipping = false;
 		}
 	}
+
+	// Если экран размонтировали посреди тосса/спина — код после
+	// holdBalanceUpdates(true) выше мог не успеть выполнить парный
+	// holdBalanceUpdates(false), значит холд баланса больше некому
+	// отпустить, кроме как здесь.
+	onDestroy(() => holdBalanceUpdates(false));
 </script>
 
 <div class="cf-screen">
@@ -183,24 +201,7 @@
 		<div class="cf-error">{error}</div>
 	{/if}
 
-	<div class="bet-row">
-		<div class="bet-display">
-			<span class="bet-label">ставка</span>
-			<div class="bet-amount">{bet}<small>¥</small></div>
-		</div>
-		<div class="bet-chips">
-			{#each BET_CHIPS as v (v)}
-				<button
-					type="button"
-					class={`chip ${bet === v ? 'chip-on' : ''}`}
-					disabled={flipping}
-					onclick={() => (bet = v)}
-				>
-					{v}
-				</button>
-			{/each}
-		</div>
-	</div>
+	<BetControl bind:bet disabled={flipping} />
 
 	<button type="button" class="cf-cta" disabled={flipping} onclick={flip}>
 		<span class="cf-cta-label">{flipping ? 'подкидываем…' : 'ПОДКИНУТЬ МОНЕТУ'}</span>
@@ -384,39 +385,6 @@
 		padding: var(--space-sm) var(--space-md);
 		font-size: var(--font-body-size);
 		font-family: var(--font-body);
-	}
-
-	.bet-row {
-		display: flex;
-		align-items: center;
-		gap: var(--space-md);
-	}
-	.bet-display {
-		display: flex;
-		flex-direction: column;
-	}
-	.bet-label {
-		font-size: var(--font-label-size);
-		text-transform: uppercase;
-		letter-spacing: 0.08em;
-		color: var(--text-muted);
-	}
-	.bet-amount {
-		font-family: var(--font-numeric);
-		font-size: var(--font-display-size);
-		font-weight: 900;
-		color: var(--text-primary);
-	}
-	.bet-amount small {
-		font-size: 12px;
-		color: var(--accent-pink);
-		margin-left: 1px;
-	}
-	.bet-chips {
-		display: grid;
-		grid-template-columns: repeat(5, 1fr);
-		gap: var(--space-xs);
-		flex: 1;
 	}
 
 	.cf-cta {

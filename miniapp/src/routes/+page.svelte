@@ -60,27 +60,31 @@
 	const baseTiles: Tile[] = [
 		{ title: 'Гача', desc: 'крути баннер, собирай коллекцию героинь', accent: 'pink', href: '/gacha' },
 		{ title: 'Игры', desc: 'слоты · рулетка · блэкджек · кости · монетка', accent: 'pink', href: '/games' },
+		{ title: 'Арена', desc: 'PvP-бои, ставки и честный реванш', accent: 'yellow', href: '/arena' },
 		{ title: 'Ферма', desc: 'тапай, копи CP, качай апгрейды', accent: 'cyan', href: '/farm' },
 		{ title: 'Квесты', desc: 'ежедневные задания и достижения', accent: 'yellow', href: '/quests' },
 		{ title: 'Дуэль', desc: 'вызови кого-нибудь на бабки', accent: 'pink', href: '/duel' },
+		{ title: 'Автобитва', desc: 'PvP на гача-коллекции — сила решает, но не гарантирует', accent: 'yellow', href: '/autobattle' },
 		{ title: 'Рынки', desc: 'ставь на исход, следи за котировкой', accent: 'cyan', href: '/markets' },
 		{ title: 'Биржа', desc: 'продай ювики за что угодно — вне бота', accent: 'cyan', href: '/exchange' },
 		{ title: 'Портфолио', desc: 'твои открытые позиции', accent: 'yellow', href: '/portfolio' },
 		{ title: 'История', desc: 'все твои ставки, тапы и переводы', href: '/history' },
 		{ title: 'Лидерборд', desc: 'топ богачей чата', accent: 'yellow', href: '/leaderboard' },
 		{ title: 'Статистика', desc: 'баланс, стрик, большие выигрыши', accent: 'cyan', href: '/stats' },
+		{ title: 'Настроение', desc: 'настроение и токсичность чата', accent: 'cyan', href: '/mood' },
+		{ title: 'Жертва дня', desc: 'приз, титул и дебафф на 24ч', accent: 'pink', href: '/victim' },
+		{ title: 'Итоги дня', desc: '7 номинаций и игра дня из Steam', accent: 'yellow', href: '/awards' },
 		{ title: 'Перевод', desc: 'закинь другу ювиков', href: '/transfer' },
-		{
-			title: 'Донат',
-			desc: 'задонать звёздами Telegram — получи ювики',
-			accent: 'yellow',
-			href: '/donate'
-		},
 		{ title: 'Правила', desc: 'как это всё работает', href: '/rules' },
 		{ title: 'Что новое', desc: 'обновления и планы разработки', href: '/whatsnew' },
 		{ title: 'Фидбек', desc: 'баг, идея или жалоба — админы увидят', href: '/feedback' },
 		{ title: 'Магазин', desc: 'поукай, обними, закажи анекдот или роаст', accent: 'pink', href: '/shop' },
-		{ title: 'Теги', desc: 'арендуй тег над своим именем', accent: 'yellow', href: '/tags' }
+		{ title: 'Теги', desc: 'арендуй тег над своим именем', accent: 'yellow', href: '/tags' },
+		{ title: 'Спросить чат', desc: 'AI-поиск по истории переписки', accent: 'cyan', href: '/ai/ask' },
+		{ title: 'Карточка участника', desc: 'AI-портрет, статистика, настроение', accent: 'cyan', href: '/ai/card' },
+		{ title: 'Дайджест', desc: 'AI-пересказ жизни чата за период', accent: 'cyan', href: '/ai/digest' },
+		{ title: 'Пересказ', desc: 'AI-пересказ последних сообщений', accent: 'cyan', href: '/ai/summary' },
+		{ title: 'AI-развлечения', desc: 'темы обсуждений · фраза дня · анекдот', accent: 'yellow', href: '/ai/fun' }
 	];
 
 	const adminTile: Tile = {

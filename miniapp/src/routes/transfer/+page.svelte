@@ -1,7 +1,7 @@
 <script lang="ts">
 	// Transfer — destination of the "Перевод" hub tile (CASINO-02).
 	// 04-UI-SPEC.md §Component Inventory "Transfer screen": single form —
-	// recipient picker + amount chips (reuse BET_CHIPS shape) + primary CTA
+	// recipient picker + shared BetControl (chips/custom/all-in) + primary CTA
 	// (locked copy "Перевести").
 	//
 	// Recipient selection (feedback #8, resolved 2026-07-23): GET
@@ -18,8 +18,8 @@
 	import { apiFetch, ApiError } from '$lib/api';
 	import { haptic } from '$lib/tg';
 	import UserPicker from '$lib/components/UserPicker.svelte';
+	import BetControl from '$lib/components/BetControl.svelte';
 
-	const BET_CHIPS = [10, 50, 100, 500, 1000];
 	const TRANSFER_FEE_PCT = 0.05;
 
 	type TransferResult = {
@@ -28,7 +28,7 @@
 	};
 
 	let toUserId = $state<number | null>(null);
-	let amount = $state(BET_CHIPS[0]);
+	let amount = $state(10);
 	let sending = $state(false);
 	let error = $state<string | null>(null);
 	let result = $state<{ toUserId: number; amount: number; fee: number } | null>(null);
@@ -74,24 +74,7 @@
 
 	<UserPicker bind:value={toUserId} label="Получатель" placeholder="@ник, имя или ID" />
 
-	<div class="bet-row">
-		<div class="bet-display">
-			<span class="bet-label">сумма</span>
-			<div class="bet-amount">{amount}<small>¥</small></div>
-		</div>
-		<div class="bet-chips">
-			{#each BET_CHIPS as v (v)}
-				<button
-					type="button"
-					class={`chip ${amount === v ? 'chip-on' : ''}`}
-					disabled={sending}
-					onclick={() => (amount = v)}
-				>
-					{v}
-				</button>
-			{/each}
-		</div>
-	</div>
+	<BetControl bind:bet={amount} disabled={sending} label="сумма" />
 
 	<div class="tr-fee-note">
 		Комиссия {Math.round(TRANSFER_FEE_PCT * 100)}% (мин. 1¥) уходит в банк чата — получатель получит
@@ -140,39 +123,6 @@
 		margin-top: var(--space-xs);
 		letter-spacing: 0.04em;
 		font-family: var(--font-body);
-	}
-
-	.bet-row {
-		display: flex;
-		align-items: center;
-		gap: var(--space-md);
-	}
-	.bet-display {
-		display: flex;
-		flex-direction: column;
-	}
-	.bet-label {
-		font-size: var(--font-label-size);
-		text-transform: uppercase;
-		letter-spacing: 0.08em;
-		color: var(--text-muted);
-	}
-	.bet-amount {
-		font-family: var(--font-numeric);
-		font-size: var(--font-display-size);
-		font-weight: 900;
-		color: var(--text-primary);
-	}
-	.bet-amount small {
-		font-size: 12px;
-		color: var(--accent-pink);
-		margin-left: 1px;
-	}
-	.bet-chips {
-		display: grid;
-		grid-template-columns: repeat(5, 1fr);
-		gap: var(--space-xs);
-		flex: 1;
 	}
 
 	.tr-fee-note {

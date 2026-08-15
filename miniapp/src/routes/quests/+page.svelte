@@ -12,10 +12,18 @@
 	// только для UI-подписи "X / 99", сервер считает effective_max_level сам.
 	const TOTAL_MAX_LEVEL = 99;
 
-	type Quest = { key: string; label: string; reward: number; done: boolean; claimed: boolean };
+	type Quest = {
+		key: string;
+		label: string;
+		description: string;
+		reward: number;
+		done: boolean;
+		claimed: boolean;
+	};
 	type Achievement = {
 		key: string;
 		label: string;
+		description: string;
 		reward: number;
 		bonus_levels: number;
 		unlocked: boolean;
@@ -124,6 +132,7 @@
 				{#each data.quests as q (q.key)}
 					<div class="feature-card quest-row" class:is-done={q.done}>
 						<span class="fc-title">{questIcon(q)} {q.label}</span>
+						<span class="fc-quest-desc">{q.description}</span>
 						<span class="fc-desc">{questStatus(q)} · награда {q.reward} CP</span>
 					</div>
 				{/each}
@@ -136,6 +145,7 @@
 				{#each data.achievements as a (a.key)}
 					<div class="feature-card quest-row" class:is-done={a.unlocked}>
 						<span class="fc-title">{achievementIcon(a)} {a.label}</span>
+						<span class="fc-quest-desc">{a.description}</span>
 						<span class="fc-desc">
 							{achievementStatus(a)} · +{a.reward} CP, +{a.bonus_levels} ур. потолка
 						</span>
@@ -254,6 +264,12 @@
 	.quest-row {
 		min-height: auto;
 		opacity: 0.65;
+	}
+	.fc-quest-desc {
+		font-size: var(--font-body-size);
+		color: var(--text-secondary);
+		font-family: var(--font-body);
+		line-height: 1.4;
 	}
 	.quest-row.is-done {
 		opacity: 1;

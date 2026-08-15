@@ -30,6 +30,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
+from bot.constants import TELEGRAM_SERVICE_ACCOUNT_ID
 from bot.utils.time import to_utc_iso
 from common.models.chat_bank import ChatBank
 from common.models.economy_tx import EconomyTx
@@ -236,6 +237,44 @@ async def credit(
     return True
 
 
+async def credit_all_in_chat(
+    session: AsyncSession, chat_id: int, amount: int, kind: str, ref_id_prefix: str
+) -> tuple[int, list[int]]:
+    """Массовое начисление `amount` КАЖДОМУ участнику экономики этого чата
+    (/grant_all, bot/handlers/owner.py) — "участник" здесь тот же критерий,
+    что у `get_leaderboard`: у кого уже есть строка UserBalance (получал
+    баланс хотя бы раз, необязательно все Telegram-аккаунты чата вообще).
+
+    Идемпотентность — НА КАЖДОГО пользователя отдельно (`ref_id =
+    f"{ref_id_prefix}:{user_id}"`, тот же партиал-UNIQUE(chat_id, ref_id,
+    kind), что и у `credit`): повтор всей рассылки целиком (напр. ретрай
+    апдейта Telegram с тем же message_id -> тот же ref_id_prefix) не
+    начисляет повторно НИКОМУ, даже если первый прогон применился лишь
+    частично (упал посередине). Возвращает (число участников экономики
+    чата, user_id тех, кому реально начислено В ЭТОМ вызове — уже
+    применённые ref_id в список не попадают). Не коммитит — транзакцию
+    завершает вызывающий (та же дисциплина, что у credit/debit). Исключает
+    TELEGRAM_SERVICE_ACCOUNT_ID (777000, служебный аккаунт привязанного
+    канала) — это не участник экономики, а платформенный аккаунт Telegram."""
+    user_ids = (
+        await session.execute(
+            select(UserBalance.user_id).where(
+                UserBalance.chat_id == chat_id,
+                UserBalance.user_id != TELEGRAM_SERVICE_ACCOUNT_ID,
+            )
+        )
+    ).scalars().all()
+
+    credited: list[int] = []
+    for user_id in user_ids:
+        applied = await credit(
+            session, chat_id, user_id, amount, kind=kind, ref_id=f"{ref_id_prefix}:{user_id}"
+        )
+        if applied:
+            credited.append(user_id)
+    return len(user_ids), credited
+
+
 async def debit(
     session: AsyncSession, chat_id: int, user_id: int, amount: int, kind: str, ref_id: str
 ) -> bool:
@@ -330,11 +369,16 @@ async def pay_from_bank(
 
 
 async def get_leaderboard(session: AsyncSession, chat_id: int, limit: int = 10) -> list[dict]:
-    """Топ участников чата по балансу (для /leaderboard)."""
+    """Топ участников чата по балансу (для /leaderboard). Исключает
+    TELEGRAM_SERVICE_ACCOUNT_ID — служебный аккаунт привязанного канала,
+    не участник экономики (см. bot/constants.py)."""
     stmt = (
         select(UserBalance.user_id, User.first_name, User.username, UserBalance.balance)
         .join(User, User.id == UserBalance.user_id)
-        .where(UserBalance.chat_id == chat_id)
+        .where(
+            UserBalance.chat_id == chat_id,
+            UserBalance.user_id != TELEGRAM_SERVICE_ACCOUNT_ID,
+        )
         .order_by(UserBalance.balance.desc())
         .limit(limit)
     )
@@ -384,10 +428,19 @@ async def get_transactions(
 
     `chat_id` — обязательный фильтр; `user_id` — опциональный (None = вся
     лента чата). `HIDDEN_KINDS` служебные банковские зеркала (`user_id IS
-    NULL`) исключаются всегда, независимо от `user_id`-фильтра."""
+    NULL`) исключаются всегда, независимо от `user_id`-фильтра.
+    TELEGRAM_SERVICE_ACCOUNT_ID тоже исключён из чат-ленты (None = вся
+    лента) — служебный аккаунт, не участник; явный запрос его собственной
+    ленты (`user_id=777000`) технически не заблокирован, это чтение чужой
+    истории для всех и так возможно по конструкции роута. `is_distinct_from`
+    (не голый `!=`) — колонка nullable для банковских зеркал-строк, а
+    `NULL != 777000` в SQL даёт NULL (строка молча пропала бы из ЛЮБОЙ
+    чат-ленты, не только скрытых HIDDEN_KINDS)."""
     stmt = select(EconomyTx).where(EconomyTx.chat_id == chat_id)
     if user_id is not None:
         stmt = stmt.where(EconomyTx.user_id == user_id)
+    else:
+        stmt = stmt.where(EconomyTx.user_id.is_distinct_from(TELEGRAM_SERVICE_ACCOUNT_ID))
     stmt = stmt.where(
         ~(EconomyTx.kind.in_(HIDDEN_KINDS) & EconomyTx.user_id.is_(None))
     )
@@ -410,7 +463,11 @@ async def get_transactions(
 
 async def get_chat_summary(session: AsyncSession, chat_id: int) -> dict:
     """Сводка по экономике чата (D-06, для /economy): банк, сумма в обороте,
-    число открытых рынков. НЕ дублирует /leaderboard и /rules."""
+    число открытых рынков. НЕ дублирует /leaderboard и /rules. Исключает
+    TELEGRAM_SERVICE_ACCOUNT_ID из total_in_circulation — та же причина, что
+    у get_leaderboard/credit_all_in_chat (см. bot/constants.py): иначе
+    фантомный баланс служебного аккаунта раздувает знаменатель bank_share_pct
+    (GET /api/v1/stats) и цифру "В обороте у участников" (/economy)."""
     bank_balance = (
         await session.execute(select(ChatBank.balance).where(ChatBank.chat_id == chat_id))
     ).scalar_one_or_none() or 0
@@ -418,7 +475,8 @@ async def get_chat_summary(session: AsyncSession, chat_id: int) -> dict:
     total_in_circulation = (
         await session.execute(
             select(func.coalesce(func.sum(UserBalance.balance), 0)).where(
-                UserBalance.chat_id == chat_id
+                UserBalance.chat_id == chat_id,
+                UserBalance.user_id != TELEGRAM_SERVICE_ACCOUNT_ID,
             )
         )
     ).scalar_one()

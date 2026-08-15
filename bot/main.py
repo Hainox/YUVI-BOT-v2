@@ -16,6 +16,7 @@ from bot.middleware.db_session import DbSessionMiddleware
 from bot.services import profanity_service
 from bot.services.commands_service import setup_bot_commands
 from bot.services.pinned_menu_service import ensure_pinned_menu
+from bot.services.arena_runtime_worker import shutdown_runtime_tick
 from bot.services.scheduler import get_scheduler
 from bot.services.scheduler import setup_jobs
 from common.db.session import SessionLocal
@@ -81,17 +82,20 @@ async def run() -> None:
     # cold-load не блокировал обработку первого сообщения чата (Pitfall 6).
     profanity_service.init()
 
-    await dp.start_polling(
-        bot,
-        allowed_updates=[
-            "message",
-            "message_reaction",
-            "edited_message",
-            "chat_member",
-            "my_chat_member",
-            "pre_checkout_query",
-        ],
-    )
+    try:
+        await dp.start_polling(
+            bot,
+            allowed_updates=[
+                "message",
+                "message_reaction",
+                "edited_message",
+                "chat_member",
+                "my_chat_member",
+            ],
+        )
+    finally:
+        await shutdown_runtime_tick()
+        await bot.session.close()
 
 
 if __name__ == "__main__":

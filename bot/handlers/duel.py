@@ -76,15 +76,28 @@ _UNMUTE_PERMISSIONS = ChatPermissions(**duel_constants.UNMUTE_PERMISSIONS)
 # --- Мут/размут (побочный эффект хендлера, D-01/D-02) ------------------------
 
 
+async def _send_sticker_safe(bot: Bot, chat_id: int, sticker_id: str, context: str) -> None:
+    """MUTE_STICKER_ID/UNMUTE_STICKER_ID остаются плейсхолдерами (см. docstring
+    duel_constants.py) — `send_sticker` на невалидный file_id падает
+    TelegramBadRequest. Это чисто декоративный побочный эффект, он не должен
+    маскировать/отменять уже свершившийся restrict_chat_member (реальный
+    мут/размут) и не должен съедать пользовательский ответ после себя —
+    поэтому ловится и логируется здесь же, а не пробрасывается вызывающему."""
+    try:
+        await bot.send_sticker(chat_id, sticker_id)
+    except Exception:
+        logger.exception("%s: не удалось отправить стикер (file_id=%s)", context, sticker_id)
+
+
 async def _apply_mute(bot: Bot, chat_id: int, user_id: int, seconds: int) -> None:
     until = datetime.utcnow() + timedelta(seconds=seconds)
     await bot.restrict_chat_member(chat_id, user_id, permissions=_MUTE_PERMISSIONS, until_date=until)
-    await bot.send_sticker(chat_id, MUTE_STICKER_ID)
+    await _send_sticker_safe(bot, chat_id, MUTE_STICKER_ID, "_apply_mute")
     get_scheduler().add_job(
-        bot.send_sticker,
+        _send_sticker_safe,
         "date",
         run_date=until,
-        args=[chat_id, UNMUTE_STICKER_ID],
+        args=[bot, chat_id, UNMUTE_STICKER_ID, "duel_unmute_sticker_job"],
         id=f"duel_unmute_sticker:{chat_id}:{user_id}",
         replace_existing=True,
     )
@@ -92,7 +105,7 @@ async def _apply_mute(bot: Bot, chat_id: int, user_id: int, seconds: int) -> Non
 
 async def _lift_mute(bot: Bot, chat_id: int, user_id: int) -> None:
     await bot.restrict_chat_member(chat_id, user_id, permissions=_UNMUTE_PERMISSIONS)
-    await bot.send_sticker(chat_id, UNMUTE_STICKER_ID)
+    await _send_sticker_safe(bot, chat_id, UNMUTE_STICKER_ID, "_lift_mute")
 
 
 # --- Разбор входа + резолв цели -----------------------------------------
@@ -431,5 +444,17 @@ async def unmute_command(message: Message, session: AsyncSession, bot: Bot) -> N
         return
 
     target_id, target_name = target
-    await _lift_mute(bot, message.chat.id, target_id)
+    try:
+        await _lift_mute(bot, message.chat.id, target_id)
+    except Exception:
+        # Та же защита, что WR-05 у _apply_mute (duel_accept_command/callback):
+        # restrict_chat_member может упасть (напр. цель — админ чата), и без
+        # этого try/except админ получил бы полное молчание вместо понятной
+        # ошибки — единственный мут-путь в файле без явного ответа на отказ.
+        logger.exception("unmute_command: не удалось снять мут target_id=%s", target_id)
+        await message.answer(
+            f"Не удалось снять мут для {html.escape(target_name)} — "
+            "Telegram отклонил запрос (возможно, у бота больше нет прав на ограничение участников)."
+        )
+        return
     await message.answer(f"Мут снят для {html.escape(target_name)}.", parse_mode="HTML")

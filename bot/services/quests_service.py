@@ -50,16 +50,38 @@ UTC = ZoneInfo("UTC")
 class QuestDef:
     key: str
     label: str
+    description: str
     reward: int
 
 
 QUESTS: tuple[QuestDef, ...] = (
-    QuestDef("active", "Активность", 15),
-    QuestDef("photo", "Фотограф", 15),
-    QuestDef("social", "Общительный", 20),
-    QuestDef("media", "Медиатека", 20),
-    QuestDef("duel", "Дуэлянт", 25),
-    QuestDef("gacha", "Азартный", 20),
+    QuestDef("active", "Активность", "Напиши в чате минимум 10 сообщений сегодня.", 15),
+    QuestDef("photo", "Фотограф", "Отправь в чат хотя бы одно фото сегодня.", 15),
+    QuestDef(
+        "social",
+        "Общительный",
+        "Используй Тыкнуть/Обнять/Анекдот на заказ/Роаст в Магазине хотя бы раз сегодня.",
+        20,
+    ),
+    QuestDef(
+        "media",
+        "Медиатека",
+        "Скачай видео (TikTok/Instagram/YouTube и т.п.) через бота хотя бы раз сегодня.",
+        20,
+    ),
+    QuestDef("duel", "Дуэлянт", "Сыграй хотя бы одну дуэль на ставку сегодня.", 25),
+    QuestDef("gacha", "Азартный", "Сделай хотя бы одну крутку в гаче сегодня.", 20),
+    QuestDef(
+        "casino",
+        "Игрок",
+        "Сыграй в любую игру казино (кости/монетка/рулетка/слоты/блэкджек) хотя бы раз сегодня.",
+        20,
+    ),
+    QuestDef("transfer", "Меценат", "Переведи ювики любому участнику чата сегодня.", 15),
+    QuestDef("farm", "Фермер", "Купи прокачку или обменяй CP на ферме сегодня.", 15),
+    QuestDef("tags", "Модник", "Арендуй тег над своим именем сегодня.", 20),
+    QuestDef("exchange", "Делец", "Выставь юви на продажу на бирже сегодня.", 20),
+    QuestDef("market", "Провидец", "Создай рынок предсказаний сегодня.", 25),
 )
 
 _ECONOMY_KIND_QUESTS: dict[str, tuple[str, ...]] = {
@@ -67,6 +89,12 @@ _ECONOMY_KIND_QUESTS: dict[str, tuple[str, ...]] = {
     "media": ("mediadl_charge",),
     "duel": ("duel_stake",),
     "gacha": ("gacha_roll",),
+    "casino": ("casino_bet",),
+    "transfer": ("transfer_out",),
+    "farm": ("farm_buy_cp", "farm_convert"),
+    "tags": ("tag_rent",),
+    "exchange": ("exchange_escrow",),
+    "market": ("market_create_fee",),
 }
 
 
@@ -118,6 +146,12 @@ async def _today_progress(session: AsyncSession, chat_id: int, user_id: int) -> 
         "media": _kind_group_done("media"),
         "duel": _kind_group_done("duel"),
         "gacha": _kind_group_done("gacha"),
+        "casino": _kind_group_done("casino"),
+        "transfer": _kind_group_done("transfer"),
+        "farm": _kind_group_done("farm"),
+        "tags": _kind_group_done("tags"),
+        "exchange": _kind_group_done("exchange"),
+        "market": _kind_group_done("market"),
     }
 
 
@@ -141,6 +175,7 @@ async def get_quest_status(session: AsyncSession, chat_id: int, user_id: int) ->
         {
             "key": q.key,
             "label": q.label,
+            "description": q.description,
             "reward": q.reward,
             "done": progress[q.key],
             "claimed": q.key in claimed_keys,

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from datetime import timezone
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -17,7 +18,9 @@ from sqlalchemy import func
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from bot.constants import TELEGRAM_SERVICE_ACCOUNT_ID
 from bot.services.backfill_service import _PROJECT_ROOT
+from bot.services.backfill_service import _pyrogram_message_to_row
 from bot.services.backfill_service import bulk_upsert_messages
 from common.models.daily_stat import DailyStat
 from common.models.message import Message as MessageModel
@@ -167,3 +170,88 @@ def test_project_root_workdir_is_stable_regardless_of_entrypoint():
     assert (_PROJECT_ROOT / "bot").is_dir()
     assert (_PROJECT_ROOT / "scripts").is_dir()
     assert (_PROJECT_ROOT / "requirements.txt").is_file()
+
+
+# --- _pyrogram_message_to_row: TELEGRAM_SERVICE_ACCOUNT_ID (777000) --------
+
+
+def _fake_pyrogram_message(
+    *,
+    message_id: int = 12345,
+    from_user_id: int = 900010,
+    from_user_is_bot: bool = False,
+    text: str | None = "тестовое сообщение",
+) -> SimpleNamespace:
+    """Минимальный pyrogram.types.Message-подобный объект — только атрибуты,
+    реально читаемые _pyrogram_message_to_row/_extract_pyrogram_media/
+    _pyrogram_content_type."""
+    return SimpleNamespace(
+        service=None,
+        empty=False,
+        id=message_id,
+        from_user=SimpleNamespace(
+            id=from_user_id,
+            is_bot=from_user_is_bot,
+            username="backfill_user",
+            first_name="Бэкфилл",
+        ),
+        text=text,
+        caption=None,
+        photo=None,
+        video=None,
+        voice=None,
+        audio=None,
+        document=None,
+        sticker=None,
+        reply_to_message_id=None,
+        message_thread_id=None,
+        forward_origin=None,
+        date=datetime(2025, 1, 1, 12, 0, tzinfo=timezone.utc),
+    )
+
+
+def test_pyrogram_message_to_row_converts_real_user_message():
+    """Регрессия/сравнение: обычное сообщение реального пользователя
+    конвертируется в row-dict как обычно (baseline для тестов ниже)."""
+    message = _fake_pyrogram_message()
+
+    row = _pyrogram_message_to_row(message, chat_id=-100555010)
+
+    assert row is not None
+    assert row["user_id"] == 900010
+    assert row["telegram_message_id"] == 12345
+
+
+def test_pyrogram_message_to_row_excludes_telegram_service_account():
+    """message.from_user.id == 777000 — реальный Message с is_bot=False на
+    проводе (служебный аккаунт привязанного канала), поэтому обычная
+    is_bot-проверка его не ловит: _pyrogram_message_to_row обязан вернуть
+    None явной проверкой TELEGRAM_SERVICE_ACCOUNT_ID."""
+    message = _fake_pyrogram_message(
+        from_user_id=TELEGRAM_SERVICE_ACCOUNT_ID, from_user_is_bot=False
+    )
+
+    row = _pyrogram_message_to_row(message, chat_id=-100555011)
+
+    assert row is None
+
+
+def test_pyrogram_message_to_row_excludes_bots():
+    """Пред-существующая проверка (не часть этого фикса) — сообщение бота
+    по-прежнему пропускается."""
+    message = _fake_pyrogram_message(from_user_id=900011, from_user_is_bot=True)
+
+    row = _pyrogram_message_to_row(message, chat_id=-100555012)
+
+    assert row is None
+
+
+def test_pyrogram_message_to_row_excludes_missing_from_user():
+    """Пред-существующая проверка (Pitfall 5) — служебные сообщения без
+    автора (join/leave и т.п.) по-прежнему пропускаются."""
+    message = _fake_pyrogram_message()
+    message.from_user = None
+
+    row = _pyrogram_message_to_row(message, chat_id=-100555013)
+
+    assert row is None

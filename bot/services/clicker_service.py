@@ -11,13 +11,23 @@ CP (`ClickerFarm.cp`) — ферма-внутренняя валюта. Тапы
 Формулы фермы — D-03 (`04-CONTEXT.md`) + REFERENCE-XYLOZ.md §3.1 (`CLICKER_*`
 константы эталона xyloz_tg_bot), переносятся точно:
 - Анти-чит тапов (T-04.1-12): клиентский `count` НИКОГДА не доверяем напрямую
-  — `accepted = min(count, max(1, int(MAX_CPS*elapsed_ms/1000)))`.
+  — `accepted = min(count, int(MAX_CPS*elapsed_ms/1000))`. Раньше был пол
+  `max(1, ...)`, эксплуатируемый шквалом запросов (см. докстринг `tap()`) —
+  убран; `last_tap_at` продвигается только при `accepted > 0`.
 - Оффлайн-накопление автокликера (T-04.1-13): считается НА КАЖДОМ обращении
   (`_accrue_offline`), а не фоновым тиком на юзера — `elapsed` берётся из
   разницы `now - last_accrued_at` (серверных значений), клиент не может
   подделать elapsed для начисления; капается `MAX_OFFLINE_SECONDS` (4ч).
 - Стоимость апгрейда (T-04.1-14): `int(round(base * UPGRADE_GROWTH**level))`,
   считается сервером, при нехватке CP апгрейд отклоняется `ClickerError`.
+- Идемпотентность апгрейдов (bugfix аудита 2026-08-05): `upgrade_tap`/
+  `upgrade_auto`/`upgrade_character` берут обязательный `ref_id` и клеймят
+  его в `ClickerUpgradeLog` (`_claim_upgrade_ref`) ДО мутации CP/уровня —
+  credit-first-then-mutate идиома, как у `convert_cp`/`buy_cp` ниже, но своя
+  таблица вместо `economy_tx` (эти три пути тратят исключительно внутренний
+  CP, ювики не двигают, см. абзац выше). Сетевой ретрай с тем же `ref_id` —
+  истинный no-op: `{"status": "duplicate", ...}`, ни CP, ни уровень повторно
+  не двигаются.
 
 AMM CP<->ювик (D-03, REFERENCE-XYLOZ.md §3.1 `market_service.py`) — per-чат
 constant-product пул (`ClickerMarketPool.r_cp * r_h = k`), слиппедж встроен
@@ -27,6 +37,15 @@ constant-product пул (`ClickerMarketPool.r_cp * r_h = k`), слиппедж �
 накапливает погрешность округления при повторных умножениях/делениях
 constant-product). Пул блокируется `SELECT ... FOR UPDATE` до любой мутации
 резервов (T-04.1-15) — свопы и тик сериализуются на строке пула.
+
+`amm_tick` (bugfix аудита 2026-08-05): интерполяция резервов идёт В
+LOG-PRICE-ПРОСТРАНСТВЕ с реконструкцией резервов при ФИКСИРОВАННОМ текущем
+k, а НЕ прямой линейной интерполяцией резервов — прямая интерполяция между
+двумя точками одной гиперболы `r_cp*r_h=k` лежит строго НАД гиперболой
+(выпуклость), поэтому раньше k монотонно рос при каждом тике, пока цена не
+на якоре, в ЛЮБУЮ сторону, без естественного затухания (см. докстринг
+`amm_tick`). Новая формула держит k тика тождественно постоянным (с точностью
+до Decimal-погрешности округления) при любом `_MEAN_REVERSION_FACTOR`.
 """
 
 from __future__ import annotations
@@ -37,8 +56,10 @@ from datetime import datetime
 from decimal import Decimal
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from sqlalchemy import insert
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
@@ -51,6 +72,7 @@ from common.db.session import SessionLocal
 from common.models.clicker_farm import ClickerFarm
 from common.models.clicker_market_pool import ClickerMarketPool
 from common.models.clicker_market_price import ClickerMarketPrice
+from common.models.clicker_upgrade_log import ClickerUpgradeLog
 from common.models.gacha_collection import GachaCollection
 
 logger = logging.getLogger(__name__)
@@ -281,24 +303,38 @@ async def wipe_farm(session: AsyncSession, chat_id: int, user_id: int) -> dict:
 async def tap(
     session: AsyncSession, chat_id: int, user_id: int, count: int, elapsed_ms: int
 ) -> dict:
-    """Анти-чит тап (D-03/T-04.1-12): `accepted = min(count, max(1,
-    int(MAX_CPS*elapsed_ms/1000)))` — клиентский `count` никогда не
+    """Анти-чит тап (D-03/T-04.1-12): `accepted = min(count,
+    int(MAX_CPS*elapsed_ms/1000))` — клиентский `count` никогда не
     принимается напрямую. `elapsed_ms` тоже не принимается напрямую (CR-02):
     клэмпится сверху реальным серверным интервалом с прошлого принятого тапа
     (`last_tap_at`, пишется ТОЛЬКО этой функцией — в отличие от
     `last_accrued_at`, который сбрасывает каждый poll `get_farm_state`, что
     сделало бы его непригодным для анти-чита тапа). CP растёт на
-    `accepted * tap_value(tap_level)`."""
+    `accepted * tap_value(tap_level)`.
+
+    `last_tap_at` продвигается ТОЛЬКО когда `accepted > 0` (не на каждый
+    вызов): раньше здесь был пол `max(1, ...)`, гарантировавший минимум один
+    принятый тап на КАЖДЫЙ запрос независимо от реального интервала — при
+    этом `last_tap_at` всё равно сбрасывался в `now`, так что шквал запросов
+    чаще ~33мс (1000/MAX_CPS) друг за другом каждый раз проходил через этот
+    пол и накручивал CP пропорционально числу запросов, а не прошедшему
+    времени. Без пола и с условным продвижением часов накопленное-но-ещё-
+    недостаточное время не сбрасывается впустую: запрос, которому не хватает
+    времени на хотя бы 1 тап, получает `accepted=0` и оставляет `last_tap_at`
+    нетронутым, так что реальное время продолжает копиться до следующего
+    вызова — легитимный тап после паузы по-прежнему засчитывается, а серия
+    запросов чаще MAX_CPS/сек — нет, сколько бы их ни прислали."""
     farm = await _get_or_create_farm(session, chat_id, user_id)
     await _accrue_offline(session, chat_id, user_id, farm)
 
     now = datetime.utcnow()
     server_elapsed_ms = max(0.0, (now - farm.last_tap_at).total_seconds() * 1000)
     trusted_elapsed_ms = min(elapsed_ms, server_elapsed_ms)
-    farm.last_tap_at = now
 
-    accepted = min(count, max(1, int(MAX_CPS * trusted_elapsed_ms / 1000)))
-    farm.cp += accepted * tap_value(farm.tap_level)
+    accepted = min(count, int(MAX_CPS * trusted_elapsed_ms / 1000))
+    if accepted > 0:
+        farm.last_tap_at = now
+        farm.cp += accepted * tap_value(farm.tap_level)
 
     await session.commit()
     return _farm_state(farm, accepted=accepted)
@@ -329,7 +365,46 @@ async def get_effective_max_level(session: AsyncSession, chat_id: int, user_id: 
     return min(FARM_EFFECTIVE_CAP_CEILING, settings.farm_max_level + quest_bonus + achievement_bonus)
 
 
-async def _upgrade(session: AsyncSession, chat_id: int, user_id: int, base: int, level_attr: str) -> dict:
+async def _claim_upgrade_ref(
+    session: AsyncSession, chat_id: int, user_id: int, kind: str, ref_id: str
+) -> bool:
+    """Идемпотентный "клейм" `ref_id` для CP-only апгрейда (bugfix аудита
+    2026-08-05) — та же SAVEPOINT + UNIQUE + IntegrityError-on-replay идиома,
+    что `economy_service.credit`/`debit` (`_log_tx` внутри `begin_nested()`),
+    но в собственной таблице `ClickerUpgradeLog`, а не `economy_tx`: эти
+    апгрейды тратят исключительно внутренний CP фермы, ювики не двигают (см.
+    докстринг модуля) — писать в `economy_tx` было бы смешением денежного
+    журнала с чисто внутренней CP-бухгалтерией.
+
+    Возвращает `True`, если `ref_id` заклеймлен впервые (вызывающий обязан
+    СРАЗУ ПОСЛЕ этого применить мутацию CP/уровня — credit-first-then-mutate,
+    как в `convert_cp`/`buy_cp`), `False` — если `(chat_id, ref_id, kind)` уже
+    встречался (повтор/сетевой ретрай) — мутация ПРОПУСКАЕТСЯ вызывающим.
+    Не коммитит — транзакцию завершает вызывающий."""
+    try:
+        async with session.begin_nested():
+            await session.execute(
+                insert(ClickerUpgradeLog).values(
+                    chat_id=chat_id, user_id=user_id, kind=kind, ref_id=ref_id
+                )
+            )
+    except IntegrityError:
+        logger.info(
+            "_claim_upgrade_ref: ref_id=%s (kind=%s) уже применён, пропускаем", ref_id, kind
+        )
+        return False
+    return True
+
+
+async def _upgrade(
+    session: AsyncSession,
+    chat_id: int,
+    user_id: int,
+    base: int,
+    level_attr: str,
+    kind: str,
+    ref_id: str,
+) -> dict:
     """Общее ядро апгрейда тапа/автокликера (T-04.1-14): cost считается ДО
     списания, при нехватке CP апгрейд отклоняется без изменения состояния.
 
@@ -339,7 +414,13 @@ async def _upgrade(session: AsyncSession, chat_id: int, user_id: int, base: int,
     `settings.farm_max_level` плюс бонусы от выполненных квестов и
     разблокированных ачивок, зажатые `FARM_EFFECTIVE_CAP_CEILING`=99; при
     нулевых разблокировках это эквивалентно старой плоской проверке
-    `settings.farm_max_level`."""
+    `settings.farm_max_level`.
+
+    Идемпотентность (bugfix аудита 2026-08-05): `ref_id` клеймится
+    (`_claim_upgrade_ref`) ПОСЛЕ валидации (потолок/cost), но ДО мутации
+    CP/уровня — повтор с тем же `ref_id` не двигает CP и не поднимает
+    уровень повторно, возвращает `{"status": "duplicate", ...}` текущим
+    (не изменённым) состоянием фермы."""
     farm = await _get_or_create_farm(session, chat_id, user_id)
     await _accrue_offline(session, chat_id, user_id, farm)
 
@@ -352,6 +433,11 @@ async def _upgrade(session: AsyncSession, chat_id: int, user_id: int, base: int,
     if farm.cp < cost:
         raise ClickerError(f"Недостаточно CP для апгрейда (нужно {cost}, есть {farm.cp})")
 
+    claimed = await _claim_upgrade_ref(session, chat_id, user_id, kind=kind, ref_id=ref_id)
+    if not claimed:
+        await session.commit()
+        return {**_farm_state(farm), "status": "duplicate"}
+
     farm.cp -= cost
     setattr(farm, level_attr, level + 1)
 
@@ -359,14 +445,18 @@ async def _upgrade(session: AsyncSession, chat_id: int, user_id: int, base: int,
     return _farm_state(farm)
 
 
-async def upgrade_tap(session: AsyncSession, chat_id: int, user_id: int) -> dict:
+async def upgrade_tap(session: AsyncSession, chat_id: int, user_id: int, ref_id: str) -> dict:
     """D-03: апгрейд тапа — cost = int(round(TAP_UPGRADE_BASE*1.15**tap_level))."""
-    return await _upgrade(session, chat_id, user_id, TAP_UPGRADE_BASE, "tap_level")
+    return await _upgrade(
+        session, chat_id, user_id, TAP_UPGRADE_BASE, "tap_level", kind="tap", ref_id=ref_id
+    )
 
 
-async def upgrade_auto(session: AsyncSession, chat_id: int, user_id: int) -> dict:
+async def upgrade_auto(session: AsyncSession, chat_id: int, user_id: int, ref_id: str) -> dict:
     """D-03: апгрейд автокликера — cost = int(round(AUTO_UPGRADE_BASE*1.15**auto_level))."""
-    return await _upgrade(session, chat_id, user_id, AUTO_UPGRADE_BASE, "auto_level")
+    return await _upgrade(
+        session, chat_id, user_id, AUTO_UPGRADE_BASE, "auto_level", kind="auto", ref_id=ref_id
+    )
 
 
 async def _get_collection_row_for_update(
@@ -385,14 +475,22 @@ async def _get_collection_row_for_update(
     ).scalar_one_or_none()
 
 
-async def upgrade_character(session: AsyncSession, chat_id: int, user_id: int, char_id: str) -> dict:
+async def upgrade_character(
+    session: AsyncSession, chat_id: int, user_id: int, char_id: str, ref_id: str
+) -> dict:
     """GACHA-05: индивидуальная прокачка ОДНОЙ героини фермы (idle-game-стиль,
     отдельно от constellation-уровня, который растёт от дублей, а не от
     траты валюты). Стоит CP фермы — тот же кошелёк и та же кривая стоимости
     (`_upgrade_cost`, base*1.15**level), что тап/автокликер, кап
     `FARM_LEVEL_MAX`=50 (как MAX_WORKER_LEVEL в эталоне). Порядок блокировок
     — строка фермы ПЕРВОЙ, затем строка `gacha_collection` героини (тот же
-    контракт, что `gacha_service.roll`, см. его докстринг)."""
+    контракт, что `gacha_service.roll`, см. его докстринг).
+
+    Идемпотентность (bugfix аудита 2026-08-05) — та же credit-first-then-
+    mutate идиома, что у `_upgrade`/`convert_cp`/`buy_cp`: `ref_id` клеймится
+    ПОСЛЕ валидации (собрана/потолок/cost), но ДО мутации CP/farm_level.
+    Повтор с тем же `ref_id` — `{"status": "duplicate", ...}`, без повторного
+    списания CP/подъёма уровня."""
     char = gacha_catalog.CATALOG.get(char_id)
     if char is None:
         raise ClickerError("Неизвестный персонаж")
@@ -410,6 +508,14 @@ async def upgrade_character(session: AsyncSession, chat_id: int, user_id: int, c
     cost = _upgrade_cost(FARM_LEVEL_BASE_COST[char.tier], row.farm_level)
     if farm.cp < cost:
         raise ClickerError(f"Недостаточно CP для апгрейда (нужно {cost}, есть {farm.cp})")
+
+    claimed = await _claim_upgrade_ref(session, chat_id, user_id, kind="character", ref_id=ref_id)
+    if not claimed:
+        await session.commit()
+        state = {**_farm_state(farm), "status": "duplicate"}
+        state["char_id"] = char_id
+        state["farm_level"] = row.farm_level
+        return state
 
     farm.cp -= cost
     row.farm_level += 1
@@ -631,29 +737,44 @@ async def get_market_state(
 async def amm_tick(session: AsyncSession) -> int:
     """Mean-reversion тик (D-03): для КАЖДОГО ряда `ClickerMarketPool`
     (per-row try/except — одна упавшая строка не должна ронять весь батч,
-    форма `markets_service.auto_resolve_external`) тянет резервы к якорю
+    форма `markets_service.auto_resolve_external`) тянет ЦЕНУ к якорю
     (`AMM_ANCHOR_CP_PER_HRYVNA`) множителем `factor = exp(-TICK/TAU)`
-    (`_MEAN_REVERSION_FACTOR`, считается один раз при импорте модуля):
-    целевые резервы (`target_r_h = sqrt(k/anchor)`, `target_r_cp =
-    target_r_h*anchor`) сохраняют текущий `k` пула, новые резервы —
-    взвешенное среднее `current*factor + target*(1-factor)`. Пишет снапшот
-    новой цены (`ClickerMarketPrice`) для каждого тронутого пула. Пул
-    блокируется `FOR UPDATE` — сериализуется с конкурентными свопами
-    (T-04.1-15). Возвращает число реально тронутых пулов."""
+    (`_MEAN_REVERSION_FACTOR`, считается один раз при импорте модуля).
+
+    bugfix аудита 2026-08-05 (было — HIGH, монотонная инфляция k): интерполяция
+    идёт в LOG-PRICE-пространстве (`current_price = r_cp/r_h`, тот же
+    масштаб/ориентация, что `_pool_price`), а не прямой линейной
+    интерполяцией резервов — прямая линия между двумя точками одной
+    гиперболы `r_cp*r_h=k` лежит строго НАД гиперболой (выпуклость), поэтому
+    старая формула монотонно растила k на каждом тике, пока цена не на
+    якоре, в любую сторону, без затухания. Новые резервы реконструируются из
+    интерполированной цены при ТЕКУЩЕМ (до тика) k, зафиксированном — тик
+    двигает цену, но НИКОГДА не меняет k (с точностью до Decimal-погрешности
+    округления):
+        new_price = exp(factor*ln(current_price) + (1-factor)*ln(anchor))
+        new_r_cp = sqrt(k * new_price); new_r_h = k / new_r_cp
+    Пишет снапшот новой цены (`ClickerMarketPrice`) для каждого тронутого
+    пула. Пул блокируется `FOR UPDATE` — сериализуется с конкурентными
+    свопами (T-04.1-15). Возвращает число реально тронутых пулов."""
     pools = (
         await session.execute(select(ClickerMarketPool).with_for_update())
     ).scalars().all()
 
     anchor = Decimal(AMM_ANCHOR_CP_PER_HRYVNA)
+    ln_anchor = anchor.ln()
     ticked = 0
     for pool in pools:
         try:
             k = pool.r_cp * pool.r_h
-            target_r_h = (k / anchor).sqrt()
-            target_r_cp = target_r_h * anchor
+            current_price = pool.r_cp / pool.r_h
 
-            new_r_cp = pool.r_cp * _MEAN_REVERSION_FACTOR + target_r_cp * (1 - _MEAN_REVERSION_FACTOR)
-            new_r_h = pool.r_h * _MEAN_REVERSION_FACTOR + target_r_h * (1 - _MEAN_REVERSION_FACTOR)
+            log_new_price = (
+                _MEAN_REVERSION_FACTOR * current_price.ln() + (1 - _MEAN_REVERSION_FACTOR) * ln_anchor
+            )
+            new_price = log_new_price.exp()
+
+            new_r_cp = (k * new_price).sqrt()
+            new_r_h = k / new_r_cp
 
             pool.r_cp = new_r_cp
             pool.r_h = new_r_h

@@ -5,7 +5,7 @@
 	import { page } from '$app/state';
 	import * as tg from '$lib/tg';
 	import { apiFetch, setChatId, ApiError } from '$lib/api';
-	import { balance } from '$lib/balance';
+	import { balance, applyBalanceUpdate } from '$lib/balance';
 	import { connectBalanceStream } from '$lib/sse';
 
 	let { children } = $props();
@@ -39,7 +39,7 @@
 		try {
 			await navigator.clipboard.writeText(String(userId));
 			idCopied = true;
-			tg.haptic('light');
+			tg.haptic('tap');
 			setTimeout(() => (idCopied = false), 1500);
 		} catch {
 			// Clipboard API недоступен (старый WebView) — тихо игнорируем,
@@ -96,7 +96,10 @@
 				tg.initData,
 				(data) => {
 					const payload = data as { balance?: number };
-					if (typeof payload.balance === 'number') balance.set(payload.balance);
+					// applyBalanceUpdate (not balance.set) — a slot screen mid-reveal
+					// may be holding updates back (see lib/balance.ts) so its own
+					// animation isn't spoiled by this broadcast arriving early.
+					if (typeof payload.balance === 'number') applyBalanceUpdate(payload.balance);
 				},
 				() => {
 					sseExpired = true;

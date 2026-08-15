@@ -4,6 +4,12 @@
 Доказывает Walking Skeleton (DATA-01): реальное текстовое сообщение записывается
 в messages + инкрементирует daily_stats, а команды/service-сообщения без
 from_user НЕ теряются — handler всегда вызывается.
+
+Также доказывает (2026-07-28, "половина номинации уходит Telegram"): служебный
+аккаунт Telegram (id 777000), системные уведомления (join/leave/pin/video-chat
+и т.п.) и команды (текст с "/") от РЕАЛЬНЫХ участников тоже не попадают ни в
+messages, ни в daily_stats/частоты слов — хендлер при этом всё равно
+вызывается (команды обязаны доходить до своих роутеров).
 """
 
 from __future__ import annotations
@@ -20,6 +26,7 @@ from aiogram.types import MessageOriginUser
 from aiogram.types import Sticker
 from aiogram.types import User
 from aiogram.types import Video
+from aiogram.types import VideoChatStarted
 from aiogram.types import Voice
 from sqlalchemy import select
 
@@ -190,6 +197,119 @@ async def test_collector_middleware_always_calls_handler_when_from_user_is_none(
         )
     ).scalar_one_or_none()
     assert saved is None
+
+
+# --- Служебные сообщения/команды/аккаунт Telegram не попадают в статистику ---
+# (жалоба владельца 2026-07-28: "половина номинации уходит Telegram" — этот
+# аккаунт и системные уведомления копили daily_stats.message_count наравне с
+# реальными участниками, см. bot/middleware/collector.py)
+
+
+@pytest.mark.asyncio
+async def test_telegram_service_account_is_not_counted(session):
+    """777000 — служебный аккаунт Telegram (уведомления привязанного канала),
+    is_bot=False, поэтому не ловится обычной is_bot-проверкой — нужен явный
+    id-чек."""
+    chat_id = -100123456900
+    telegram_account = User(id=777000, is_bot=False, first_name="Telegram")
+    message = _make_message(10001, chat_id, telegram_account, "пост из канала")
+
+    handler = AsyncMock(return_value="handled")
+    middleware = CollectorMiddleware()
+
+    result = await middleware(handler, message, {"session": session})
+
+    assert result == "handled"
+    handler.assert_awaited_once_with(message, {"session": session})
+
+    saved = (
+        await session.execute(
+            select(MessageModel).where(
+                MessageModel.chat_id == chat_id,
+                MessageModel.telegram_message_id == 10001,
+            )
+        )
+    ).scalar_one_or_none()
+    assert saved is None
+
+    stat = (
+        await session.execute(
+            select(DailyStat).where(DailyStat.chat_id == chat_id, DailyStat.user_id == 777000)
+        )
+    ).scalar_one_or_none()
+    assert stat is None
+
+
+@pytest.mark.asyncio
+async def test_service_message_is_not_counted(session):
+    """Системное уведомление (здесь — старт видеочата) от РЕАЛЬНОГО участника
+    (не служебный аккаунт) — тоже не активность, пропускается."""
+    chat_id = -100123456901
+    user_id = 555000210
+    user = User(id=user_id, is_bot=False, first_name="Участник")
+    message = _make_message(
+        10002, chat_id, user, text=None, video_chat_started=VideoChatStarted()
+    )
+
+    handler = AsyncMock(return_value="handled")
+    middleware = CollectorMiddleware()
+
+    result = await middleware(handler, message, {"session": session})
+
+    assert result == "handled"
+    saved = (
+        await session.execute(
+            select(MessageModel).where(
+                MessageModel.chat_id == chat_id,
+                MessageModel.telegram_message_id == 10002,
+            )
+        )
+    ).scalar_one_or_none()
+    assert saved is None
+
+    stat = (
+        await session.execute(
+            select(DailyStat).where(DailyStat.chat_id == chat_id, DailyStat.user_id == user_id)
+        )
+    ).scalar_one_or_none()
+    assert stat is None
+
+
+@pytest.mark.asyncio
+async def test_command_from_real_user_is_not_counted(session):
+    """Команда (текст с "/") от РЕАЛЬНОГО участника — не хочет засорять
+    message_count/longest_msg_len/частоты слов, хендлер команды всё равно
+    должен получить апдейт (см. модульный докстринг: DATA-01 не блокирует
+    роутинг)."""
+    chat_id = -100123456902
+    user_id = 555000211
+    user = User(id=user_id, is_bot=False, first_name="Командир")
+    message = _make_message(10003, chat_id, user, "/grant_all 100")
+
+    handler = AsyncMock(return_value="handled")
+    middleware = CollectorMiddleware()
+
+    result = await middleware(handler, message, {"session": session})
+
+    assert result == "handled"
+    handler.assert_awaited_once_with(message, {"session": session})
+
+    saved = (
+        await session.execute(
+            select(MessageModel).where(
+                MessageModel.chat_id == chat_id,
+                MessageModel.telegram_message_id == 10003,
+            )
+        )
+    ).scalar_one_or_none()
+    assert saved is None
+
+    stat = (
+        await session.execute(
+            select(DailyStat).where(DailyStat.chat_id == chat_id, DailyStat.user_id == user_id)
+        )
+    ).scalar_one_or_none()
+    assert stat is None
 
 
 # --- Task 3: медиа всех типов (Pitfall 6) --------------------------------

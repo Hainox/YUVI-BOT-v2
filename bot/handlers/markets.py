@@ -12,7 +12,13 @@ Pitfall 6): каждый format_* прогоняет question/label через h
 гейт admin_service.is_chat_admin с явным ответом не-админу, той же формы,
 что bot/handlers/backfill.py (не молчаливый ChatAdminFilter — понятная
 обратная связь). Ни создатель рынка, ни любой участник резолвить/отменять
-не могут — только текущий (live-проверка) админ чата.
+не могут — только текущий (live-проверка) админ чата, который САМ не
+создатель и не ставил на этот рынок (конфликт интересов, аудит HIGH):
+is_chat_admin здесь гейтит только "админ ли вообще", а не "тот ли это
+админ" — второе теперь проверяет сам markets_service (resolve_market/
+cancel_market's actor_id, MarketResolverIsCreator/MarketResolverHasBet),
+этот хендлер просто пробрасывает message.from_user.id как actor_id и
+показывает причину отказа админу текстом исключения.
 """
 
 from __future__ import annotations
@@ -356,13 +362,21 @@ async def market_resolve_command(message: Message, session: AsyncSession, bot: B
 
     try:
         result = await markets_service.resolve_market_by_position(
-            session, message.chat.id, market_id, winning_position
+            session, message.chat.id, market_id, winning_position, message.from_user.id
         )
     except (
         markets_service.MarketNotFound,
         markets_service.MarketClosed,
         markets_service.InvalidMarketArg,
     ) as exc:
+        await message.answer(str(exc))
+        return
+    except (
+        markets_service.MarketResolverIsCreator,
+        markets_service.MarketResolverHasBet,
+    ) as exc:
+        # Конфликт интересов (аудит HIGH) — админ ЯВНО узнаёт причину отказа
+        # и что нужен ДРУГОЙ админ, а не молчаливый no-op.
         await message.answer(str(exc))
         return
 
@@ -391,8 +405,18 @@ async def market_cancel_command(message: Message, session: AsyncSession, bot: Bo
         return
 
     try:
-        result = await markets_service.cancel_market(session, message.chat.id, market_id)
+        result = await markets_service.cancel_market(
+            session, message.chat.id, market_id, message.from_user.id
+        )
     except markets_service.MarketNotFound as exc:
+        await message.answer(str(exc))
+        return
+    except (
+        markets_service.MarketResolverIsCreator,
+        markets_service.MarketResolverHasBet,
+    ) as exc:
+        # Конфликт интересов (аудит HIGH) — админ ЯВНО узнаёт причину отказа
+        # и что нужен ДРУГОЙ админ, а не молчаливый no-op.
         await message.answer(str(exc))
         return
 

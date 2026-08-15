@@ -55,7 +55,6 @@ _PUBLIC_COMMANDS: list[BotCommand] = [
     BotCommand(command="exchange_claim", description="Заклеймить листинг биржи"),
     BotCommand(command="exchange_cancel", description="Отменить свой листинг биржи"),
     BotCommand(command="exchange_confirm", description="Подтвердить сделку на бирже"),
-    BotCommand(command="donate", description="Задонатить звёздами Telegram"),
     BotCommand(command="fb", description="Оставить фидбек, баг или идею"),
     BotCommand(command="poke", description="Толкнуть участника"),
     BotCommand(command="hug", description="Обнять участника"),
@@ -86,9 +85,12 @@ _ADMIN_ONLY_COMMANDS: list[BotCommand] = [
     BotCommand(command="model_show", description="[Админ] Текущая AI-модель"),
     BotCommand(command="model_list", description="[Админ] Список AI-моделей"),
     BotCommand(command="model_set", description="[Админ] Сменить AI-модель"),
+    BotCommand(command="model_health", description="[Админ] Отказы моделей с последнего рестарта"),
     BotCommand(command="prompt_show", description="[Админ] Текущий промпт"),
     BotCommand(command="prompt_set", description="[Админ] Задать промпт"),
     BotCommand(command="prompt_reset", description="[Админ] Сбросить промпт"),
+    BotCommand(command="daily_twin_off", description="[Админ] Выключить двойника дня целиком"),
+    BotCommand(command="daily_twin_on", description="[Админ] Включить двойника дня обратно"),
 ]
 
 

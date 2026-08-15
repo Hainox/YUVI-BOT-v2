@@ -24,6 +24,7 @@ import pytest
 from sqlalchemy import func
 from sqlalchemy import select
 
+from bot.constants import TELEGRAM_SERVICE_ACCOUNT_ID
 from bot.services import daily_pick_service
 from bot.services import lottery_service
 from common.models.daily_pick import DailyPick
@@ -194,3 +195,52 @@ async def test_lottery_expires_at_end_of_day(session, monkeypatch):
     ).scalar_one()
 
     assert stored_expires_at == datetime.combine(result["day_msk"], time(23, 59, 59))
+
+
+# --- TELEGRAM_SERVICE_ACCOUNT_ID (777000) исключён из кандидатов -----------
+
+
+@pytest.mark.asyncio
+async def test_yesterday_candidates_excludes_telegram_service_account(session):
+    """daily_stats может содержать вчерашнюю строку служебного аккаунта
+    (777000) — исторические данные от до-фикса периода, сеем напрямую в
+    модель. _yesterday_candidates не должен его вернуть."""
+    chat_id = -1009005010
+    uid = 9005010
+    await _ensure_user(session, uid, "Реальный")
+    await _ensure_user(session, TELEGRAM_SERVICE_ACCOUNT_ID, "Telegram")
+    yesterday = daily_pick_service._today_msk() - timedelta(days=1)
+    await _seed_daily_stat(session, chat_id, uid, yesterday)
+    await _seed_daily_stat(session, chat_id, TELEGRAM_SERVICE_ACCOUNT_ID, yesterday)
+    await session.commit()
+
+    candidates = await lottery_service._yesterday_candidates(session, chat_id)
+
+    assert TELEGRAM_SERVICE_ACCOUNT_ID not in candidates
+    assert uid in candidates
+
+
+@pytest.mark.asyncio
+async def test_run_lottery_never_picks_telegram_service_account(session):
+    """Реальный (не форсированный) RNG: единственный легитимный кандидат —
+    uid, служебный аккаунт с активной вчерашней daily_stats-строкой сидится
+    напрямую. Победитель обязан быть uid, а не 777000."""
+    chat_id = -1009005011
+    uid = 9005011
+    await _ensure_user(session, uid, "Yuvi_Yuvi")
+    await _ensure_user(session, TELEGRAM_SERVICE_ACCOUNT_ID, "Telegram")
+    yesterday = daily_pick_service._today_msk() - timedelta(days=1)
+    await _seed_daily_stat(session, chat_id, uid, yesterday)
+    await _seed_daily_stat(session, chat_id, TELEGRAM_SERVICE_ACCOUNT_ID, yesterday)
+    await session.commit()
+
+    # Детерминированная проверка ДО реального (не форсированного) RNG-розыгрыша
+    # — та же причина, что test_run_victim_never_picks_telegram_service_account:
+    # без неё winner==uid ниже был бы верен лишь у ~50% прогонов.
+    candidates = await lottery_service._yesterday_candidates(session, chat_id)
+    assert candidates == [uid]
+
+    result = await lottery_service.run_lottery(session, chat_id)
+
+    assert result["winner"] == uid
+    assert result["winner"] != TELEGRAM_SERVICE_ACCOUNT_ID

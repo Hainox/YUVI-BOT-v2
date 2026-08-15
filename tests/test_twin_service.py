@@ -147,6 +147,66 @@ async def test_reasoning_only_degrades(session, monkeypatch):
     assert reply == twin_service.TWIN_FALLBACK_TEXT
 
 
+# --- build_twin_reaction (TWIN-03): контекстный ответ на реплай -------------
+
+
+@pytest.mark.asyncio
+async def test_reaction_consent_gate_blocks_before_reading_target(session, monkeypatch):
+    def _boom_portrait(*args, **kwargs):
+        raise AssertionError("build_portrait не должен вызываться до проверки consent")
+
+    monkeypatch.setattr(twin_service.card_service, "build_portrait", _boom_portrait)
+
+    chat_id = -1009008011
+    target_id = 9008011
+    await _ensure_user(session, target_id, "Цель")
+
+    with pytest.raises(twin_service.TwinConsentError):
+        await twin_service.build_twin_reaction(session, chat_id, target_id, "Цель", "привет")
+
+
+@pytest.mark.asyncio
+async def test_reaction_returns_raw_text_without_prefix_and_uses_incoming_text(session, monkeypatch):
+    captured_messages: list[list[dict]] = []
+
+    async def _capturing_stream(messages: list[dict], model: str, max_tokens: int):
+        captured_messages.append(messages)
+        for part in ["ну", " и норм"]:
+            yield part
+
+    monkeypatch.setattr(twin_service.ai_client, "stream", _capturing_stream)
+
+    chat_id = -1009008012
+    target_id = 9008012
+    await _ensure_user(session, target_id, "Опытный")
+    await _set_opt_in_row(session, chat_id, target_id, "active")
+
+    reply = await twin_service.build_twin_reaction(
+        session, chat_id, target_id, "Опытный", "ты вообще топ или как"
+    )
+
+    assert reply == "ну и норм"
+    assert "🎭" not in reply
+    assert "Двойник" not in reply
+    # Входящий текст реплая должен уйти как user-сообщение модели (не
+    # затеряться/подмениться дефолтным "Обычная реплика..." из build_twin_reply).
+    assert captured_messages[0][-1] == {"role": "user", "content": "ты вообще топ или как"}
+
+
+@pytest.mark.asyncio
+async def test_reaction_reasoning_only_degrades(session, monkeypatch):
+    monkeypatch.setattr(twin_service.ai_client, "stream", _raising_stream)
+
+    chat_id = -1009008013
+    target_id = 9008013
+    await _ensure_user(session, target_id, "Молчун")
+    await _set_opt_in_row(session, chat_id, target_id, "active")
+
+    reply = await twin_service.build_twin_reaction(session, chat_id, target_id, "Молчун", "алё")
+
+    assert reply == twin_service.TWIN_FALLBACK_TEXT
+
+
 # --- opt-in/out/pause/resume state machine -----------------------------------
 
 

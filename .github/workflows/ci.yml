@@ -36,7 +36,7 @@ jobs:
       REDIS_URL: redis://localhost:6379/0
       BOT_TOKEN: test_token
       CHAT_ID: "-1000000000000"
-      OWNER_ID: "1"
+      OWNER_ID: "111111111"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

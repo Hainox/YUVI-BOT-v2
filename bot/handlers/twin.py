@@ -13,6 +13,7 @@ ai_card.py::_resolve_target), зовёт twin_service.build_twin_reply и хар
 from __future__ import annotations
 
 import html
+import logging
 
 from aiogram import Router
 from aiogram.filters import Command
@@ -23,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from bot.services import twin_service
 from common.models.user import User
 
+logger = logging.getLogger(__name__)
 router = Router()
 
 
@@ -90,6 +92,19 @@ async def twin_command(message: Message, session: AsyncSession) -> None:
         )
     except twin_service.TwinConsentError:
         await message.answer("Этот участник не подключил Двойника.")
+        return
+    except Exception:  # noqa: BLE001 - build_twin_reply's own card_service.build_portrait
+        # call has no try/except around its ai_client.stream() (unlike the
+        # second, guarded call in twin_service.py) - a reasoning-only model
+        # response (AIEmptyResponseError, confirmed hitting /card the same
+        # way in production) or any other AI hiccup there previously crashed
+        # this handler silently, with no reply at all. Same pattern as
+        # ai_card.py's build_card guard: the handler must tell the chat
+        # something went wrong, not fail silently.
+        logger.exception(
+            "build_twin_reply упал для chat_id=%s user_id=%s", message.chat.id, user_id
+        )
+        await message.answer("Двойник не смог ответить — попробуйте ещё раз или другую модель.")
         return
 
     # D-02/Pitfall 8: дисклеймер хардкожен ЗДЕСЬ, независимо от текста модели.

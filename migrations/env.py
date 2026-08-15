@@ -10,6 +10,8 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from common.db.base import Base
 from common.models import active_title  # noqa: F401
+from common.models import arena  # noqa: F401
+from common.models import autobattle  # noqa: F401
 from common.models import bet  # noqa: F401
 from common.models import bot_setting  # noqa: F401
 from common.models import casino_game  # noqa: F401
@@ -17,6 +19,7 @@ from common.models import chat_bank  # noqa: F401
 from common.models import clicker_farm  # noqa: F401
 from common.models import clicker_market_pool  # noqa: F401
 from common.models import clicker_market_price  # noqa: F401
+from common.models import clicker_upgrade_log  # noqa: F401
 from common.models import daily_pick  # noqa: F401
 from common.models import daily_stat  # noqa: F401
 from common.models import duel  # noqa: F401

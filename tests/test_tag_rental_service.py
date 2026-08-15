@@ -25,10 +25,13 @@ from __future__ import annotations
 
 from datetime import datetime
 from datetime import timedelta
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import select
 
+import bot.handlers.tags as tags_handlers
 from bot.config import settings
 from bot.services import economy_service
 from bot.services import tag_rental_service
@@ -340,3 +343,38 @@ async def test_cancel_idempotent(session, bot):
     await session.commit()
     assert cancelled_again is False
     bot.set_chat_member_tag.assert_not_awaited()
+
+
+# --- хендлер: неожиданный сбой не должен падать молча (форма test_twin_service.py) --
+
+
+@pytest.mark.asyncio
+async def test_tag_rent_handler_survives_unexpected_error(session, bot, monkeypatch):
+    """До фикса tag_rent_command ловил только (TagRentalError, TagError,
+    InsufficientFunds) — любой другой сбой из rent_title (напр.
+    grant_title's IntegrityError-retry на устойчивую гонку) падал через
+    хендлер молча. debit_to_bank's списание внутри rent_title не коммитится
+    на этом пути и откатится при закрытии сессии — деньги не теряются, но
+    хендлер обязан ответить в чат."""
+    chat_id = -1009007009
+    user_id = 9007009
+    await _ensure_user(session, user_id, "Арендатор")
+    await _fund(session, chat_id, user_id)
+
+    async def _boom(*args, **kwargs):
+        raise RuntimeError("неожиданный сбой rent_title")
+
+    monkeypatch.setattr(tags_handlers.tag_rental_service, "rent_title", _boom)
+
+    message = SimpleNamespace(
+        chat=SimpleNamespace(id=chat_id),
+        from_user=SimpleNamespace(id=user_id, first_name="Арендатор"),
+        message_id=1,
+        text="/tag_rent 3 Босс",
+        answer=AsyncMock(),
+    )
+    await tags_handlers.tag_rent_command(message, session, bot)
+
+    message.answer.assert_awaited_once()
+    text = message.answer.await_args.args[0]
+    assert "не списаны" in text.lower()

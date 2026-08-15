@@ -17,10 +17,12 @@
 	// that already-known number (same "informational reveal" spirit as the
 	// blackjack card-flip work) — nothing about the round outcome is decided
 	// or guessed client-side.
+	import { onDestroy } from 'svelte';
 	import { apiFetch, ApiError } from '$lib/api';
+	import { holdBalanceUpdates } from '$lib/balance';
 	import { haptic } from '$lib/tg';
+	import BetControl from '$lib/components/BetControl.svelte';
 
-	const BET_CHIPS = [10, 50, 100, 500, 1000];
 	const RED_NUMBERS = new Set([
 		1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36
 	]);
@@ -114,7 +116,7 @@
 		};
 	});
 
-	let bet = $state(BET_CHIPS[0]);
+	let bet = $state(10);
 	let selectedBetType = $state<BetType | null>(null);
 	let selectedBetValue = $state<number | string | null>(null);
 	let spinning = $state(false);
@@ -169,6 +171,12 @@
 		error = null;
 		result = null;
 		haptic('spin');
+		// Held until the wheel actually finishes spinning below — otherwise the
+		// header balance jumps to the new total via api.ts's sniff the instant
+		// the fetch resolves, long before the wheel visually stops (this
+		// screen's reveal is gated behind SPIN_DURATION_MS + REVEAL_BUFFER_MS
+		// ≈ 3.55s). See lib/balance.ts.
+		holdBalanceUpdates(true);
 		try {
 			const res = await apiFetch<RouletteResult>('/api/v1/games/roulette', {
 				method: 'POST',
@@ -184,13 +192,21 @@
 				result = res;
 				spinning = false;
 				haptic(res.outcome.won ? 'win' : 'lose');
+				// Wheel has actually landed and the result is revealed — now it's
+				// safe to let the header balance update.
+				holdBalanceUpdates(false);
 			}, SPIN_DURATION_MS + REVEAL_BUFFER_MS);
 		} catch (err) {
+			holdBalanceUpdates(false);
 			error = err instanceof ApiError ? err.message : String(err ?? 'unknown_error');
 			haptic('error');
 			spinning = false;
 		}
 	}
+
+	// If the screen is unmounted mid-spin — the setTimeout callback above will
+	// never run, so nothing else would release the hold.
+	onDestroy(() => holdBalanceUpdates(false));
 </script>
 
 <div class="rl-screen">
@@ -363,24 +379,7 @@
 		</div>
 	</div>
 
-	<div class="bet-row">
-		<div class="bet-display">
-			<span class="bet-label">ставка</span>
-			<div class="bet-amount">{bet}<small>¥</small></div>
-		</div>
-		<div class="bet-chips">
-			{#each BET_CHIPS as v (v)}
-				<button
-					type="button"
-					class={`chip ${bet === v ? 'chip-on' : ''}`}
-					disabled={spinning}
-					onclick={() => (bet = v)}
-				>
-					{v}
-				</button>
-			{/each}
-		</div>
-	</div>
+	<BetControl bind:bet disabled={spinning} />
 
 	<button type="button" class="rl-cta" disabled={spinning || selectedBetType === null} onclick={spin}>
 		<span class="rl-cta-label">{spinning ? 'крутим…' : 'КРУТИТЬ РУЛЕТКУ'}</span>
@@ -653,39 +652,6 @@
 	}
 
 	/* ─── bet amount + CTA ──────────────────────────────────────────────── */
-	.bet-row {
-		display: flex;
-		align-items: center;
-		gap: var(--space-md);
-	}
-	.bet-display {
-		display: flex;
-		flex-direction: column;
-	}
-	.bet-label {
-		font-size: var(--font-label-size);
-		text-transform: uppercase;
-		letter-spacing: 0.08em;
-		color: var(--text-muted);
-	}
-	.bet-amount {
-		font-family: var(--font-numeric);
-		font-size: var(--font-display-size);
-		font-weight: 900;
-		color: var(--text-primary);
-	}
-	.bet-amount small {
-		font-size: 12px;
-		color: var(--accent-cyan);
-		margin-left: 1px;
-	}
-	.bet-chips {
-		display: grid;
-		grid-template-columns: repeat(5, 1fr);
-		gap: var(--space-xs);
-		flex: 1;
-	}
-
 	.rl-cta {
 		background: var(--accent-cyan);
 		border: none;

@@ -13,8 +13,11 @@ digest_service.run_daily_digest, auto-close просроченных рынко�
 (external_markets_check, interval 30м) через
 markets_service.register_external_check (план 03-06), авто-стенд
 просроченных раздач блэкджека (blackjack_timeouts, interval 30с, D-07/D-08)
-через casino_service.register_blackjack_timeouts (план 04.1-03),
-mean-reversion тик AMM-пула фермы CP<->ювик (amm_mean_reversion, interval
+через casino_service.register_blackjack_timeouts (план 04.1-03), форс-settle
+просроченных раундов Crash (crash_timeouts, interval 15с — игрок не вернулся
+кэшаутиться, тот же дух, что blackjack_timeouts: ставка никогда не
+замораживается навсегда) через casino_service.register_crash_timeouts
+(план 04.1-XX), mean-reversion тик AMM-пула фермы CP<->ювик (amm_mean_reversion, interval
 10м, D-03) через clicker_service.register_amm_tick (план 04.1-05), демот
 просроченных Telegram custom_title + восстановление подвешенной аренды
 (active_titles_expire, interval 5м, D-07/D-10) через
@@ -23,12 +26,27 @@ tag_service.register_title_expiry (план 05-03), автопост /awards
 awards_service.register_daily_autopost (план 05-06), и проактивный
 сброс/анонс лотереи «Yuvi_Yuvi дня» (lottery_daily_reset, cron 00:00 МСК,
 LOTTERY-01, UX-safety-net поверх day_msk из Pitfall 4) через
-lottery_service.register_daily_reset (план 05-05), и автопост «Жертвы дня»
+lottery_service.register_daily_reset (план 05-05), автопост «Жертвы дня»
 (victim_daily_autopost, cron 10:00 МСК, VICTIM-01/02) через
 victim_service.register_daily_autopost (запрошено пользователем 2026-07-23 —
-раньше /victim срабатывал только вручную). Импорты
-ленивые (внутри функции), чтобы модули, ещё не существующие на момент
-плана 01 (пустой setup_jobs), не ломали import bot.main до их появления.
+раньше /victim срабатывал только вручную), и мемный автопост про
+«наблюдателей» чата (lurker_daily_roast, cron 12:00 МСК, LURKER-01,
+косметический — без денег/титулов/состояния) через
+lurker_service.register_daily_roast (запрошено пользователем 2026-07-27), и
+вероятностный тик "дневного двойника" (daily_twin_tick, interval 15м, окно
+9:00-23:00 МСК, TWIN-03) через daily_twin_service.register_daily_twin_tick
+(запрошено пользователем 2026-07-27) — interval, а не cron, потому что нужно
+несколько попыток поста за день, а не одна точка времени), и visibility-
+алерт зависших claimed-листингов биржи ювиков (exchange_stuck_alert,
+interval 60м, найдено ревью 2026-08-05) через
+exchange_service.register_stuck_alert — НЕ таймаут, двигающий деньги (бот
+не может подтвердить оффлайн-оплату между продавцом и покупателем), только
+пост в чат листинга с напоминанием про /exchange_admin_cancel и
+/exchange_admin_release, чтобы зависший спор не был невидим для админов
+(до этого — единственная stateful-сущность бота вообще без фонового job'а).
+Импорты ленивые (внутри функции), чтобы модули, ещё не существующие на
+момент плана 01 (пустой setup_jobs), не ломали import bot.main до их
+появления.
 """
 
 from __future__ import annotations
@@ -63,7 +81,8 @@ def setup_jobs(bot: Bot) -> None:
     5м), сверку/авторезолюцию внешних рынков (план 03-06,
     external_markets_check, interval 30м), авто-стенд просроченных раздач
     блэкджека (план 04.1-03, blackjack_timeouts, interval 30с, D-07/D-08),
-    mean-reversion тик AMM-пула фермы (план 04.1-05, amm_mean_reversion,
+    форс-settle просроченных раундов Crash (план 04.1-XX, crash_timeouts,
+    interval 15с), mean-reversion тик AMM-пула фермы (план 04.1-05, amm_mean_reversion,
     interval 10м, D-03), демот просроченных Telegram custom_title +
     восстановление подвешенной аренды (план 05-03, active_titles_expire,
     interval 5м, D-07/D-10), автопост /awards (план 05-06,
@@ -73,12 +92,17 @@ def setup_jobs(bot: Bot) -> None:
     эти модули появились в более поздних планах, чем изначальный (пустой)
     setup_jobs плана 01.
     """
+    from bot.services import arena_runtime_worker
+    from bot.services import arena_service
     from bot.services import awards_service
     from bot.services import casino_service
     from bot.services import clicker_service
+    from bot.services import daily_twin_service
     from bot.services import digest_service
     from bot.services import embed_worker
+    from bot.services import exchange_service
     from bot.services import lottery_service
+    from bot.services import lurker_service
     from bot.services import markets_service
     from bot.services import nlp_classifier
     from bot.services import tag_service
@@ -90,11 +114,17 @@ def setup_jobs(bot: Bot) -> None:
     markets_service.register_auto_close(scheduler)
     markets_service.register_external_check(scheduler)
     casino_service.register_blackjack_timeouts(scheduler)
+    casino_service.register_crash_timeouts(scheduler)
     clicker_service.register_amm_tick(scheduler)
     tag_service.register_title_expiry(scheduler, bot)
     awards_service.register_daily_autopost(scheduler, bot)
     lottery_service.register_daily_reset(scheduler, bot)
     victim_service.register_daily_autopost(scheduler, bot)
+    lurker_service.register_daily_roast(scheduler, bot)
+    daily_twin_service.register_daily_twin_tick(scheduler, bot)
+    exchange_service.register_stuck_alert(scheduler, bot)
+    arena_service.register_expiry_job(scheduler)
+    arena_runtime_worker.register_runtime_tick(scheduler)
 
     async def _digest_job() -> None:
         await digest_service.run_daily_digest(bot)
