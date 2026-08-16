@@ -36,6 +36,8 @@ from sqlalchemy.ext.asyncio import create_async_engine
 # локальная разработка и CI (.github/workflows/ci.yml). Стоп-кран ниже не
 # даёт тестам стартовать, если хост не входит в этот список.
 _SAFE_DATABASE_HOSTS = {"localhost", "127.0.0.1"}
+_ALLOWED_TEST_DB_HOSTS = {"127.0.0.1", "localhost"}
+_COMPOSE_TEST_DB_HOSTS = {"postgres-test"}
 
 
 def pytest_sessionstart(session: pytest.Session) -> None:
@@ -54,10 +56,6 @@ def pytest_sessionstart(session: pytest.Session) -> None:
         "до первого теста.",
         returncode=1,
     )
-
-
-_ALLOWED_TEST_DB_HOSTS = {"127.0.0.1", "localhost"}
-_COMPOSE_TEST_DB_HOSTS = {"postgres-test"}
 
 
 def _assert_safe_test_database(database_url: str) -> None:
