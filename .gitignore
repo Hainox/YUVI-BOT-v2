@@ -16,6 +16,9 @@ build/
 coverage.xml
 htmlcov/
 
+# Generated benchmark output (scripts/q_bench.py)
+scripts/q_bench_results.json
+
 # GSD planning docs — local-only, contains private reference-repo analysis
 .planning/
 

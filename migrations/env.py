@@ -33,7 +33,6 @@ from common.models import message  # noqa: F401
 from common.models import message_edit  # noqa: F401
 from common.models import message_embedding  # noqa: F401
 from common.models import reaction  # noqa: F401
-from common.models import twin_opt_in  # noqa: F401
 from common.models import user  # noqa: F401
 from common.models import user_balance  # noqa: F401
 from common.models import word_frequency  # noqa: F401

@@ -51,9 +51,8 @@ async def build_daily_message(session: AsyncSession, chat_id: int) -> str:
     """Генерирует сегодняшний текст (свежий каждый раз, без кеша/сохранения —
     сообщение не несёт состояния, которое нужно было бы переиграть при
     повторном тике). Хэштег #мем дописывается ЗДЕСЬ детерминированно, а не
-    доверяется модели (та же дисциплина, что дисклеймер-префикс twin.py —
-    D-02/Pitfall 8: не полагаться на то, что модель не забудет про
-    инструкцию)."""
+    доверяется модели (D-02/Pitfall 8: не полагаться на то, что модель
+    не забудет про инструкцию)."""
     model = await settings_service.get_active_model(session, chat_id, default=settings.ai_structured_model)
     messages = [
         {"role": "system", "content": _SYSTEM_PROMPT},

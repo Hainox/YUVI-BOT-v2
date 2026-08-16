@@ -4,7 +4,7 @@
     python3 scripts/model_bench.py list                          # каталог моделей + auth-проверка
     python3 scripts/model_bench.py ping --models all             # быстрая классификация всех моделей
     python3 scripts/model_bench.py bench --models m1,m2          # прогон по формам промптов
-    python3 scripts/model_bench.py bench --models all --forms twin,topics,complaints
+    python3 scripts/model_bench.py bench --models all --forms topics,joke,complaints
 
 Секрет (OPENAI_API_KEY) читается из .env, НИКОГДА не печатается и не пишется
 в результаты. Результаты — компактный отчёт в stdout и файл
@@ -62,25 +62,6 @@ CURRENT_CATALOG = [
 ]
 
 # --- Представительные формы промптов бота (см. bot/services) ----------------
-
-
-def _twin_messages() -> list[dict]:
-    return [
-        {
-            "role": "system",
-            "content": (
-                "Ты — «Двойник» участника Осака. Его психологический портрет: энергичный, "
-                "саркастичный, любит мемы и короткие рубленые фразы.\n\n"
-                "Его настоящие недавние сообщения (стиль, лексика, длина фраз):\n"
-                "- 'я вчера опять проиграл все ювики в слоты'\n"
-                "- 'братан это имба'\n"
-                "- 'ну и где мой джекпот'\n\n"
-                "Напиши ОДНУ короткую реплику в его стиле, 1-3 предложения. "
-                "Не приписывай ему реальных фактов/обвинений на чувствительные темы."
-            ),
-        },
-        {"role": "user", "content": "Обычная реплика в духе этого человека."},
-    ]
 
 
 def _topics_messages() -> list[dict]:
@@ -149,8 +130,8 @@ def _complaints_messages() -> list[dict]:
                     "жалоба: /duel сломался, ставка зависла",
                     "мне кажется джекпот нереальный",
                     "согласен, пул растёт слишком быстро",
-                    "бот опять не ответил на /ask",
-                    "аск отвечает, но долго",
+                    "бот опять не ответил на /q",
+                    "q отвечает, но долго",
                     "слот тето вообще топ",
                     "топ по дизайну, но выигрыши редкие",
                     "у меня дисбаланс в статистике",
@@ -198,9 +179,8 @@ def _complaints_messages() -> list[dict]:
 
 FORMS: dict[str, tuple[list[dict], int]] = {
     # имя формы -> (messages, max_tokens). Бот реально шлёт 1500
-    # (ai_max_output_tokens / twin_max_output_tokens) — при 300 reasoning-
-    # модели съедают весь бюджет на "мысли" до первого символа content.
-    "twin": (_twin_messages(), 1500),
+    # (ai_max_output_tokens) — при 300 reasoning-модели съедают весь бюджет
+    # на "мысли" до первого символа content.
     "topics": (_topics_messages(), 1500),
     "joke": (_joke_messages(), 1500),
     "complaints": (_complaints_messages(), 1500),
@@ -427,7 +407,7 @@ def main() -> None:
     ping.add_argument("--concurrency", type=int, default=8)
     bench = sub.add_parser("bench")
     bench.add_argument("--models", default="")
-    bench.add_argument("--forms", default="twin,topics,joke,complaints")
+    bench.add_argument("--forms", default="topics,joke,complaints")
     bench.add_argument("--concurrency", type=int, default=5)
     args = parser.parse_args()
 

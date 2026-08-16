@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+from math import ceil
 
 from aiogram import Router
 from aiogram.filters import Command
@@ -13,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from bot.config import settings
 from bot.filters.chat_admin import ChatAdminFilter
 from bot.services import ai_client
+from bot.services import embed_worker
 from bot.services import settings_service
 
 router = Router()
@@ -89,6 +91,42 @@ async def explicit_off_command(message: Message, session: AsyncSession) -> None:
     await settings_service.set_explicit_language(session, message.chat.id, False, message.from_user.id)
     await session.commit()
     await message.answer("Explicit-лексика отключена для AI-ответов этого чата.")
+
+
+@router.message(Command("embed_stats"))
+async def embed_stats_command(message: Message, session: AsyncSession) -> None:
+    """Прогресс пересчёта BGE-M3 эмбеддингов — готовность поиска /q."""
+    total, embedded, pending = await embed_worker.get_embed_stats(session, message.chat.id)
+
+    if total == 0:
+        await message.answer(
+            "<b>Эмбеддинги:</b> сообщений с текстом пока нет — нечего пересчитывать.",
+            parse_mode="HTML",
+        )
+        return
+
+    percent = embedded / total * 100
+    if pending == 0:
+        eta = "готово"
+        ready = "Да — поиск /q покрывает всю историю чата."
+    else:
+        seconds = ceil(pending / embed_worker._BATCH_SIZE) * 45
+        minutes = ceil(seconds / 60)
+        if minutes >= 60:
+            eta = f"~{minutes // 60} ч {minutes % 60} мин"
+        else:
+            eta = f"~{minutes} мин"
+        ready = "Нет — ещё досчитываются векторы, часть истории пока вне поиска."
+
+    await message.answer(
+        "<b>Пересчёт BGE-M3 эмбеддингов</b>\n"
+        f"Всего сообщений: <b>{total}</b>\n"
+        f"Готово: <b>{embedded}</b> ({percent:.1f}%)\n"
+        f"Осталось: <b>{pending}</b>\n"
+        f"До готовности: <b>{eta}</b>\n"
+        f"/q готов: {ready}",
+        parse_mode="HTML",
+    )
 
 
 @router.message(Command("prompt_show"))

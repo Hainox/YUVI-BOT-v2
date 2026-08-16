@@ -85,6 +85,7 @@ _ADMIN_ONLY_COMMANDS: list[BotCommand] = [
     BotCommand(command="prompt_reset", description="[Админ] Сбросить промпт"),
     BotCommand(command="explicit_on", description="[Админ] Разрешить explicit-лексику"),
     BotCommand(command="explicit_off", description="[Админ] Отключить explicit-лексику"),
+    BotCommand(command="embed_stats", description="[Админ] Готовность /q: пересчёт эмбеддингов"),
 ]
 
 

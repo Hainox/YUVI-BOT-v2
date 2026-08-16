@@ -20,6 +20,7 @@ import logging
 
 from aiogram import Bot
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from sqlalchemy import func
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,6 +34,32 @@ logger = logging.getLogger(__name__)
 
 _BATCH_SIZE = 200
 _JOB_ID = "embed_pending"
+
+
+async def get_embed_stats(session: AsyncSession, chat_id: int) -> tuple[int, int, int]:
+    """Возвращает (embeddable, embedded, pending) для чата — прогресс пересчёта BGE-M3.
+
+    Считаем по тем же условиям, что обрабатывает run_once: сообщение готово к
+    эмбеддингу, если у него есть текст, и ещё не посчитано, если нет строки в
+    message_embeddings_bge. embeddable = embedded + pending по построению.
+    """
+    total_stmt = (
+        select(func.count(Message.id))
+        .where(Message.chat_id == chat_id, Message.text.is_not(None))
+    )
+    pending_stmt = (
+        select(func.count(Message.id))
+        .outerjoin(MessageEmbedding, MessageEmbedding.message_id == Message.id)
+        .where(
+            Message.chat_id == chat_id,
+            Message.text.is_not(None),
+            MessageEmbedding.message_id.is_(None),
+        )
+    )
+    total = (await session.execute(total_stmt)).scalar_one() or 0
+    pending = (await session.execute(pending_stmt)).scalar_one() or 0
+    embedded = total - pending
+    return total, embedded, pending
 
 
 async def run_once(session: AsyncSession) -> int:

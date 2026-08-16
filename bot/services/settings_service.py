@@ -85,8 +85,7 @@ async def set_setting(
 
 async def get_active_model(session: AsyncSession, chat_id: int, default: str | None = None) -> str:
     """Активная модель для чата — фолбэк на явно переданный `default`, иначе
-    на settings.openai_model (env-дефолт, historically twin-специфичный —
-    см. bot/config.py). `default` позволяет вызывающему сервису задать СВОЙ
+    на settings.openai_model (env-дефолт — см. bot/config.py). `default` позволяет вызывающему сервису задать СВОЙ
     фолбэк (найдено 2026-07-28: kimi-k2.6, дефолт openai_model, систематически
     падает AIEmptyResponseError на промптах со строгим форматом — ask/card/
     digest/summary/topics/phrase/joke/social/lurker передают
