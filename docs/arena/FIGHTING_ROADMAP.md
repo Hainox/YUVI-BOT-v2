@@ -1,7 +1,7 @@
 # Yuvi Arena — план разработки
 
 **Связанный документ:** `FIGHTING_SPEC.md`
-**Статус на 2026-08-08:** Фазы 0–7 частично реализованы. В репозитории есть серверная PvP-сессия, authenticated REST/SSE runtime, settlement с рейтингом/XP, минимальная админская обработка зависших матчей и экраны `/arena`, `/arena/match/[id]`, `/arena/result/[id]`, `/arena/history`, `/arena/leaderboard`, `/arena/profile` и `/arena/training`. Ежедневные/недельные награды, дайджест/MP4 и полноценные визуальные ассеты остаются следующими этапами.
+**Статус на 2026-08-08:** Фазы 0–9 частично реализованы. В репозитории есть серверная PvP-сессия, authenticated REST/SSE runtime, settlement с рейтингом/XP, минимальная админская обработка зависших матчей, ежедневные/недельные Arena-награды с атомарной выдачей и retry, отдельный дайджест с MP4 replay и экраны `/arena`, `/arena/match/[id]`, `/arena/result/[id]`, `/arena/history`, `/arena/leaderboard`, `/arena/profile` и `/arena/training`. Расширенная очередь replay, аудиослой, админские инструменты повторной выдачи и мониторинг остаются следующими этапами.
 
 ## Фактическая карта текущей реализации
 
@@ -17,6 +17,8 @@
 | Runtime | Redis-backed backend session, authenticated REST/SSE API и `/arena/match/[id]` Mini App combat screen подключены |
 | Settlement/rating/XP | реализованы: идемпотентная выплата/возврат, рейтинг, XP и публикация баланса; покрыты контрактными тестами |
 | Admin hardening | rate limits, stuck/refund/audit, read-only overview и Arena fund ledger API реализованы; force-finish и metrics остаются |
+| Weekly awards | immutable leaderboard snapshot, MSK-нормализация, top-10 nominations и атомарная выдача Arena fund → chat bank подключены; partial/pending rows повторяются retry job |
+| Daily awards | детерминированные номинации в 21:50 MSK, атомарная выдача в 23:00 MSK, статусы paid/partial/pending и безопасное отображение фактически выданной суммы подключены |
 
 Фактические API-маршруты lobby являются источником истины для текущего среза. В старом плане ниже `GET /api/v1/arena/lobby` следует читать как целевой агрегированный endpoint; он пока не реализован и не используется Mini App.
 
@@ -355,7 +357,9 @@ POST /api/v1/arena/matches/{id}/forfeit
 
 ---
 
-## Фаза 8. Бот, уведомления и ежедневный дайджест
+## Фаза 8. Бот, уведомления и ежедневный дайджест — базовый срез реализован ✅
+
+Текстовый Arena-дайджест и публикация лучшего боя подключены к scheduler; финансовые суммы в публичный пост не попадают.
 
 **Цель:** связать Arena с чатом без спама.
 
@@ -368,15 +372,19 @@ POST /api/v1/arena/matches/{id}/forfeit
 - объективные номинации;
 - ежедневные награды 1000/500/500/300/300;
 - Arena fund → chat bank fallback;
-- недельный leaderboard snapshot;
-- активность 1 PvP за 7 дней;
-- награды 25k/10k/5k;
-- inactive reward остаётся в Arena fund;
-- защита от повторной выдачи.
+- недельный leaderboard snapshot — **готов** (`bot/services/arena_awards_service.py`, полный immutable срез, scheduler job, идемпотентность);
+- активность 1 PvP за 7 дней — **готова** в nomination foundation;
+- nomination top-10 с плановыми наградами 25k/10k/5k — **готово**;
+- settlement nomination → Arena fund/chat bank — **готов** в `bot/services/arena_award_service.py`: lock order user → chat bank → ArenaFund, ledger и per-attempt refs;
+- ежедневные nomination rows по метрикам боя — **готовы** и формируются в 21:50 MSK;
+- отдельный Arena-дайджест — **готов** в 23:00 MSK: сводка завершённых матчей, номинации и best-effort replay;
+- защита от повторной публикации — **готова** через `ArenaDigestPublication` (текст и replay отслеживаются раздельно; Telegram остаётся at-least-once при падении между API и БД);
+- daily/weekly settlement — **готов**: `paid_amount`, `settlement_status`, Arena fund → chat bank fallback и 15-минутный retry для partial/pending;
+- защита от повторной выдачи — **готова** через уникальные award/fund keys и детерминированные EconomyTx refs; PostgreSQL integration smoke остаётся обязательным перед production.
 
 ### Проверка
 
-- timezone Europe/Moscow;
+- timezone Europe/Moscow (в коде фиксированный UTC+03:00 MSK, чтобы API-образ не зависел от tzdata);
 - повторный запуск scheduler;
 - дата на границе суток;
 - отсутствие матчей;
@@ -386,20 +394,20 @@ POST /api/v1/arena/matches/{id}/forfeit
 
 ---
 
-## Фаза 9. Server-side MP4 replay
+## Фаза 9. Server-side MP4 replay — базовый срез реализован ✅
 
 **Цель:** публиковать полный ролик лучшего боя дня без блокировки Arena.
 
 ### Задачи
 
-- хранить авторитетный replay только кандидатов/победителя;
-- выбрать бой в 22:50 по зрелищности;
-- очередь рендера;
-- серверный 2D/псевдо-3D renderer;
-- музыка, звуки, финальный титр;
-- MP4 до 90 секунд;
-- публикация через бота;
-- fallback: дайджест не ждёт рендер.
+- хранить авторитетные события кандидатов/победителя — **готово** через `ArenaMatchEvent`;
+- выбрать бой по детерминированной зрелищности — **готово** через daily nominations;
+- очередь рендера — **отложена**: текущий best-effort job рендерит один ролик вне DB-транзакции;
+- серверный 2D/neon renderer — **готово** без Pillow/OpenCV, raw RGB → системный ffmpeg;
+- музыка, звуки, финальный титр — **отложено**;
+- MP4 до безопасного лимита Telegram — **готово**: максимум 90 событий, 12 FPS, ограничение 49 MB;
+- публикация через бота — **готово** с временным файлом и гарантированной очисткой;
+- fallback: дайджест не ждёт рендер — **готово**: текст отправляется отдельно, ошибка replay не отменяет сводку.
 
 ### Проверка
 

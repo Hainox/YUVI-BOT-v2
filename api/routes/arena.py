@@ -24,6 +24,7 @@ from api.arena_rate_limit import enforce_arena_rate_limit
 from bot.services import arena_service
 from bot.services import balance_events
 from bot.services import economy_service
+from common.arena.config import ArenaConfig
 from common.arena.schemas import FighterType
 from common.db.session import SessionLocal
 from common.models.arena import ArenaFighterProgress
@@ -32,6 +33,7 @@ from common.models.arena import ArenaProfile
 from common.models.user import User
 
 router = APIRouter()
+_ARENA_CONFIG = ArenaConfig()
 
 
 class CreateArenaMatchBody(BaseModel):
@@ -101,12 +103,12 @@ def _display_name(user: User | None, user_id: int | None = None) -> str | None:
 
 def _viewer_match(
     match: ArenaMatch, viewer_id: int
-) -> tuple[int, int, str, str | None, int, int]:
+) -> tuple[int, int | None, str, str | None, int, int]:
     """Return viewer/opponent fields for a completed match."""
     if viewer_id == match.creator_id:
         return (
             match.creator_id,
-            match.opponent_id or 0,
+            match.opponent_id,
             match.creator_fighter,
             match.opponent_fighter,
             match.creator_bet,
@@ -139,8 +141,26 @@ def _serialize_arena_match_result(
     lost = match.loser_id == viewer_id
     is_draw = match.match_result == "draw"
     technical_loss = match.match_result == "technical_loss" and lost
-    rating_delta = 0 if is_draw else 25 if won else -30 if technical_loss else -20 if lost else 0
-    xp_gained = 0 if technical_loss else 150 if won else 100 if is_draw or lost else 0
+    rating_delta = (
+        0
+        if is_draw
+        else _ARENA_CONFIG.win_rating_delta
+        if won
+        else -_ARENA_CONFIG.technical_loss_rating_delta
+        if technical_loss
+        else -_ARENA_CONFIG.loss_rating_delta
+        if lost
+        else 0
+    )
+    xp_gained = (
+        0
+        if technical_loss
+        else _ARENA_CONFIG.base_match_xp + _ARENA_CONFIG.win_bonus_xp
+        if won
+        else _ARENA_CONFIG.base_match_xp
+        if is_draw or lost
+        else 0
+    )
     user_refund = viewer_bet if match.settlement_status == "refunded" else 0
     user_payout = match.payout_amount if won and match.settlement_status == "paid" else 0
     return {
@@ -191,7 +211,7 @@ async def get_arena_profile(auth: AuthContext = Depends(require_membership)) -> 
             ]
     return {
         "user_id": auth.user_id,
-        "rating": profile.rating if profile is not None else 1000,
+        "rating": profile.rating if profile is not None else _ARENA_CONFIG.initial_rating,
         "total_matches": profile.total_matches if profile is not None else 0,
         "wins": profile.wins if profile is not None else 0,
         "losses": profile.losses if profile is not None else 0,
@@ -305,7 +325,7 @@ async def get_arena_match_result(
             if not isinstance(runtime_state, dict) or not runtime_state.get("terminal"):
                 raise HTTPException(status_code=409, detail="Матч ещё не завершён")
             try:
-                await arena_service.settle_match(
+                match = await arena_service.settle_match(
                     session, match.chat_id, match.id, runtime_state
                 )
             except arena_service.ArenaServiceError:

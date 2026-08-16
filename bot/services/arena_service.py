@@ -344,32 +344,36 @@ async def expire_due_matches(
         .where(
             *(conditions + ([ArenaMatch.chat_id == chat_id] if chat_id is not None else []))
         )
-        .with_for_update(skip_locked=True)
+        # ``expire_match`` acquires the row lock again immediately before
+        # moving money. Do not hold a batch lock here: each successful expiry
+        # commits its own transaction, which would release all locks from this
+        # scan and expire the remaining ORM instances mid-loop.
         .limit(limit)
     )
-    candidates = list(result.scalars().all())
+    candidates = [
+        (candidate.id, candidate.chat_id, candidate.status, candidate.expires_at, candidate.accept_deadline)
+        for candidate in result.scalars().all()
+    ]
     accepting_result = await session.execute(
         select(ArenaMatch)
         .where(
             ArenaMatch.status == "accepting",
             *([ArenaMatch.chat_id == chat_id] if chat_id is not None else []),
         )
-        .with_for_update(skip_locked=True)
         .limit(limit)
     )
-    candidates.extend(accepting_result.scalars().all())
+    candidates.extend(
+        (candidate.id, candidate.chat_id, candidate.status, candidate.expires_at, candidate.accept_deadline)
+        for candidate in accepting_result.scalars().all()
+    )
 
     expired: list[ArenaMatch] = []
-    for candidate in candidates:
-        deadline = (
-            candidate.expires_at
-            if candidate.status == "waiting"
-            else candidate.accept_deadline
-        )
+    for match_id, candidate_chat_id, candidate_status, expires_at, accept_deadline in candidates:
+        deadline = expires_at if candidate_status == "waiting" else accept_deadline
         if deadline is None or current_time < _now(deadline):
             continue
         try:
-            expired.append(await expire_match(session, candidate.chat_id, candidate.id, now=current_time))
+            expired.append(await expire_match(session, candidate_chat_id, match_id, now=current_time))
         except MatchConflict:
             # Another worker may have accepted or settled the row after the
             # candidate scan; it is safe to skip it on this scheduler tick.

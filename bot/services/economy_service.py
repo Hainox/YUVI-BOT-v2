@@ -341,17 +341,23 @@ async def pay_from_bank(
     два `_log_tx` (банк user_id=None amount=-paid, игрок amount=+paid) — в
     ОДНОМ SAVEPOINT (та же форма, что `credit`/`debit`). Не коммитит —
     транзакцию завершает вызывающий."""
+    if amount <= 0:
+        return 0
+
+    # Keep the global lock order user_balance -> chat_bank. The previous
+    # implementation locked ChatBank first and then created/locked UserBalance,
+    # which could deadlock against transfer_with_fee and Arena settlement.
+    await _get_or_create_balance(session, chat_id, user_id)
     bank_balance = (
         await session.execute(
             select(ChatBank.balance).where(ChatBank.chat_id == chat_id).with_for_update()
         )
     ).scalar_one_or_none() or 0
 
-    paid = min(amount, bank_balance) if amount > 0 else 0
+    paid = min(amount, bank_balance)
     if paid <= 0:
         return 0
 
-    await _get_or_create_balance(session, chat_id, user_id)
     try:
         async with session.begin_nested():
             await session.execute(
