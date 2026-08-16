@@ -19,6 +19,9 @@ htmlcov/
 # GSD planning docs — local-only, contains private reference-repo analysis
 .planning/
 
+# Freebuff desktop app local state (thread DBs, project ids) — tool metadata, not source
+.freebuff/
+
 # Local dev-only image for running DB-touching commands inside the docker
 # network on Windows hosts where Docker Desktop's host<->container asyncpg
 # connections are unreliable (see 01-01-SUMMARY.md "Issues Encountered")
