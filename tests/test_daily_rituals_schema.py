@@ -2,7 +2,7 @@
 (фикстура `session` из tests/conftest.py — транзакция-на-тест).
 
 Доказывает:
-- все 3 новые таблицы (daily_picks/active_titles/twin_opt_ins) реально
+- ежедневные таблицы (daily_picks/active_titles) реально
   существуют после `alembic upgrade head`;
 - daily_stats принимает 4 новые колонки (insert + select);
 - daily_picks идемпотентен по (chat_id, kind, day_msk) — UNIQUE отвергает
@@ -11,7 +11,6 @@
   частичный UNIQUE(chat_id, user_id) WHERE status='active' реально отвергает
   вторую active-строку того же user_id, но пропускает несколько
   suspended/expired строк (D-10);
-- twin_opt_ins уникален по (chat_id, user_id) (TWIN-02).
 """
 
 from __future__ import annotations
@@ -20,7 +19,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
-_EXPECTED_TABLES = {"daily_picks", "active_titles", "twin_opt_ins"}
+_EXPECTED_TABLES = {"daily_picks", "active_titles"}
 
 
 @pytest.mark.asyncio
@@ -129,26 +128,3 @@ async def test_active_title_allows_multiple_non_active_rows_per_user(session) ->
         text("SELECT count(*) FROM active_titles WHERE chat_id = -900504 AND user_id = 900504")
     )
     assert result.scalar_one() == 2
-
-
-@pytest.mark.asyncio
-async def test_twin_opt_in_unique_per_chat_user(session) -> None:
-    await session.execute(text("INSERT INTO users (id, first_name) VALUES (900505, 'Тест5')"))
-    await session.flush()
-
-    await session.execute(
-        text(
-            "INSERT INTO twin_opt_ins (chat_id, user_id, status) "
-            "VALUES (-900505, 900505, 'active')"
-        )
-    )
-    await session.flush()
-
-    with pytest.raises(IntegrityError):
-        await session.execute(
-            text(
-                "INSERT INTO twin_opt_ins (chat_id, user_id, status) "
-                "VALUES (-900505, 900505, 'paused')"
-            )
-        )
-        await session.flush()

@@ -100,8 +100,8 @@ graph LR
 
 ### 🤖 AI-команды (LLM через OpenCode Go)
 
-`/summary` `/digest` `/card` `/ask` `/topics` `/phrase` `/joke` `/mood` `/toxic`
-Ответы стримятся прямо в сообщение. Админ: `/model_show` `/model_list` `/model_set` `/model_health` `/prompt_show` `/prompt_set` `/prompt_reset`
+`/summary` `/digest` `/card` `/q` `/topics` `/phrase` `/joke` `/mood` `/toxic`
+AI-ответы приходят прямо в чат. Админ: `/model_show` `/model_list` `/model_set` `/model_health` `/prompt_show` `/prompt_set` `/prompt_reset` `/explicit_on` `/explicit_off`
 
 ### 💰 Экономика «ювики»
 
@@ -140,12 +140,9 @@ SvelteKit-приложение с живым обновлением баланс
 - `/victim` — «жертва дня»: приз из банка чата + временный тег + экономический дебафф на 24ч
 - `/tag_rent` `/tag_cancel` — аренда видимого Telegram-тега (custom_title) за ювики
 
-### 🧬 AI-двойник (Twin)
+`/q` — поиск по истории чата с переформулировками, локальными BGE-M3-эмбеддингами, гибридным поиском и соседними сообщениями.
 
-`/twin` `/twin_optin` `/twin_optout` `/twin_pause` `/twin_resume` `/twin_status`
-AI-двойник участника на основе поведенческого профиля, работает только по явному согласию (opt-in).
-
-**Дневной двойник**: раз в день из уже согласившихся на `/twin` случайно выбирается один участник — весь день бот изредка постит от его имени реплики в чате и отвечает на реплаи к своим постам (в том числе на упоминания). Согласие переиспользуется от обычного `/twin`, отдельного opt-in нет; `/twin_pause` в середине дня сразу останавливает посты от имени этого человека. Админ: `/daily_twin_off` `/daily_twin_on`.
+Свободный текст обрабатывается только если бот упомянут через `@` или пользователь отвечает на сообщение бота. Остальные ответы бота по-прежнему требуют явной команды.
 
 ### 🛍️ Соцмагазин
 
@@ -211,6 +208,8 @@ Yuvi Bot v2/
    cp .env.example .env
    ```
 2. Заполни обязательные поля в `.env` (минимум): `BOT_TOKEN`, `CHAT_ID`, `DATABASE_URL`, `REDIS_URL`, `OPENAI_API_KEY`.
+
+Старые Windows-переменные `OPENAI_API_KEY` и `OPENAI_BASE_URL` удалены на уровне пользователя, поэтому локальный запуск берёт значения из `.env`.
 3. Подними стек:
    ```bash
    docker compose up --build

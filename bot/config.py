@@ -5,6 +5,13 @@ from pydantic_settings import BaseSettings
 from pydantic_settings import SettingsConfigDict
 
 
+EXPLICIT_LANGUAGE_INSTRUCTION = (
+    "Explicit-выражения, мат и грубая лексика разрешены, если они уместны "
+    "вопросу и манере этого чата. Не заменяй их эвфемизмами и не морализируй, "
+    "но не превращай ответ в травлю или дискриминацию."
+)
+
+
 class Settings(BaseSettings):
     # extra="ignore": .env — общий файл для этого приложения И docker-compose/
     # nginx (DOMAIN/CERTBOT_EMAIL/COMPOSE_PROFILES/STAGING — только для HTTPS-
@@ -28,14 +35,11 @@ class Settings(BaseSettings):
     # --- AI provider (OpenCode Go, OpenAI-совместимый) ---
     openai_base_url: str = Field(default="https://opencode.ai/zen/go/v1", alias="OPENAI_BASE_URL")
     openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
-    # Полный бенч 2026-08-16 (scripts/model_bench.py, новый ключ, 26 моделей
-    # каталога, 4 формы: twin/topics/joke/complaints, max_tokens=1500 как в
-    # боте). gpt-5.6-luna — победитель ВО ВСЕХ случаях: самая быстрая и без
-    # единого сбоя (twin 1.3с, topics 2.1с, joke 2.6с, complaints 5.2с).
-    # openai_model используется ТОЛЬКО twin_service (build_twin_reply/
-    # build_twin_reaction).
+    # Внутренний бенч проекта 2026-08-16 показал gpt-5.6-luna лучшей из
+    # доступных моделей текущего OpenAI-совместимого провайдера. Это дефолт
+    # и для /q, но его можно заменить через .env или /model_set.
     openai_model: str = Field(default="gpt-5.6-luna", alias="OPENAI_MODEL")
-    # Модель для ВСЕХ остальных AI-функций (ask/card/digest/summary/topics/
+    # Модель для ВСЕХ остальных AI-функций (q/card/digest/summary/topics/
     # phrase/joke/social roast+joke_order/lurker) — строгий формат + анти-
     # инъекционная фраза. Тот же бенч 2026-08-16 (2 прогона, новый ключ):
     # gpt-5.6-luna лучшая и здесь (topics 3.0с / complaints 4.6-5.2с, 8/8),
@@ -47,7 +51,7 @@ class Settings(BaseSettings):
     # по бенчу 2026-08-16 (2 прогона × 4 формы, max_tokens=1500): 8/8 прошли
     # gpt-5.6-luna (самая быстрая), mimo-v2.5, minimax-m2.5, minimax-m2.7,
     # mimo-v2.5-pro; glm-5 добавлена последней (7/8 — один сбой на complaints,
-    # но twin/joke 2-2.9с). Исключены: grok-4.5/qwen3.5-3.8 (503 "Endpoint is
+    # но q/joke 2-2.9с). Исключены: grok-4.5/qwen3.5-3.8 (503 "Endpoint is
     # not supported" на новом ключе), kimi-k3/kimi-k2.7-code/mimo-v2-omni/
     # mimo-v2-pro/hy3-preview (400), minimax-m3 (сырой `<think>` в content),
     # kimi-k2.6 (0/4 — reasoning съедает бюджет), kimi-k2.5/hy3 (2/4, 1/4),
@@ -68,11 +72,23 @@ class Settings(BaseSettings):
         ),
         alias="AI_DEFAULT_SYSTEM_PROMPT",
     )
+    # Мат, грубые и explicit-выражения разрешены в AI-ответах, когда они
+    # уместны контексту и стилю чата; это не отменяет запрет на травлю и
+    # дискриминацию по защищённым признакам.
+    ai_allow_explicit_language: bool = Field(default=True, alias="AI_ALLOW_EXPLICIT_LANGUAGE")
     ai_max_input_tokens: int = Field(default=8000, alias="AI_MAX_INPUT_TOKENS")
     ai_max_output_tokens: int = Field(default=1500, alias="AI_MAX_OUTPUT_TOKENS")
     ai_max_chars_per_message: int = Field(default=4096, alias="AI_MAX_CHARS_PER_MESSAGE")
     ai_max_custom_prompt_chars: int = Field(default=200, alias="AI_MAX_CUSTOM_PROMPT_CHARS")
-    ai_ask_max_query_chars: int = Field(default=300, alias="AI_ASK_MAX_QUERY_CHARS")
+    ai_q_model: str = Field(default="gpt-5.6-luna", alias="AI_Q_MODEL")
+    ai_q_max_query_chars: int = Field(default=300, alias="AI_Q_MAX_QUERY_CHARS")
+    ai_q_rewrite_variants: int = Field(default=3, alias="AI_Q_REWRITE_VARIANTS")
+    ai_q_per_query_k: int = Field(default=15, alias="AI_Q_PER_QUERY_K")
+    ai_q_top_k: int = Field(default=25, alias="AI_Q_TOP_K")
+    ai_q_neighbors_each_side: int = Field(default=2, alias="AI_Q_NEIGHBORS_EACH_SIDE")
+    ai_q_max_message_chars: int = Field(default=300, alias="AI_Q_MAX_MESSAGE_CHARS")
+    ai_q_max_context_chars: int = Field(default=14000, alias="AI_Q_MAX_CONTEXT_CHARS")
+    ai_q_rewrite_max_output_tokens: int = Field(default=300, alias="AI_Q_REWRITE_MAX_OUTPUT_TOKENS")
     ai_call_timeout_sec: int = Field(default=60, alias="AI_CALL_TIMEOUT_SEC")
     ai_stream_edit_interval_sec: float = Field(default=2.5, alias="AI_STREAM_EDIT_INTERVAL_SEC")
 
@@ -81,7 +97,7 @@ class Settings(BaseSettings):
     nlp_sentiment_model: str = Field(default="seara/rubert-tiny2-russian-sentiment", alias="NLP_SENTIMENT_MODEL")
     nlp_toxicity_model: str = Field(default="cointegrated/rubert-tiny-toxicity", alias="NLP_TOXICITY_MODEL")
     nlp_embedding_model: str = Field(
-        default="sentence-transformers/paraphrase-multilingual-mpnet-base-v2",
+        default="BAAI/bge-m3",
         alias="NLP_EMBEDDING_MODEL",
     )
 
@@ -170,7 +186,7 @@ class Settings(BaseSettings):
     # канала, иначе getChatMember вернёт ошибку для ЛЮБОГО user_id.
     havd_channel_username: str = Field(default="@havdaily", alias="HAVD_CHANNEL_USERNAME")
 
-    # --- Ежедневные ритуалы, теги и Twin (фаза 5) ---
+    # --- Ежедневные ритуалы и теги (фаза 5) ---
     tag_rent_per_day: int = Field(default=500, alias="TAG_RENT_PER_DAY")
     tag_rent_allowed_days: str = Field(default="1,3,7", alias="TAG_RENT_ALLOWED_DAYS")
     title_max: int = Field(default=16, alias="TITLE_MAX")
@@ -178,26 +194,6 @@ class Settings(BaseSettings):
     # в .env перед деплоем; никогда не хардкодятся (D-11).
     steam_api_key: str = Field(default="", alias="STEAM_API_KEY")
     steam_id64: str = Field(default="", alias="STEAM_ID64")
-    # 300 (изначальный дефолт) регулярно бил в TWIN_FALLBACK_TEXT в проде:
-    # reasoning-модели каталога Go (DeepSeek/GLM и т.п.) считают "мысли" перед
-    # ответом ИЗ ТОГО ЖЕ бюджета max_tokens, что и сам ответ (ai_client.py
-    # AIEmptyResponseError) — на 300 токенах reasoning нередко съедал весь
-    # бюджет ДО первого символа content, /twin отвечал заглушкой почти
-    # каждый раз. Подняли до ai_max_output_tokens (1500) — той же величины,
-    # что уже используют все остальные короткие AI-фичи (joke/phrase/lurker/
-    # roast), без единой подобной жалобы.
-    twin_max_output_tokens: int = Field(default=1500, alias="TWIN_MAX_OUTPUT_TOKENS")
-
-    # --- Дневной двойник (TWIN-03, запрошено 2026-07-27) ---
-    # Целевое среднее число проактивных постов за день (в "рабочее" окно
-    # 9:00-23:00 МСК, см. bot/services/daily_twin_service.py) — вероятностный
-    # тик, не фиксированное расписание, поэтому это именно ЦЕЛЬ, а не точное
-    # число. daily_twin_max_posts — жёсткий потолок на статистический выброс.
-    # 18/25 (было 5/8, поднято по запросу 2026-07-27 — "штук 15-20 постов") —
-    # ~32% шанс на тик (18/56 тиков окна) вместо ~9%.
-    daily_twin_posts_target: int = Field(default=18, alias="DAILY_TWIN_POSTS_TARGET")
-    daily_twin_max_posts: int = Field(default=25, alias="DAILY_TWIN_MAX_POSTS")
-
     # --- Платные фичи, донаты, медиа, фидбек (фаза 6) ---
     # Соцмагазин (D-01/A1): цены изначально сбалансированы относительно
     # casino_min_bet=10, жертва дня=228, старт экономики=1000 (сам старт

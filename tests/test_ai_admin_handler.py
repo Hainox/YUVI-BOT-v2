@@ -1,7 +1,4 @@
-"""Тест /model_show (bot/handlers/ai_admin.py) — с 2026-07-28 показывает ДВЕ
-модели раздельно (twin vs остальные AI-функции, см. bot/config.py::
-ai_structured_model), а не одну общую строку, как раньше. Мок Message —
-форма test_owner_handler.py."""
+"""Тест /model_show после удаления отдельной модели двойника."""
 
 from __future__ import annotations
 
@@ -20,7 +17,7 @@ def _fake_message(chat_id: int):
 
 
 @pytest.mark.asyncio
-async def test_model_show_reports_twin_and_structured_separately(session):
+async def test_model_show_reports_current_ai_model(session):
     settings_service.clear_cache()
     chat_id = -100930100
 
@@ -29,8 +26,8 @@ async def test_model_show_reports_twin_and_structured_separately(session):
 
     message.answer.assert_awaited_once()
     text = message.answer.await_args.args[0]
-    assert settings.openai_model in text
     assert settings.ai_structured_model in text
+    assert "двойник" not in text.lower()
 
 
 @pytest.mark.asyncio
@@ -47,4 +44,4 @@ async def test_model_show_reflects_shared_override_in_both_lines(session):
     await ai_admin_handlers.model_show_command(message, session)
 
     text = message.answer.await_args.args[0]
-    assert text.count("deepseek-v4-pro") == 2
+    assert text.count("deepseek-v4-pro") == 1

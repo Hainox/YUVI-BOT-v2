@@ -39,7 +39,8 @@ async def test_default_when_absent(session):
         session, chat_id, settings_service.KEY_PROMPT, default="дефолтный промпт"
     )
 
-    assert value == "дефолтный промпт"
+    assert value.startswith("дефолтный промпт")
+    assert "Explicit-выражения" in value
 
 
 @pytest.mark.asyncio
@@ -113,7 +114,8 @@ async def test_get_active_prompt_falls_back_to_env_default(session):
 
     value = await settings_service.get_active_prompt(session, chat_id)
 
-    assert value == settings.ai_default_system_prompt
+    assert value.startswith(settings.ai_default_system_prompt)
+    assert "Explicit-выражения" in value
 
 
 @pytest.mark.asyncio

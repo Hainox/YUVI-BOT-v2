@@ -41,7 +41,7 @@ export class ApiError extends Error {
 const REQUEST_TIMEOUT_MS = 15000;
 export const STREAM_CONNECT_TIMEOUT_MS = 10000;
 
-// Найдено 2026-07-28: /api/v1/ai/* (topics/phrase/joke/ask/card/digest/
+// Найдено 2026-07-28: /api/v1/ai/* (topics/phrase/joke/q/card/digest/
 // summary) реально зовут внешнюю LLM (bot/services/ai_client.py,
 // AI_CALL_TIMEOUT_SEC=60 на бэкенде) — 15с общего дефолта клиент обрывал
 // запрос "timeout" ДО того, как сервер вообще успевал ответить (даже успешным

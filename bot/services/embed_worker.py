@@ -1,8 +1,8 @@
-"""Фоновый воркер эмбеддингов сообщений (для гибридного поиска /ask, /topics).
+"""Фоновый воркер эмбеддингов сообщений (для гибридного поиска /q, /topics).
 
-run_once(session) — SELECT сообщений без строки в message_embeddings (LEFT
+run_once(session) — SELECT сообщений без строки в message_embeddings_bge (LEFT
 JOIN ... WHERE message_id IS NULL) с непустым текстом, LIMIT 200; шлёт тексты
-в nlp_client.embed_batch, апсертит результат в message_embeddings через
+в nlp_client.embed_batch, апсертит результат в message_embeddings_bge через
 ON CONFLICT DO NOTHING по message_id (T-02-12 — идемпотентно, повторный тик
 не пересчитывает уже посчитанные эмбеддинги).
 

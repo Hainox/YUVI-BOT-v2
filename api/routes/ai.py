@@ -1,6 +1,6 @@
-"""GET/POST /api/v1/ai/* — thin routes over ask_service/card_service/
+"""GET/POST /api/v1/ai/* — thin routes over q_service/card_service/
 digest_service/summary_service/topics_service/phrase_service/joke_service so
-the AI/NLP chat commands (bot/handlers/ai_ask.py, ai_card.py, ai_digest.py,
+the AI/NLP chat commands (bot/handlers/ai_q.py, ai_card.py, ai_digest.py,
 ai_summary.py, ai_topics.py) also have a Mini App screen (hub-parity
 request).
 
@@ -8,14 +8,14 @@ Streaming (summary_service.stream_summary) is collected server-side into one
 string rather than streamed to the Mini App: the bot's stream_into_message
 exists to edit a single Telegram message in place as chunks arrive (Telegram
 API constraint), which doesn't apply here — the miniapp waits for the request
-like every other apiFetch call, same simplification twin_service.build_twin_reply
+like every other apiFetch call, same simplification q_service.answer
 and card_service.build_portrait already make for their own ai_client.stream()
 calls (join the chunks, return one string).
 
 Every route wraps its service call in a broad except, matching the "handler
 must tell the user something went wrong, not fail silently" convention used
 by every one of these commands' chat handlers (ai_card.py, ai_digest.py,
-ai_topics.py, ask_service's own caller) — surfaced here as a 502 with a
+ai_topics.py, q_service's own caller) — surfaced here as a 502 with a
 friendly detail string instead of a chat reply.
 """
 
@@ -33,7 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from api.deps import AuthContext
 from api.deps import require_membership
 from bot.config import settings
-from bot.services import ask_service
+from bot.services import q_service
 from bot.services import card_service
 from bot.services import digest_service
 from bot.services import joke_service
@@ -54,20 +54,20 @@ async def _display_name(session: AsyncSession, user_id: int) -> str:
     return name or str(user_id)
 
 
-class AskBody(BaseModel):
+class QBody(BaseModel):
     question: str
 
 
-@router.post("/api/v1/ai/ask")
-async def post_ai_ask(body: AskBody, auth: AuthContext = Depends(require_membership)) -> dict:
-    question = body.question.strip()[: settings.ai_ask_max_query_chars]
+@router.post("/api/v1/ai/q")
+async def post_ai_q(body: QBody, auth: AuthContext = Depends(require_membership)) -> dict:
+    question = body.question.strip()[: settings.ai_q_max_query_chars]
     if not question:
         raise HTTPException(status_code=400, detail="question is required")
     async with SessionLocal() as session:
         try:
-            answer = await ask_service.answer(session, auth.chat_id, question)
+            answer = await q_service.answer(session, auth.chat_id, question)
         except Exception:  # noqa: BLE001 - см. модульный докстринг
-            logger.exception("ask_service.answer упал для chat_id=%s", auth.chat_id)
+            logger.exception("q_service.answer упал для chat_id=%s", auth.chat_id)
             raise HTTPException(status_code=502, detail="Не удалось найти ответ — попробуйте позже.")
     return {"answer": answer}
 

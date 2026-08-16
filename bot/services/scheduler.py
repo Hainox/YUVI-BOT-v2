@@ -32,11 +32,7 @@ victim_service.register_daily_autopost (запрошено пользовате�
 раньше /victim срабатывал только вручную), и мемный автопост про
 «наблюдателей» чата (lurker_daily_roast, cron 12:00 МСК, LURKER-01,
 косметический — без денег/титулов/состояния) через
-lurker_service.register_daily_roast (запрошено пользователем 2026-07-27), и
-вероятностный тик "дневного двойника" (daily_twin_tick, interval 15м, окно
-9:00-23:00 МСК, TWIN-03) через daily_twin_service.register_daily_twin_tick
-(запрошено пользователем 2026-07-27) — interval, а не cron, потому что нужно
-несколько попыток поста за день, а не одна точка времени), и visibility-
+lurker_service.register_daily_roast (запрошено пользователем 2026-07-27), и visibility-
 алерт зависших claimed-листингов биржи ювиков (exchange_stuck_alert,
 interval 60м, найдено ревью 2026-08-05) через
 exchange_service.register_stuck_alert — НЕ таймаут, двигающий деньги (бот
@@ -104,7 +100,6 @@ def setup_jobs(bot: Bot) -> None:
     from bot.services import awards_service
     from bot.services import casino_service
     from bot.services import clicker_service
-    from bot.services import daily_twin_service
     from bot.services import digest_service
     from bot.services import embed_worker
     from bot.services import exchange_service
@@ -128,7 +123,6 @@ def setup_jobs(bot: Bot) -> None:
     lottery_service.register_daily_reset(scheduler, bot)
     victim_service.register_daily_autopost(scheduler, bot)
     lurker_service.register_daily_roast(scheduler, bot)
-    daily_twin_service.register_daily_twin_tick(scheduler, bot)
     exchange_service.register_stuck_alert(scheduler, bot)
     arena_service.register_expiry_job(scheduler)
     arena_runtime_worker.register_runtime_tick(scheduler)

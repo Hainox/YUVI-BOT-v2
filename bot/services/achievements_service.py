@@ -35,7 +35,6 @@ from common.models.clicker_farm import ClickerFarm
 from common.models.duel import Duel
 from common.models.economy_tx import EconomyTx
 from common.models.gacha_collection import GachaCollection
-from common.models.twin_opt_in import TwinOptIn
 
 
 @dataclass(frozen=True)
@@ -73,13 +72,6 @@ ACHIEVEMENTS: tuple[AchievementDef, ...] = (
     ),
     AchievementDef("exchange10", "Биржевик", "Выставь 10 лотов на бирже.", 150, 3),
     AchievementDef("market5", "Оракул", "Создай 5 рынков предсказаний.", 150, 3),
-    AchievementDef(
-        "twin_active",
-        "Раздвоение личности",
-        "Подключи AI-двойника через /twin_optin (или онбординг в мини-аппе).",
-        100,
-        3,
-    ),
 )
 
 
@@ -144,14 +136,6 @@ async def _progress(session: AsyncSession, chat_id: int, user_id: int) -> dict[s
     ).first()
     farm_level_max = max(farm_row.tap_level, farm_row.auto_level) if farm_row is not None else 0
 
-    twin_status = (
-        await session.execute(
-            select(TwinOptIn.status).where(
-                TwinOptIn.chat_id == chat_id, TwinOptIn.user_id == user_id
-            )
-        )
-    ).scalar_one_or_none()
-
     return {
         "streak7": streak >= 7,
         "messages1000": user_stats["total_messages"] >= 1000,
@@ -164,7 +148,6 @@ async def _progress(session: AsyncSession, chat_id: int, user_id: int) -> dict[s
         "farmlvl30": farm_level_max >= 30,
         "exchange10": exchange_count >= 10,
         "market5": market_count >= 5,
-        "twin_active": twin_status == "active",
     }
 
 
