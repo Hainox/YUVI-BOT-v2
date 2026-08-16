@@ -28,59 +28,32 @@ class Settings(BaseSettings):
     # --- AI provider (OpenCode Go, OpenAI-совместимый) ---
     openai_base_url: str = Field(default="https://opencode.ai/zen/go/v1", alias="OPENAI_BASE_URL")
     openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
-    # Дефолт — kimi-k2.6 (выбор владельца бота 2026-07-27 по итогам диагностики
-    # реальным /twin-промптом через bot.services.ai_client на живом ключе:
-    # живой ответ за 6.0с, адекватное русское звучание — glm-5.1 был быстрее
-    # формально, 2.3с, но выбрали kimi-k2.6 по качеству/стилю ответа).
-    #
-    # ВАЖНО (найдено 2026-07-28 живым инцидентом в проде): kimi-k2.6 отлично
-    # тянет ЭТОТ конкретный промпт (свободная реплика-мимикрия персоны, без
-    # строгого формата и без анти-инъекционной фразы), но систематически падает
-    # AIEmptyResponseError на промптах со строгими инструкциями формата +
-    # анти-инъекционной фразой (topics/phrase/joke — см. ai_structured_model
-    # ниже). Поэтому openai_model с этого момента используется ТОЛЬКО
-    # twin_service (build_twin_reply/build_twin_reaction) — единственное
-    # место, для которого её реально выбирали и где она реально работает.
-    openai_model: str = Field(default="kimi-k2.6", alias="OPENAI_MODEL")
+    # Полный бенч 2026-08-16 (scripts/model_bench.py, новый ключ, 26 моделей
+    # каталога, 4 формы: twin/topics/joke/complaints, max_tokens=1500 как в
+    # боте). gpt-5.6-luna — победитель ВО ВСЕХ случаях: самая быстрая и без
+    # единого сбоя (twin 1.3с, topics 2.1с, joke 2.6с, complaints 5.2с).
+    # openai_model используется ТОЛЬКО twin_service (build_twin_reply/
+    # build_twin_reaction).
+    openai_model: str = Field(default="gpt-5.6-luna", alias="OPENAI_MODEL")
     # Модель для ВСЕХ остальных AI-функций (ask/card/digest/summary/topics/
-    # phrase/joke/social roast+joke_order/lurker) — все они используют
-    # settings_service.get_active_prompt (или похожий строгий системный
-    # промпт) + анти-инъекционную фразу, тот же паттерн, на котором kimi-k2.6
-    # ловит AIEmptyResponseError.
-    #
-    # ВАЖНО (найдено 2026-07-28, тем же вечером): glm-5.1 (прошлый дефолт —
-    # прошла ВСЕ три формы topics/phrase/joke в первом прогоне model_bench2.py)
-    # сама упала AIEmptyResponseError на более сложной реальной задаче —
-    # group-by-topic анализ 315 шумных сообщений чата (chat_complaints_report.py,
-    # разовый диагностический скрипт). Расширенный прогон model_bench3.py по
-    # 10 моделям каталога Go (найдены в свежей документации opencode.ai/docs/ru/go)
-    # на ВСЕХ ЧЕТЫРЁХ формах (topics/phrase/joke + та самая сложная "complaints")
-    # показал: grok-4.5 — ЕДИНСТВЕННАЯ модель с 4/4 без единого сбоя, при этом
-    # быстрая (6.8-22.8с, комфортно ниже ai_call_timeout_sec=60/
-    # AI_REQUEST_TIMEOUT_MS=65с миниаппа). mimo-v2.5/mimo-v2.5-pro/minimax-m2.7
-    # тоже прошли 4/4 (чуть медленнее на complaints, 25-31с) — см.
-    # ai_available_models ниже, добавлены как проверенные альтернативы.
-    ai_structured_model: str = Field(default="grok-4.5", alias="AI_STRUCTURED_MODEL")
-    # Тот же (первый) прогон вскрыл: kimi-k2/minimax-m2/qwen-3 — мёртвые ID
-    # каталога (401 "Model ... is not supported", не медленные — реально не
-    # существуют под этими именами), заменены на актуальные kimi-k2.6/
-    # qwen3.6-plus. glm-5.2 и minimax-m3 исключены совсем — glm-5.2 упал
-    # AIEmptyResponseError на этом же промпте (reasoning съедает весь
-    # max_tokens), minimax-m3 вернул сырой английский `<think>...` ПРЯМО в
-    # content (не через отдельное reasoning-поле, как остальные) — тихо
-    # "успешный" ответ, который на деле сломан и утёк бы в чат как есть
-    # (подтвердилось СНОВА во втором прогоне model_bench3.py — та же болезнь).
-    #
-    # Второй прогон (model_bench3.py, 2026-07-28) добавил: grok-4.5, mimo-v2.5,
-    # mimo-v2.5-pro, minimax-m2.7 — все 4/4 на всех формах. НЕ добавлены:
-    # qwen3.7-max/qwen3.7-plus (тоже 4/4, но 34-74с — на сложных промптах
-    # реально рискуют упереться в таймаут), hy3 (2/4, ненадёжна), kimi-k3 и
-    # kimi-k2.7-code (мёртвые ID на нашем тарифе Go — 400 Bad Request сразу,
-    # не reasoning-сбой; k2.7-code вдобавок узкоспециализирована под код).
+    # phrase/joke/social roast+joke_order/lurker) — строгий формат + анти-
+    # инъекционная фраза. Тот же бенч 2026-08-16: gpt-5.6-luna лучшая и здесь
+    # (строгие формы topics 2.1с / complaints 5.2с), поэтому она же стоит в
+    # structured. Запасные с полным проходом 4/4: mimo-v2.5 (complaints 7.3с),
+    # deepseek-v4-flash (10.2с), minimax-m2.7 (15.4с).
+    ai_structured_model: str = Field(default="gpt-5.6-luna", alias="AI_STRUCTURED_MODEL")
+    # Каталог гейтвея для fallback и /model_list, в порядке производительности.
+    # Только модели, прошедшие 2026-08-16 все 4 формы без think-утечки/503/400:
+    # gpt-5.6-luna, mimo-v2.5, deepseek-v4-flash, minimax-m2.7, minimax-m2.5,
+    # mimo-v2.5-pro. Исключены: grok-4.5/qwen* (503 unavailable), kimi-k3/
+    # kimi-k2.7-code/mimo-v2-omni/mimo-v2-pro/hy3-preview (400), minimax-m3
+    # (сырой `<think>` в content), kimi-k2.5/kimi-k2.6/hy3 (reasoning-only),
+    # deepseek-v4-pro/glm-5/glm-5.1/glm-5.2/glm-5.3 (reasoning-only на сложной
+    # complaints-форме).
     ai_available_models: str = Field(
         default=(
-            "deepseek-v4-flash,deepseek-v4-pro,glm-5.1,grok-4.5,kimi-k2.6,"
-            "mimo-v2.5,mimo-v2.5-pro,minimax-m2.7,qwen3.6-plus"
+            "gpt-5.6-luna,mimo-v2.5,deepseek-v4-flash,"
+            "minimax-m2.7,minimax-m2.5,mimo-v2.5-pro"
         ),
         alias="AI_AVAILABLE_MODELS",
     )

@@ -261,7 +261,15 @@ class ArenaDailyAward(Base):
             "user_id",
             name="uq_arena_daily_awards_recipient",
         ),
+        UniqueConstraint(
+            "chat_id", "award_date", "award_key", name="uq_arena_daily_awards_category"
+        ),
         CheckConstraint("reward_amount >= 0", name="ck_arena_daily_awards_reward_nonneg"),
+        CheckConstraint(
+            "settlement_status IN ('nominated', 'pending', 'partial', 'paid', 'failed')",
+            name="ck_arena_daily_awards_settlement_status",
+        ),
+        CheckConstraint("paid_amount >= 0 AND paid_amount <= reward_amount", name="ck_arena_daily_awards_paid_amount_range"),
         UniqueConstraint("fund_ledger_key", name="uq_arena_daily_awards_fund_key"),
     )
 
@@ -272,6 +280,11 @@ class ArenaDailyAward(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     reward_amount: Mapped[int] = mapped_column(BigInteger, nullable=False)
     fund_ledger_key: Mapped[str] = mapped_column(String(120), nullable=False)
+    settlement_status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="nominated"
+    )
+    paid_amount: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
+    payment_source: Mapped[str | None] = mapped_column(String(16), nullable=True)
     details: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     awarded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -290,7 +303,15 @@ class ArenaWeeklyAward(Base):
             "user_id",
             name="uq_arena_weekly_awards_recipient",
         ),
+        UniqueConstraint(
+            "chat_id", "week_start", "award_key", name="uq_arena_weekly_awards_category"
+        ),
         CheckConstraint("reward_amount >= 0", name="ck_arena_weekly_awards_reward_nonneg"),
+        CheckConstraint(
+            "settlement_status IN ('nominated', 'pending', 'partial', 'paid', 'failed')",
+            name="ck_arena_weekly_awards_settlement_status",
+        ),
+        CheckConstraint("paid_amount >= 0 AND paid_amount <= reward_amount", name="ck_arena_weekly_awards_paid_amount_range"),
         UniqueConstraint("fund_ledger_key", name="uq_arena_weekly_awards_fund_key"),
     )
 
@@ -301,9 +322,45 @@ class ArenaWeeklyAward(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     reward_amount: Mapped[int] = mapped_column(BigInteger, nullable=False)
     fund_ledger_key: Mapped[str] = mapped_column(String(120), nullable=False)
+    settlement_status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="nominated"
+    )
+    paid_amount: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
+    payment_source: Mapped[str | None] = mapped_column(String(16), nullable=True)
     details: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     awarded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class ArenaDigestPublication(Base):
+    """Идемпотентный статус ежедневной публикации Arena-дайджеста."""
+
+    __tablename__ = "arena_digest_publications"
+    __table_args__ = (
+        UniqueConstraint(
+            "chat_id", "digest_date", name="uq_arena_digest_publications_chat_date"
+        ),
+        CheckConstraint(
+            "replay_status IN ('pending', 'sent', 'skipped', 'failed')",
+            name="ck_arena_digest_publications_replay_status",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    digest_date: Mapped[date] = mapped_column(Date, nullable=False)
+    best_match_id: Mapped[int | None] = mapped_column(
+        ForeignKey("arena_matches.id", ondelete="SET NULL"), nullable=True
+    )
+    text_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    replay_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    replay_status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="pending")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
 
 

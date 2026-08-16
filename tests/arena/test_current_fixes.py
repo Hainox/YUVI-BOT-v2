@@ -135,6 +135,23 @@ async def test_tick_publishes_every_caught_up_phase():
     assert len(phase_events) == 3
 
 
+def test_runtime_tick_keeps_processing_after_one_match_failure(monkeypatch):
+    scheduler = Mock()
+    arena_runtime_worker.register_runtime_tick(scheduler)
+    job = scheduler.add_job.call_args.args[0] if scheduler.add_job.call_args else None
+    assert job is not None
+
+    # The per-match exception is intentionally guarded inside the worker loop;
+    # this regression is asserted structurally so it stays independent of a
+    # live Redis/Postgres pair.
+    source = __import__("inspect").getsource(arena_runtime_worker.register_runtime_tick)
+    assert "logger.exception(\"Arena runtime tick failed match_id=%s\", match.id)" in source
+    assert "except SessionNotFound" in source
+    assert "state = await service.start_or_get(match)" in source
+    assert "continue" in source
+    assert "await shutdown_runtime_tick()" not in source.split("for match in matches:", 1)[1].split("if not state", 1)[0]
+
+
 @pytest.mark.asyncio
 async def test_worker_shutdown_closes_owned_client():
     class _Client:

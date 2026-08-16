@@ -116,7 +116,11 @@
 	let bet = $state(10);
 	let spinning = $state(false);
 	let grid = $state<string[][]>(_placeholderGrid());
-	let reelStrips = $state<string[][]>(_stripsFromGrid(grid));
+	// Keep the initial strip independent from the reactive grid. The strips are
+	// deliberately mutated during the cosmetic spin/replay animation, so this
+	// avoids a stale local-state capture warning without turning them into a
+	// derived value that would fight those animation updates.
+	let reelStrips = $state<string[][]>(_stripsFromGrid(_placeholderGrid()));
 	let wins = $state<SlotWin[]>([]);
 	let freespins = $state(0);
 	let scatterCount = $state(0);
