@@ -37,23 +37,26 @@ class Settings(BaseSettings):
     openai_model: str = Field(default="gpt-5.6-luna", alias="OPENAI_MODEL")
     # Модель для ВСЕХ остальных AI-функций (ask/card/digest/summary/topics/
     # phrase/joke/social roast+joke_order/lurker) — строгий формат + анти-
-    # инъекционная фраза. Тот же бенч 2026-08-16: gpt-5.6-luna лучшая и здесь
-    # (строгие формы topics 2.1с / complaints 5.2с), поэтому она же стоит в
-    # structured. Запасные с полным проходом 4/4: mimo-v2.5 (complaints 7.3с),
-    # deepseek-v4-flash (10.2с), minimax-m2.7 (15.4с).
+    # инъекционная фраза. Тот же бенч 2026-08-16 (2 прогона, новый ключ):
+    # gpt-5.6-luna лучшая и здесь (topics 3.0с / complaints 4.6-5.2с, 8/8),
+    # поэтому она же стоит в structured. Запасные с полным проходом 4/4
+    # (2 прогона): mimo-v2.5 (complaints 5.9-7.6с), minimax-m2.5 (9.1-15.9с),
+    # minimax-m2.7 (12.3-12.6с) — подробности docs/ai-model-bench-2026-08-16.md.
     ai_structured_model: str = Field(default="gpt-5.6-luna", alias="AI_STRUCTURED_MODEL")
-    # Каталог гейтвея для fallback и /model_list, в порядке производительности.
-    # Только модели, прошедшие 2026-08-16 все 4 формы без think-утечки/503/400:
-    # gpt-5.6-luna, mimo-v2.5, deepseek-v4-flash, minimax-m2.7, minimax-m2.5,
-    # mimo-v2.5-pro. Исключены: grok-4.5/qwen* (503 unavailable), kimi-k3/
-    # kimi-k2.7-code/mimo-v2-omni/mimo-v2-pro/hy3-preview (400), minimax-m3
-    # (сырой `<think>` в content), kimi-k2.5/kimi-k2.6/hy3 (reasoning-only),
-    # deepseek-v4-pro/glm-5/glm-5.1/glm-5.2/glm-5.3 (reasoning-only на сложной
-    # complaints-форме).
+    # Каталог гейтвея для fallback и /model_list, в порядке производительности
+    # по бенчу 2026-08-16 (2 прогона × 4 формы, max_tokens=1500): 8/8 прошли
+    # gpt-5.6-luna (самая быстрая), mimo-v2.5, minimax-m2.5, minimax-m2.7,
+    # mimo-v2.5-pro; glm-5 добавлена последней (7/8 — один сбой на complaints,
+    # но twin/joke 2-2.9с). Исключены: grok-4.5/qwen3.5-3.8 (503 "Endpoint is
+    # not supported" на новом ключе), kimi-k3/kimi-k2.7-code/mimo-v2-omni/
+    # mimo-v2-pro/hy3-preview (400), minimax-m3 (сырой `<think>` в content),
+    # kimi-k2.6 (0/4 — reasoning съедает бюджет), kimi-k2.5/hy3 (2/4, 1/4),
+    # deepseek-v4-flash (3/4), deepseek-v4-pro/glm-5.1/glm-5.2/glm-5.3 (2/4,
+    # 3/4, 3/4, 4/4 но 13-21с — медленные).
     ai_available_models: str = Field(
         default=(
-            "gpt-5.6-luna,mimo-v2.5,deepseek-v4-flash,"
-            "minimax-m2.7,minimax-m2.5,mimo-v2.5-pro"
+            "gpt-5.6-luna,mimo-v2.5,minimax-m2.5,"
+            "minimax-m2.7,mimo-v2.5-pro,glm-5"
         ),
         alias="AI_AVAILABLE_MODELS",
     )
