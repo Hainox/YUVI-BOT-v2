@@ -478,6 +478,10 @@ class ArenaSessionService:
             "opponent_damage": outcome.opponent_damage,
             "player_counter": outcome.player_counter,
             "opponent_counter": outcome.opponent_counter,
+            "player_special": outcome.player_special,
+            "opponent_special": outcome.opponent_special,
+            "player_hp": outcome.state.player.hp,
+            "opponent_hp": outcome.state.opponent.hp,
         }
         state.setdefault("outcome_history", []).append(state["last_outcome"])
         state["outcome_history"] = state["outcome_history"][-120:]

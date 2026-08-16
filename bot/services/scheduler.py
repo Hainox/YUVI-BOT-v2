@@ -51,12 +51,15 @@ exchange_service.register_stuck_alert — НЕ таймаут, двигающи�
 
 from __future__ import annotations
 
-from zoneinfo import ZoneInfo
+from datetime import timedelta
+from datetime import timezone
 
 from aiogram import Bot
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-MSK = ZoneInfo("Europe/Moscow")
+# Moscow uses a fixed UTC+03:00 offset; keeping this explicit avoids making
+# scheduler import depend on an optional tzdata package in the API image.
+MSK = timezone(timedelta(hours=3), "MSK")
 
 _scheduler: AsyncIOScheduler | None = None
 
@@ -92,6 +95,10 @@ def setup_jobs(bot: Bot) -> None:
     эти модули появились в более поздних планах, чем изначальный (пустой)
     setup_jobs плана 01.
     """
+    from bot.services import arena_award_service
+    from bot.services import arena_awards_service
+    from bot.services import arena_daily_awards_service
+    from bot.services import arena_digest_service
     from bot.services import arena_runtime_worker
     from bot.services import arena_service
     from bot.services import awards_service
@@ -125,6 +132,10 @@ def setup_jobs(bot: Bot) -> None:
     exchange_service.register_stuck_alert(scheduler, bot)
     arena_service.register_expiry_job(scheduler)
     arena_runtime_worker.register_runtime_tick(scheduler)
+    arena_awards_service.register_weekly_snapshot(scheduler)
+    arena_daily_awards_service.register_daily_nomination(scheduler)
+    arena_award_service.register_pending_award_settlement(scheduler)
+    arena_digest_service.register_daily_digest(scheduler, bot)
 
     async def _digest_job() -> None:
         await digest_service.run_daily_digest(bot)
