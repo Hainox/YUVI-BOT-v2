@@ -54,16 +54,19 @@ async def test_get_active_model_falls_back_to_env_default(session):
 
 @pytest.mark.asyncio
 async def test_get_active_model_uses_explicit_default_when_no_override(session):
-    """default=... (найдено 2026-07-28: kimi-k2.6, дефолт openai_model,
-    систематически падает AIEmptyResponseError на строгих промптах — ask/
-    card/digest/итд передают default=settings.ai_structured_model) должен
-    победить settings.openai_model, когда нет override в БД."""
+    """default=... должен победить settings.openai_model, когда нет override
+    в БД. Обновлено 2026-08-16: после бенча gpt-5.6-luna ai_structured_model
+    и openai_model стали ОДНИМ дефолтом (bot/config.py), поэтому передаём
+    ЯВНЫЙ литерал, отличный от openai_model, и проверяем, что фолбэк взял
+    именно его (прежний вариант с default=settings.ai_structured_model
+    рушился на assert value != settings.openai_model)."""
     settings_service.clear_cache()
     chat_id = -100666
+    explicit_default = "test-explicit-model"
 
-    value = await settings_service.get_active_model(session, chat_id, default=settings.ai_structured_model)
+    value = await settings_service.get_active_model(session, chat_id, default=explicit_default)
 
-    assert value == settings.ai_structured_model
+    assert value == explicit_default
     assert value != settings.openai_model
 
 
