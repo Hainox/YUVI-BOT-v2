@@ -39,8 +39,7 @@ async def test_default_when_absent(session):
         session, chat_id, settings_service.KEY_PROMPT, default="дефолтный промпт"
     )
 
-    assert value.startswith("дефолтный промпт")
-    assert "Explicit-выражения" in value
+    assert value == "дефолтный промпт"
 
 
 @pytest.mark.asyncio
