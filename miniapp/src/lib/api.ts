@@ -39,7 +39,6 @@ export class ApiError extends Error {
 // timeoutMs) в любом случае (заброшенный fetch-промис просто утилизируется
 // сборщиком мусора позже).
 const REQUEST_TIMEOUT_MS = 15000;
-export const STREAM_CONNECT_TIMEOUT_MS = 10000;
 
 // Найдено 2026-07-28: /api/v1/ai/* (topics/phrase/joke/q/card/digest/
 // summary) реально зовут внешнюю LLM (bot/services/ai_client.py,
@@ -112,52 +111,4 @@ export const AI_REQUEST_TIMEOUT_MS = 65000;export async function apiFetch<T>(
 	if (typeof maybeBalance === 'number') applyBalanceUpdate(maybeBalance);
 
 	return data;
-}
-
-/**
- * Authenticated streaming request for Arena runtime SSE. Native EventSource
- * cannot send X-Telegram-Init-Data, so Arena uses fetch + ReadableStream and
- * keeps initData in the header rather than exposing it in proxy URLs.
- */
-export async function apiStream(path: string, init?: RequestInit): Promise<Response> {
-	const url = new URL(path, window.location.origin);
-	if (chatId !== null) url.searchParams.set('chat_id', String(chatId));
-	const controller = new AbortController();
-	const externalSignal = init?.signal;
-	const forwardAbort = () => controller.abort();
-	if (externalSignal?.aborted) controller.abort();
-	else externalSignal?.addEventListener('abort', forwardAbort, { once: true });
-	const timeoutId = setTimeout(() => controller.abort(), STREAM_CONNECT_TIMEOUT_MS);
-	const timeoutPromise = new Promise<never>((_, reject) => {
-		setTimeout(() => reject(new ApiError(0, 'timeout')), STREAM_CONNECT_TIMEOUT_MS);
-	});
-	try {
-		const response = await Promise.race([
-			fetch(url.toString(), {
-				...init,
-				signal: controller.signal,
-				headers: {
-					...init?.headers,
-					'X-Telegram-Init-Data': initData
-				}
-			}),
-			timeoutPromise
-		]);
-		if (!response.ok) {
-			let detail = '';
-			try {
-				detail = (await response.clone().json())?.detail ?? '';
-			} catch {
-				// Fall back to status text for non-JSON responses.
-			}
-			throw new ApiError(response.status, detail || response.statusText || `api_error_${response.status}`);
-		}
-		return response;
-	} catch (err) {
-		if (err instanceof DOMException && err.name === 'AbortError') throw new ApiError(0, 'timeout');
-		throw err;
-	} finally {
-		clearTimeout(timeoutId);
-		externalSignal?.removeEventListener('abort', forwardAbort);
-	}
 }

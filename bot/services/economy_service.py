@@ -346,7 +346,8 @@ async def pay_from_bank(
 
     # Keep the global lock order user_balance -> chat_bank. The previous
     # implementation locked ChatBank first and then created/locked UserBalance,
-    # which could deadlock against transfer_with_fee and Arena settlement.
+    # which could deadlock against transfer_with_fee and other concurrent
+    # bank-touching settlement paths.
     await _get_or_create_balance(session, chat_id, user_id)
     bank_balance = (
         await session.execute(

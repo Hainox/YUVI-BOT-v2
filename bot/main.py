@@ -16,7 +16,6 @@ from bot.middleware.db_session import DbSessionMiddleware
 from bot.services import profanity_service
 from bot.services.commands_service import setup_bot_commands
 from bot.services.pinned_menu_service import ensure_pinned_menu
-from bot.services.arena_runtime_worker import shutdown_runtime_tick
 from bot.services.scheduler import get_scheduler
 from bot.services.scheduler import setup_jobs
 from common.db.session import SessionLocal
@@ -94,7 +93,6 @@ async def run() -> None:
             ],
         )
     finally:
-        await shutdown_runtime_tick()
         await bot.session.close()
 
 
