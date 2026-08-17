@@ -163,6 +163,15 @@ async def stream(
 # этого же гейтвея, ретраить их бессмысленно и это спрятало бы реальный баг
 # вызывающего кода (например, некорректно собранные messages) под видом
 # "проблемы с моделью".
+#
+# UnicodeEncodeError (найдено живым инцидентом в проде 2026-08-17): SDK
+# openai-python иногда роняет `_build_headers -> httpx.Headers(...)` именно
+# для Responses-API-моделей (_RESPONSES_MODELS) — воспроизвести локально не
+# удалось при полностью идентичном коде/версиях пакетов/ключе/конкуренции,
+# похоже на проблему в SDK или гейтвее, специфичную для рантайма прода.
+# Смена модели уводит вызов на chat.completions (другой код-путь в stream()),
+# который этой проблемы не имеет — прагматичный обход, а не объяснение
+# причины. _failure_counts/`/model_health` покажут, если это продолжится.
 _FALLBACK_TRIGGERS: tuple[type[Exception], ...] = (
     AIEmptyResponseError,
     openai.APITimeoutError,
@@ -170,6 +179,7 @@ _FALLBACK_TRIGGERS: tuple[type[Exception], ...] = (
     openai.RateLimitError,
     openai.InternalServerError,
     openai.NotFoundError,
+    UnicodeEncodeError,
 )
 
 _failure_counts: Counter[str] = Counter()

@@ -161,6 +161,31 @@ async def test_falls_back_on_transient_network_and_status_errors(monkeypatch, ma
     assert ai_client.get_failure_counts() == {"model-a": 1}
 
 
+@pytest.mark.asyncio
+async def test_falls_back_on_unicode_encode_error(monkeypatch):
+    """Regression for a live prod incident 2026-08-17: the openai SDK's own
+    request-header construction (_build_headers -> httpx.Headers(...)) can
+    raise UnicodeEncodeError for Responses-API models (_RESPONSES_MODELS),
+    before any network call happens — reproducible in prod, not locally,
+    with identical code/package versions/key. Falling back to the next
+    model routes through chat.completions instead (a different code path
+    in stream()), sidestepping it without needing the exact root cause."""
+    monkeypatch.setattr(settings, "ai_available_models", "gpt-5.6-luna,model-b")
+    error = UnicodeEncodeError("ascii", "текст", 0, 4, "ordinal not in range(128)")
+    monkeypatch.setattr(
+        ai_client,
+        "stream",
+        _make_stream({"gpt-5.6-luna": error, "model-b": ["выжил"]}),
+    )
+
+    result = await ai_client.complete_with_fallback(
+        [{"role": "user", "content": "?"}], primary_model="gpt-5.6-luna", max_tokens=100
+    )
+
+    assert result == "выжил"
+    assert ai_client.get_failure_counts() == {"gpt-5.6-luna": 1}
+
+
 # --- НЕ fallback-триггеры: авторизация/валидация запроса ---------------------
 
 
