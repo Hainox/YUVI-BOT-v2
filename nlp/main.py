@@ -41,4 +41,4 @@ async def classify_batch(request: BatchRequest) -> dict[str, list[dict]]:
 
 @app.post("/embed/batch")
 async def embed_batch(request: BatchRequest) -> dict[str, list[list[float]]]:
-    return {"embeddings": embed_texts(request.texts)}
+    return {"embeddings": await embed_texts(request.texts)}

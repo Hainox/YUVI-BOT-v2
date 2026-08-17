@@ -32,7 +32,7 @@ from common.models.message_embedding import MessageEmbedding
 
 logger = logging.getLogger(__name__)
 
-_BATCH_SIZE = 200
+_BATCH_SIZE = 32
 _JOB_ID = "embed_pending"
 
 
@@ -74,12 +74,19 @@ async def run_once(session: AsyncSession) -> int:
     if not rows:
         return 0
 
-    texts = [row.text for row in rows]
+    filtered_rows = [
+        row for row in rows
+        if isinstance(row.text, str) and row.text.strip()
+    ]
+    if not filtered_rows:
+        return 0
+
+    texts = [row.text.strip()[:4096] for row in filtered_rows]
     embeddings = await nlp_client.embed_batch(texts)
 
     values = [
         {"message_id": row.id, "chat_id": row.chat_id, "embedding": embedding}
-        for row, embedding in zip(rows, embeddings)
+        for row, embedding in zip(filtered_rows, embeddings)
     ]
     insert_stmt = pg_insert(MessageEmbedding).values(values)
     insert_stmt = insert_stmt.on_conflict_do_nothing(index_elements=["message_id"])
