@@ -33,6 +33,14 @@ from common.models.arena import ArenaProfile
 from common.models.user import User
 
 router = APIRouter()
+
+# Same defaults arena_service uses for the real settlement math (that module's
+# own `_CONFIG`) — instantiated separately here because this router only ever
+# *displays* already-applied results, it must never move money. Reading from
+# ArenaConfig instead of hardcoding literals keeps this display path from
+# silently drifting out of sync with the real payout/rating/XP rules if they
+# are ever retuned (FIGHTING_SPEC.md 15: "изменение правил только через
+# код/конфигурацию").
 _ARENA_CONFIG = ArenaConfig()
 
 
@@ -206,7 +214,17 @@ async def get_arena_profile(auth: AuthContext = Depends(require_membership)) -> 
                 )
             ).scalars().all()
             progress = [
-                {"fighter": row.fighter_type, "xp": row.xp, "level": row.level, "cosmetics": row.cosmetics}
+                {
+                    "fighter": row.fighter_type,
+                    "xp": row.xp,
+                    "level": row.level,
+                    "cosmetics": row.cosmetics,
+                    "xp_to_next_level": (
+                        None
+                        if row.level >= _ARENA_CONFIG.max_fighter_level
+                        else arena_service._xp_threshold(row.level)
+                    ),
+                }
                 for row in rows
             ]
     return {

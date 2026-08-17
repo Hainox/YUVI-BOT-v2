@@ -84,13 +84,27 @@ async def _stream_responses(
         if message.get("role") == "system"
     )
     input_messages = [message for message in messages if message.get("role") != "system"]
-    response = await client.responses.create(
-        model=model,
-        instructions=instructions or None,
-        input=input_messages,
-        stream=True,
-        max_output_tokens=max_tokens,
-    )
+    try:
+        response = await client.responses.create(
+            model=model,
+            instructions=instructions or None,
+            input=input_messages,
+            stream=True,
+            max_output_tokens=max_tokens,
+        )
+    except UnicodeEncodeError:
+        # Diagnostic-only: a UnicodeEncodeError this early means the OpenAI SDK
+        # rejected something while building the HTTP request (headers must be
+        # ASCII), before any network call happened — not an API-side failure.
+        # repr() is always ASCII-safe, so this is guaranteed not to raise itself.
+        logger.exception(
+            "ai_client._stream_responses: UnicodeEncodeError building the request. "
+            "model=%r instructions=%r input=%r",
+            model,
+            instructions,
+            input_messages,
+        )
+        raise
     saw_content = False
     saw_reasoning_only = False
     async for event in response:

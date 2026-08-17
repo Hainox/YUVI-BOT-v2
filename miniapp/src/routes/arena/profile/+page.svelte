@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import { apiFetch, ApiError } from '$lib/api';
 
-	type FighterProgress = { fighter: string; xp: number; level: number };
+	type FighterProgress = { fighter: string; xp: number; level: number; xp_to_next_level: number | null };
 	type Profile = { rating: number; total_matches: number; wins: number; losses: number; draws: number; technical_wins: number; technical_losses: number; knockouts: number; fighters: FighterProgress[] };
 	const names: Record<string, string> = { tank: 'Танк', assassin: 'Ассасин', berserker: 'Берсерк', tactician: 'Тактик' };
 	let profile = $state<Profile | null>(null);
@@ -20,7 +20,7 @@
 	<div class="profile-head"><div><div class="kicker">YUVI ARENA · ПРОФИЛЬ</div><h1>Твой бойцовский след</h1><p>Рейтинг общий, прогресс — у каждого бойца свой</p></div><div class="profile-mark">VS</div></div>
 	{#if loading}<div class="screen-loading"><span>загрузка профиля…</span></div>
 	{:else if error}<div class="profile-error" role="alert">{error}</div>
-	{:else if profile}<div class="rating-card"><span>ARENA RATING</span><strong>{profile.rating}</strong><small>стартовый рейтинг — 1000</small></div><div class="stats-grid"><div><strong>{profile.total_matches}</strong><span>боёв</span></div><div><strong>{profile.wins}</strong><span>побед</span></div><div><strong>{profile.losses}</strong><span>поражений</span></div><div><strong>{profile.draws}</strong><span>ничьих</span></div></div><section class="profile-panel"><h2>Прогресс бойцов</h2>{#if profile.fighters.length === 0}<div class="profile-empty">XP появится после первого завершённого боя.</div>{:else}<div class="fighter-list">{#each profile.fighters as fighter (fighter.fighter)}<div class="fighter-progress"><div><strong>{names[fighter.fighter] ?? fighter.fighter}</strong><span>уровень {fighter.level}</span></div><div class="xp-row"><span style={`width: ${Math.min(100, (fighter.xp / (500 + (fighter.level - 1) * 100)) * 100)}%`}></span></div><small>{fighter.xp} XP до следующего уровня</small></div>{/each}</div>{/if}</section>{/if}
+	{:else if profile}<div class="rating-card"><span>ARENA RATING</span><strong>{profile.rating}</strong><small>стартовый рейтинг — 1000</small></div><div class="stats-grid"><div><strong>{profile.total_matches}</strong><span>боёв</span></div><div><strong>{profile.wins}</strong><span>побед</span></div><div><strong>{profile.losses}</strong><span>поражений</span></div><div><strong>{profile.draws}</strong><span>ничьих</span></div></div><section class="profile-panel"><h2>Прогресс бойцов</h2>{#if profile.fighters.length === 0}<div class="profile-empty">XP появится после первого завершённого боя.</div>{:else}<div class="fighter-list">{#each profile.fighters as fighter (fighter.fighter)}<div class="fighter-progress"><div><strong>{names[fighter.fighter] ?? fighter.fighter}</strong><span>уровень {fighter.level}</span></div>{#if fighter.xp_to_next_level === null}<div class="xp-row"><span style="width: 100%"></span></div><small>максимальный уровень</small>{:else}<div class="xp-row"><span style={`width: ${Math.min(100, (fighter.xp / fighter.xp_to_next_level) * 100)}%`}></span></div><small>{fighter.xp} / {fighter.xp_to_next_level} XP до следующего уровня</small>{/if}</div>{/each}</div>{/if}</section>{/if}
 </div>
 
 <style>

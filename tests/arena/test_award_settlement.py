@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import inspect
 from pathlib import Path
-from types import SimpleNamespace
 
 from bot.services import arena_award_service
 from common.models.arena import ArenaDailyAward
