@@ -53,6 +53,9 @@ client = AsyncOpenAI(
     max_retries=2,
 )
 
+# OpenCode Go exposes these models through the Responses API.
+_RESPONSES_MODELS = frozenset({"gpt-5.6-luna", "grok-4.5"})
+
 
 class AIEmptyResponseError(RuntimeError):
     """Модель прислала только reasoning-дельты, ни одного символа content
@@ -69,21 +72,53 @@ class AIEmptyResponseError(RuntimeError):
         super().__init__(f"Модель {model} вернула только reasoning без ответа — попробуйте другую модель")
 
 
+async def _stream_responses(
+    messages: list[dict],
+    model: str,
+    max_tokens: int,
+) -> AsyncIterator[str]:
+    """Stream OpenCode Go models served through the Responses API."""
+    instructions = "\n\n".join(
+        str(message["content"])
+        for message in messages
+        if message.get("role") == "system"
+    )
+    input_messages = [message for message in messages if message.get("role") != "system"]
+    response = await client.responses.create(
+        model=model,
+        instructions=instructions or None,
+        input=input_messages,
+        stream=True,
+        max_output_tokens=max_tokens,
+    )
+    saw_content = False
+    saw_reasoning_only = False
+    async for event in response:
+        event_type = getattr(event, "type", "")
+        if event_type == "response.output_text.delta":
+            delta = getattr(event, "delta", "")
+            if delta:
+                saw_content = True
+                yield delta
+        elif "reasoning" in event_type:
+            saw_reasoning_only = True
+    if not saw_content and saw_reasoning_only:
+        raise AIEmptyResponseError(model)
+
+
 async def stream(
     messages: list[dict],
     model: str,
     max_tokens: int,
 ) -> AsyncIterator[str]:
-    """Стримит chat-completion от OpenCode Go, отдавая по частям только текст ответа.
+    """Stream a model through the API compatible with its OpenCode endpoint."""
+    if model in _RESPONSES_MODELS:
+        async for delta in _stream_responses(messages, model, max_tokens):
+            yield delta
+        return
 
-    Если модель прислала только reasoning-дельты и ни одного символа
-    content (модель "думала", но не ответила) — поднимаем
-    `AIEmptyResponseError` с понятным русским текстом вместо тихого возврата
-    пустой строки.
-    """
     saw_content = False
     saw_reasoning_only = False
-
     response = await client.chat.completions.create(
         model=model,
         messages=messages,

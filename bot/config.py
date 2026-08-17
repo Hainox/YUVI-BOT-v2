@@ -47,20 +47,15 @@ class Settings(BaseSettings):
     # (2 прогона): mimo-v2.5 (complaints 5.9-7.6с), minimax-m2.5 (9.1-15.9с),
     # minimax-m2.7 (12.3-12.6с) — подробности docs/ai-model-bench-2026-08-16.md.
     ai_structured_model: str = Field(default="gpt-5.6-luna", alias="AI_STRUCTURED_MODEL")
-    # Каталог гейтвея для fallback и /model_list, в порядке производительности
-    # по бенчу 2026-08-16 (2 прогона × 4 формы, max_tokens=1500): 8/8 прошли
-    # gpt-5.6-luna (самая быстрая), mimo-v2.5, minimax-m2.5, minimax-m2.7,
-    # mimo-v2.5-pro; glm-5 добавлена последней (7/8 — один сбой на complaints,
-    # но q/joke 2-2.9с). Исключены: grok-4.5/qwen3.5-3.8 (503 "Endpoint is
-    # not supported" на новом ключе), kimi-k3/kimi-k2.7-code/mimo-v2-omni/
-    # mimo-v2-pro/hy3-preview (400), minimax-m3 (сырой `<think>` в content),
-    # kimi-k2.6 (0/4 — reasoning съедает бюджет), kimi-k2.5/hy3 (2/4, 1/4),
-    # deepseek-v4-flash (3/4), deepseek-v4-pro/glm-5.1/glm-5.2/glm-5.3 (2/4,
-    # 3/4, 3/4, 4/4 но 13-21с — медленные).
+    # Каталог моделей OpenCode Go для fallback и /model_list.
+    # gpt-5.6-luna обслуживается через Responses API; остальные модели
+    # ниже выбраны из Go-моделей с OpenAI-compatible Chat Completions API.
+    # Для Zen меняется только OPENAI_BASE_URL на https://opencode.ai/zen/v1.
     ai_available_models: str = Field(
         default=(
-            "gpt-5.6-luna,mimo-v2.5,minimax-m2.5,"
-            "minimax-m2.7,mimo-v2.5-pro,glm-5"
+            "gpt-5.6-luna,mimo-v2.5,mimo-v2.5-pro,"
+            "deepseek-v4-flash,deepseek-v4-pro,"
+            "kimi-k2.7-code,kimi-k2.6,glm-5.3,glm-5.2,glm-5.1,hy3"
         ),
         alias="AI_AVAILABLE_MODELS",
     )
