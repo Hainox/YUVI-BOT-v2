@@ -44,6 +44,8 @@ jobs:
           python-version: "3.11"
       - name: Install deps
         run: pip install -r requirements.txt -r requirements-dev.txt -r api/requirements.txt
+      - name: Lint
+        run: ruff check bot api common nlp tests
       - name: Syntax check
         run: python -m compileall bot api nlp common
       - name: Run migrations

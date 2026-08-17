@@ -89,6 +89,18 @@ async def test_get_chat_member_status_fail_closed_on_non_200():
 
 
 @pytest.mark.asyncio
+async def test_get_chat_member_status_fail_closed_on_malformed_success_response():
+    client = AsyncMock()
+    response = _mock_response(200)
+    response.json.return_value = {"ok": False, "description": "bad request"}
+    client.get.return_value = response
+
+    status = await telegram_client.get_chat_member_status(client, "test-token", -100, 4)
+
+    assert status == "left"
+
+
+@pytest.mark.asyncio
 async def test_get_chat_member_status_fail_closed_on_network_error():
     client = AsyncMock()
     client.get.side_effect = OSError("network down")
@@ -173,6 +185,36 @@ def test_validate_init_data_expired_raises():
 
     with pytest.raises(InvalidInitData):
         deps.validate_init_data(init_data, _TEST_BOT_TOKEN, ttl_seconds=100)
+
+
+def test_validate_init_data_future_timestamp_raises():
+    init_data = _build_init_data(_TEST_BOT_TOKEN, auth_date=int(time.time()) + 120)
+
+    with pytest.raises(InvalidInitData):
+        deps.validate_init_data(init_data, _TEST_BOT_TOKEN, ttl_seconds=86400)
+
+
+def test_validate_init_data_malformed_timestamp_raises_instead_of_500():
+    fields = {
+        "auth_date": "not-a-timestamp",
+        "query_id": "AAABBBCCC",
+        "user": json.dumps({"id": 555, "first_name": "Тест"}),
+    }
+    data_check_string = "\n".join(f"{k}={v}" for k, v in sorted(fields.items()))
+    secret_key = hmac.new(b"WebAppData", _TEST_BOT_TOKEN.encode(), hashlib.sha256).digest()
+    fields["hash"] = hmac.new(
+        secret_key, data_check_string.encode(), hashlib.sha256
+    ).hexdigest()
+
+    with pytest.raises(InvalidInitData):
+        deps.validate_init_data(urlencode(fields), _TEST_BOT_TOKEN, ttl_seconds=86400)
+
+
+def test_validate_init_data_duplicate_fields_raise():
+    init_data = _build_init_data(_TEST_BOT_TOKEN)
+
+    with pytest.raises(InvalidInitData):
+        deps.validate_init_data(f"{init_data}&user=spoofed", _TEST_BOT_TOKEN, ttl_seconds=86400)
 
 
 def test_validate_init_data_uses_compare_digest_not_equality():

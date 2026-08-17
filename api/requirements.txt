@@ -1,8 +1,8 @@
-fastapi==0.116.1
-uvicorn[standard]==0.35.0
-pydantic-settings==2.10.1
-sqlalchemy[asyncio]==2.0.41
-asyncpg==0.30.0
+fastapi==0.141.1
+uvicorn[standard]==0.52.3
+pydantic-settings==2.15.0
+sqlalchemy[asyncio]==2.0.52
+asyncpg==0.31.0
 httpx==0.28.1
 redis==5.2.1
 # Transitive runtime dep of bot/services/casino_service.py (imported by
@@ -11,20 +11,20 @@ redis==5.2.1
 # was never caught by pytest because tests run inside yuvi-bot-dev:py311
 # (Dockerfile.dev, which already has the full root requirements.txt), not
 # against this production image. Same pin as root requirements.txt.
-APScheduler==3.11.0
+APScheduler==3.11.3
 # Transitive runtime dep of bot/services/markets_service.py (imported by
 # api/routes/markets.py, 04.2-07) -> bot/services/external_markets.py's
 # module-level `import aiohttp`. Same class of gap as APScheduler above —
 # `Dockerfile.dev`/root requirements.txt get it transitively via
-# aiogram==3.27.0 (which depends on aiohttp internally), but this
+# aiogram==3.30.0 (which depends on aiohttp internally), but this
 # production api image's minimal requirements.txt never listed it
 # directly, so it was never caught by pytest (same container as
 # APScheduler's gap) and only surfaces when this specific production image
 # is actually rebuilt/started (found during 04.2-10's live container
 # rebuild, the last plan of this phase, needed for phase-final
-# verification). Version pinned to what aiogram==3.27.0 actually resolves
+# verification). Version pinned to what aiogram==3.30.0 actually resolves
 # in the dev image (`python -c "import aiohttp; print(aiohttp.__version__)"`).
-aiohttp==3.13.5
+aiohttp==3.14.3
 # Transitive runtime dep of bot/services/ai_client.py (lazily imported by
 # api/routes/feedback.py's POST /feedback/assist, module-level `from openai
 # import AsyncOpenAI`) — same class of gap as APScheduler/aiohttp above,
@@ -51,12 +51,12 @@ emoji==2.15.0
 # process never holds an aiogram Bot instance, see api/tag_apply.py's own
 # docstring), but the full package still has to be importable for that
 # submodule import to resolve. Same pin as root requirements.txt.
-aiogram==3.27.0
-# Transitive runtime dep of bot/services/ask_service.py (module-level
+aiogram==3.30.0
+# Transitive runtime dep of bot/services/q_service.py (module-level
 # `from common.models.message_embedding import MessageEmbedding` ->
 # `from pgvector.sqlalchemy import Vector`), now reachable from the api
 # process because api/routes/ai.py (hub-parity, added 2026-07-27) imports
-# ask_service for /ai/ask. Same class of gap as every entry above — caught
+# q_service for /ai/q. Same class of gap as every entry above — caught
 # live in production (ModuleNotFoundError on container start), not by
 # pytest (yuvi-bot-dev:py311 already has the full root requirements.txt).
 # Same pin as root requirements.txt.
@@ -66,6 +66,6 @@ pgvector==0.5.0
 # api/routes/ai.py import for /ai/topics. numpy is scikit-learn's own
 # runtime dependency, pinned explicitly for the same reason as everything
 # above. Same pins as root requirements.txt.
-scikit-learn==1.7.2
-numpy==2.2.6
+scikit-learn==1.9.0
+numpy==2.4.6
 

@@ -437,7 +437,7 @@ async def test_play_slots_settles_and_is_idempotent(session, monkeypatch):
     chat_id = -100900101
     user_id = 900101
     await _ensure_user(session, user_id)
-    balance_before = await _fund(session, chat_id, user_id)
+    await _fund(session, chat_id, user_id)
     await economy_service.credit_bank(
         session, chat_id, 1_000_000, kind="test_seed", ref_id="test_slot_seed_bank"
     )

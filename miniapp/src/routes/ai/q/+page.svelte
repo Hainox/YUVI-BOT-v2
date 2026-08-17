@@ -1,6 +1,6 @@
 <script lang="ts">
-	// /ask — miniapp screen over POST /api/v1/ai/ask (hub-parity for
-	// bot/handlers/ai_ask.py). RAG search over chat history, plain text answer.
+	// /q — miniapp screen over POST /api/v1/ai/q (hub-parity for
+	// bot/handlers/ai_q.py). RAG search over chat history, plain text answer.
 	import { AI_REQUEST_TIMEOUT_MS, apiFetch, ApiError } from '$lib/api';
 
 	let question = $state('');
@@ -8,7 +8,7 @@
 	let error = $state<string | null>(null);
 	let answer = $state<string | null>(null);
 
-	async function ask() {
+	async function askQuestion() {
 		const q = question.trim();
 		if (!q || loading) return;
 		loading = true;
@@ -16,7 +16,7 @@
 		answer = null;
 		try {
 			const res = await apiFetch<{ answer: string }>(
-				'/api/v1/ai/ask',
+				'/api/v1/ai/q',
 				{
 					method: 'POST',
 					body: JSON.stringify({ question: q })
@@ -46,7 +46,7 @@
 		disabled={loading}
 	></textarea>
 
-	<button type="button" class="chip chip-all ask-cta" disabled={loading || !question.trim()} onclick={ask}>
+	<button type="button" class="chip chip-all ask-cta" disabled={loading || !question.trim()} onclick={askQuestion}>
 		{loading ? 'ищем…' : 'Спросить'}
 	</button>
 

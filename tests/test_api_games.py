@@ -56,7 +56,6 @@ from api import telegram_client
 from api.main import app
 from bot.config import settings
 from bot.services import casino_service
-from bot.services import crash_engine
 from bot.services import economy_service
 from bot.services import jackpot_service
 from bot.services import slot_engine
@@ -1327,6 +1326,15 @@ async def test_teto_slots_ignores_foreign_user_id_in_body_idor(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_jackpot_pool_get_returns_seed_for_fresh_chat(monkeypatch):
+    # Пул живёт в test-БД МЕЖДУ прогонами (compose test-профиль переиспользует
+    # volume pgdata_test, CI получает свежую БД на каждый job), а тест требует
+    # "свежий" чат с пулом ровно = seed — чистим свою строку, чтобы повторный
+    # локальный прогон не падал (найдено 2026-08-16: 2-й прогон видел pool=1003
+    # вместо 1000 из-за скима спинов прошлого прогона).
+    async with SessionLocal() as db_session:
+        await db_session.execute(delete(SlotJackpot).where(SlotJackpot.chat_id == JACKPOT_CHAT_ID))
+        await db_session.commit()
+
     monkeypatch.setattr(telegram_client, "get_chat_member_status", AsyncMock(return_value="member"))
     user_id = 300406
     await _ensure_user(user_id)

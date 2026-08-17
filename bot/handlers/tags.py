@@ -68,8 +68,7 @@ async def tag_rent_command(message: Message, session: AsyncSession, bot: Bot) ->
         # (tag_service.py) deliberately re-raises after a second conflicting
         # attempt, and any other unexpected failure from tag_rental_service/
         # tag_service was propagating uncaught here — thin handler must not
-        # fail silently (same principle as bot/handlers/twin.py::twin_command,
-        # ai_card.py::build_card_command). debit_to_bank's changes are
+        # fail silently (same principle as ai_card.py::build_card_command). debit_to_bank's changes are
         # uncommitted at this point, rolled back when the per-update session
         # closes (bot/middleware/db_session.py) - money is not actually lost.
         logger.exception(

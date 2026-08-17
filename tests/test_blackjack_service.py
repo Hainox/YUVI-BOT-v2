@@ -23,7 +23,6 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy import update
 
-from bot.config import settings
 from bot.services import blackjack_engine
 from bot.services import casino_service
 from bot.services import economy_service

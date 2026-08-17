@@ -46,7 +46,7 @@ async def _post_with_retry(
                 async with http_session.post(url, json=payload) as response:
                     response.raise_for_status()
                     return await response.json()
-        except (aiohttp.ClientConnectorError, asyncio.TimeoutError, aiohttp.ServerTimeoutError) as exc:
+        except (aiohttp.ClientConnectorError, asyncio.TimeoutError, aiohttp.ServerTimeoutError, aiohttp.ServerDisconnectedError, aiohttp.ClientOSError, aiohttp.ServerConnectionError) as exc:
             last_exc = exc
             delay = base_delay * (2**attempt)
             logger.warning(

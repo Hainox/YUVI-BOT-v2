@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import pytest
 from fastapi import HTTPException
 
-import api.routes.arena as arena_routes
+from api.routes import arena as arena_routes
 from api.routes.arena import _serialize_arena_match_result
 from common.arena.config import ArenaConfig
 from common.models.arena import ArenaMatch
@@ -46,6 +46,27 @@ def test_result_is_viewer_scoped_and_calculates_win_summary() -> None:
     assert result["refund_amount"] == 0
     assert result["rating_delta"] == 25
     assert result["xp_gained"] == 150
+
+
+def test_result_uses_shared_arena_config_for_rating_and_xp() -> None:
+    original = arena_routes._ARENA_CONFIG
+    arena_routes._ARENA_CONFIG = ArenaConfig(
+        base_match_xp=7,
+        win_bonus_xp=3,
+        win_rating_delta=11,
+        loss_rating_delta=13,
+        technical_loss_rating_delta=17,
+    )
+    try:
+        winner = _serialize_arena_match_result(_match(), viewer_id=101)
+        loser = _serialize_arena_match_result(_match(), viewer_id=202)
+    finally:
+        arena_routes._ARENA_CONFIG = original
+
+    assert winner["rating_delta"] == 11
+    assert winner["xp_gained"] == 10
+    assert loser["rating_delta"] == -13
+    assert loser["xp_gained"] == 7
 
 
 def test_result_scopes_opponent_view_without_leaking_creator_role() -> None:
@@ -138,3 +159,27 @@ def test_both_disconnected_refund_is_not_reported_as_a_loss() -> None:
     assert result["refund_amount"] == 100
     assert result["rating_delta"] == 0
     assert result["xp_gained"] == 0
+
+
+def test_cancelled_match_without_opponent_keeps_empty_opponent_fields() -> None:
+    result = _serialize_arena_match_result(
+        _match(
+            opponent_id=None,
+            opponent_fighter=None,
+            opponent_bet=None,
+            status="cancelled",
+            match_result=None,
+            result_reason="creator_cancelled",
+            winner_id=None,
+            loser_id=None,
+            settlement_status="refunded",
+            payout_amount=None,
+        ),
+        viewer_id=101,
+    )
+
+    assert result["opponent_id"] is None
+    assert result["opponent_name"] is None
+    assert result["opponent_fighter"] is None
+    assert result["opponent_bet"] == 0
+    assert result["refund_amount"] == 100

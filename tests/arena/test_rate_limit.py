@@ -7,8 +7,6 @@ os.environ.setdefault("CHAT_ID", "-700001")
 os.environ.setdefault("OWNER_ID", "1")
 os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://test:test@localhost:5432/test")
 
-from unittest.mock import AsyncMock
-
 import pytest
 from fastapi import HTTPException
 from starlette.requests import Request

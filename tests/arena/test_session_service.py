@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
-
 import pytest
 
 from bot.services.arena_session_service import ArenaSessionService

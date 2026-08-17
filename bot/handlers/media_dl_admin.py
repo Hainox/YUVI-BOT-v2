@@ -2,10 +2,10 @@
 владельца бота (2026-07-30), временно выключить именно эту фичу, не трогая
 остальной функционал бота.
 
-Та же форма, что bot/handlers/daily_twin_admin.py: персистентно через
+Та же форма, что у остальных admin-toggle хендлеров: персистентно через
 bot_settings/settings_service (та же KV, что и /model_set), переживает
 рестарт бота, эффект — на следующем же сообщении со ссылкой, без передеплоя.
-Гейт — ChatAdminFilter, тот же live-механизм, что и у /daily_twin_off.
+Гейт — ChatAdminFilter, тот же live-механизм, что и у /explicit_off.
 """
 
 from __future__ import annotations

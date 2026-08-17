@@ -1,7 +1,7 @@
 """GET/POST /api/v1/exchange* — тонкие роуты над `bot.services.exchange_service`
 (EXCHANGE-01). `user_id`/`chat_id` берутся ТОЛЬКО из `AuthContext`
 (`require_membership`) — тот же IDOR-контракт, что и остальные роуты этого
-пакета (`api/routes/twin.py`/`farm.py`/`duel.py`, T-04.2-01/02):
+пакета (`api/routes/farm.py`/`duel.py`, T-04.2-01/02):
 Pydantic-тела запросов намеренно не содержат ни `user_id`, ни `chat_id`.
 
 `GET /api/v1/exchange/mine` — дополнительный роут сверх минимального набора

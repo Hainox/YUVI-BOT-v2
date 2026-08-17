@@ -1,8 +1,8 @@
-"""Фоновый воркер эмбеддингов сообщений (для гибридного поиска /ask, /topics).
+"""Фоновый воркер эмбеддингов сообщений (для гибридного поиска /q, /topics).
 
-run_once(session) — SELECT сообщений без строки в message_embeddings (LEFT
+run_once(session) — SELECT сообщений без строки в message_embeddings_bge (LEFT
 JOIN ... WHERE message_id IS NULL) с непустым текстом, LIMIT 200; шлёт тексты
-в nlp_client.embed_batch, апсертит результат в message_embeddings через
+в nlp_client.embed_batch, апсертит результат в message_embeddings_bge через
 ON CONFLICT DO NOTHING по message_id (T-02-12 — идемпотентно, повторный тик
 не пересчитывает уже посчитанные эмбеддинги).
 
@@ -20,6 +20,7 @@ import logging
 
 from aiogram import Bot
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from sqlalchemy import func
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,8 +32,34 @@ from common.models.message_embedding import MessageEmbedding
 
 logger = logging.getLogger(__name__)
 
-_BATCH_SIZE = 200
+_BATCH_SIZE = 32
 _JOB_ID = "embed_pending"
+
+
+async def get_embed_stats(session: AsyncSession, chat_id: int) -> tuple[int, int, int]:
+    """Возвращает (embeddable, embedded, pending) для чата — прогресс пересчёта BGE-M3.
+
+    Считаем по тем же условиям, что обрабатывает run_once: сообщение готово к
+    эмбеддингу, если у него есть текст, и ещё не посчитано, если нет строки в
+    message_embeddings_bge. embeddable = embedded + pending по построению.
+    """
+    total_stmt = (
+        select(func.count(Message.id))
+        .where(Message.chat_id == chat_id, Message.text.is_not(None))
+    )
+    pending_stmt = (
+        select(func.count(Message.id))
+        .outerjoin(MessageEmbedding, MessageEmbedding.message_id == Message.id)
+        .where(
+            Message.chat_id == chat_id,
+            Message.text.is_not(None),
+            MessageEmbedding.message_id.is_(None),
+        )
+    )
+    total = (await session.execute(total_stmt)).scalar_one() or 0
+    pending = (await session.execute(pending_stmt)).scalar_one() or 0
+    embedded = total - pending
+    return total, embedded, pending
 
 
 async def run_once(session: AsyncSession) -> int:
@@ -47,12 +74,19 @@ async def run_once(session: AsyncSession) -> int:
     if not rows:
         return 0
 
-    texts = [row.text for row in rows]
+    filtered_rows = [
+        row for row in rows
+        if isinstance(row.text, str) and row.text.strip()
+    ]
+    if not filtered_rows:
+        return 0
+
+    texts = [row.text.strip()[:4096] for row in filtered_rows]
     embeddings = await nlp_client.embed_batch(texts)
 
     values = [
         {"message_id": row.id, "chat_id": row.chat_id, "embedding": embedding}
-        for row, embedding in zip(rows, embeddings)
+        for row, embedding in zip(filtered_rows, embeddings)
     ]
     insert_stmt = pg_insert(MessageEmbedding).values(values)
     insert_stmt = insert_stmt.on_conflict_do_nothing(index_elements=["message_id"])

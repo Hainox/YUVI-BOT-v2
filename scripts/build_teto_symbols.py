@@ -891,13 +891,13 @@ def normalize(
     ys, xs = np.nonzero(alpha > 0.06)
     if not len(ys):
         raise RuntimeError("пустая альфа — матирование не нашло субъекта")
-    t, b, l, r = ys.min(), ys.max() + 1, xs.min(), xs.max() + 1
+    t, b, left, right = ys.min(), ys.max() + 1, xs.min(), xs.max() + 1
 
-    sub = np.dstack([rgb, alpha * 255.0]).astype(np.uint8)[t:b, l:r]
+    sub = np.dstack([rgb, alpha * 255.0]).astype(np.uint8)[t:b, left:right]
     im = Image.fromarray(sub, "RGBA")
     sw, sh = im.size
 
-    core = float((alpha[t:b, l:r] > 0.5).sum())
+    core = float((alpha[t:b, left:right] > 0.5).sum())
     if core <= 0:
         raise RuntimeError("непрозрачное ядро пустое")
 
@@ -1063,15 +1063,15 @@ def _scrub(rgb: np.ndarray, box: tuple[int, int, int, int]) -> None:
     предварительно сглаживаются вдоль Y, иначе JPEG-шум донора тянется
     через весь бокс горизонтальными полосами.
     """
-    l, t, r, b = box
+    left_edge, t, r, b = box
     h_src = rgb.shape[0]
     t, b = max(0, t), min(h_src, b)
-    left = rgb[t:b, max(l - 4, 0):l].mean(axis=1)
+    left = rgb[t:b, max(left_edge - 4, 0):left_edge].mean(axis=1)
     right = rgb[t:b, r:r + 4].mean(axis=1)
     left = ndimage.gaussian_filter1d(left, 3.0, axis=0)
     right = ndimage.gaussian_filter1d(right, 3.0, axis=0)
-    w = np.linspace(0.0, 1.0, r - l, dtype=np.float32)[None, :, None]
-    rgb[t:b, l:r] = left[:, None, :] * (1 - w) + right[:, None, :] * w
+    w = np.linspace(0.0, 1.0, r - left_edge, dtype=np.float32)[None, :, None]
+    rgb[t:b, left_edge:r] = left[:, None, :] * (1 - w) + right[:, None, :] * w
 
 
 def build(symbol_id: str, spec: SymbolSpec) -> str:
@@ -1088,18 +1088,18 @@ def build(symbol_id: str, spec: SymbolSpec) -> str:
         _scrub(full, box)
     rgb = full
     if spec.crop:
-        l, t, r, b = spec.crop
-        rgb = rgb[t:b, l:r].copy()
+        left, t, r, b = spec.crop
+        rgb = rgb[t:b, left:r].copy()
 
     bg = _border_bg(rgb)
-    for l, t, r, b in spec.wipe:  # вотермарка/глифы → фоном ДО кейинга
-        rgb[t:b, l:r] = bg
+    for left, t, r, b in spec.wipe:  # вотермарка/глифы → фоном ДО кейинга
+        rgb[t:b, left:r] = bg
     for poly in spec.wipe_poly:
         m = Image.new("L", (rgb.shape[1], rgb.shape[0]), 0)
         ImageDraw.Draw(m).polygon(poly, fill=255)
         rgb[np.asarray(m) > 0] = bg
-    for l, t, r, b, sat_max, dist_max in spec.desat_wipe:
-        box = rgb[t:b, l:r]
+    for left, t, r, b, sat_max, dist_max in spec.desat_wipe:
+        box = rgb[t:b, left:r]
         sat = box.max(axis=2) - box.min(axis=2)
         dist = np.abs(box - bg).max(axis=2)
         box[(sat < sat_max) & (dist < dist_max)] = bg

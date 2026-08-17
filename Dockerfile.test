@@ -1,0 +1,17 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY requirements.txt /tmp/requirements.txt
+COPY requirements-dev.txt /tmp/requirements-dev.txt
+COPY api/requirements.txt /tmp/api-requirements.txt
+
+RUN pip install --no-cache-dir \
+    -r /tmp/requirements.txt \
+    -r /tmp/requirements-dev.txt \
+    -r /tmp/api-requirements.txt
+
+COPY . /app
+ENV PYTHONPATH=/app
+
+CMD ["python", "-m", "pytest", "-q"]

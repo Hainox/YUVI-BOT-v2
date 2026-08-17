@@ -17,8 +17,8 @@ from __future__ import annotations
 
 import os
 from collections.abc import AsyncGenerator
-from unittest.mock import AsyncMock
 from urllib.parse import urlparse
+from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
@@ -32,30 +32,59 @@ from sqlalchemy.ext.asyncio import create_async_engine
 # закоммитили ~125 синтетических "Тест"-пользователей и их дуэли/маркеты/
 # фидбек/economy_tx прямо в живую БД (см. cleanup-скрипт в истории чата).
 # Прод по .env.example всегда резолвит Postgres через docker-compose хост
-# `postgres` (внутренняя сеть контейнеров); localhost/127.0.0.1 — только
+# `postgres-test` (отдельная сеть/volume test-профиля); localhost/127.0.0.1 — только
 # локальная разработка и CI (.github/workflows/ci.yml). Стоп-кран ниже не
 # даёт тестам стартовать, если хост не входит в этот список.
 _SAFE_DATABASE_HOSTS = {"localhost", "127.0.0.1"}
+_ALLOWED_TEST_DB_HOSTS = {"127.0.0.1", "localhost"}
+_COMPOSE_TEST_DB_HOSTS = {"postgres-test"}
 
 
 def pytest_sessionstart(session: pytest.Session) -> None:
     database_url = os.environ.get("DATABASE_URL", "")
     host = urlparse(database_url).hostname
-    if host not in _SAFE_DATABASE_HOSTS:
-        pytest.exit(
-            f"DATABASE_URL host {host!r} не похож на локальный/CI Postgres "
-            f"(ожидались {sorted(_SAFE_DATABASE_HOSTS)}) — похоже на прод. "
-            "Часть тестов пишут в БД напрямую и не откатываются, прогон "
-            "против прода оставит там мусор (см. коммент выше). Остановлено "
-            "до первого теста.",
-            returncode=1,
-        )
+    isolated_compose_run = os.environ.get("YUVI_TEST_ISOLATED") == "1"
+    if host in _SAFE_DATABASE_HOSTS:
+        return
+    if isolated_compose_run and host in _COMPOSE_TEST_DB_HOSTS:
+        return
+    pytest.exit(
+        f"DATABASE_URL host {host!r} не похож на локальный/изолированный Postgres "
+        f"(ожидались {sorted(_SAFE_DATABASE_HOSTS)}) — похоже на прод. "
+        "Часть тестов пишут в БД напрямую и не откатываются, прогон "
+        "против прода оставит там мусор (см. коммент выше). Остановлено "
+        "до первого теста.",
+        returncode=1,
+    )
+
+
+def _assert_safe_test_database(database_url: str) -> None:
+    """Не даёт случайно направить destructive-тесты в production.
+
+    `postgres-test` разрешён только из явного Compose test-профиля, который
+    выставляет `YUVI_TEST_ISOLATED=1`; обычный запуск принимает только
+    localhost/127.0.0.1.
+    """
+    host = urlparse(database_url).hostname
+    isolated_compose_run = os.environ.get("YUVI_TEST_ISOLATED") == "1"
+    if host in _ALLOWED_TEST_DB_HOSTS:
+        return
+    if isolated_compose_run and host in _COMPOSE_TEST_DB_HOSTS:
+        return
+    pytest.exit(
+        "DATABASE_URL host %r не похож на локальный/изолированный Postgres "
+        "(ожидались %s). Установите YUVI_TEST_ISOLATED=1 только для "
+        "изолированного Compose test-профиля; прогон остановлен до первого теста."
+        % (host, sorted(_ALLOWED_TEST_DB_HOSTS)),
+        returncode=2,
+    )
 
 
 @pytest_asyncio.fixture
 async def session() -> AsyncGenerator[AsyncSession, None]:
     """Async-сессия Postgres на один тест, откатывается по завершении."""
     database_url = os.environ["DATABASE_URL"]
+    _assert_safe_test_database(database_url)
     engine = create_async_engine(database_url, pool_pre_ping=True)
 
     async with engine.connect() as connection:

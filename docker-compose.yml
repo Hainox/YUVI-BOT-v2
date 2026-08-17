@@ -28,6 +28,33 @@ services:
       timeout: 3s
       retries: 5
 
+  # Dedicated test-only data stores. They use a separate volume/network DNS
+  # name so the test profile can never write to the production Postgres/Redis.
+  postgres-test:
+    profiles: ["test"]
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: yuvi_test
+      POSTGRES_USER: yuvi
+      POSTGRES_PASSWORD: yuvi
+    volumes:
+      - pgdata_test:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U yuvi -d yuvi_test"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  redis-test:
+    profiles: ["test"]
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   migrations:
     build:
       context: .
@@ -37,6 +64,21 @@ services:
     command: alembic upgrade head
     depends_on:
       postgres:
+        condition: service_healthy
+
+  migrations-test:
+    profiles: ["test"]
+    build:
+      context: .
+      dockerfile: bot.Dockerfile
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://yuvi:yuvi@postgres-test:5432/yuvi_test
+      REDIS_URL: redis://redis-test:6379/0
+    command: alembic upgrade head
+    depends_on:
+      postgres-test:
         condition: service_healthy
 
   # Self-hosted media-download backend (MEDIA-01/02, DEPLOY-01) — внутренний
@@ -80,6 +122,34 @@ services:
       cobalt:
         condition: service_started
 
+  # Полный тестовый набор в изолированном окружении. По умолчанию сервис
+  # не запускается; используйте `docker compose --profile test run --rm --build test`.
+  # Образ содержит runtime, API и dev-зависимости, поэтому pytest не требуется
+  # устанавливать на хостовой машине.
+  test:
+    profiles: ["test"]
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    env_file:
+      - .env
+    environment:
+      PYTHONPATH: /app
+      DATABASE_URL: postgresql+asyncpg://yuvi:yuvi@postgres-test:5432/yuvi_test
+      REDIS_URL: redis://redis-test:6379/0
+      # Разрешает tests/conftest.py использовать только выделенный test-Postgres,
+      # а не production DATABASE_URL из .env.
+      YUVI_TEST_ISOLATED: "1"
+    volumes:
+      - .:/app
+    depends_on:
+      migrations-test:
+        condition: service_completed_successfully
+      redis-test:
+        condition: service_healthy
+      postgres-test:
+        condition: service_healthy
+
   api:
     build:
       context: .
@@ -94,6 +164,12 @@ services:
         condition: service_healthy
     ports:
       - "8002:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   nlp:
     build:
@@ -144,9 +220,12 @@ services:
       - ./nginx/docker-entrypoint-wrapper.sh:/docker-entrypoint-wrapper.sh:ro
     entrypoint: ["/bin/sh", "/docker-entrypoint-wrapper.sh"]
     depends_on:
-      - miniapp
-      - api
+      miniapp:
+        condition: service_started
+      api:
+        condition: service_healthy
 
 volumes:
   pgdata:
+  pgdata_test:
   nginx_https_secrets:

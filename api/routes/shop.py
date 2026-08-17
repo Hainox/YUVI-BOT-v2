@@ -1,7 +1,7 @@
 """GET/POST /api/v1/shop/* — тонкие роуты над `social_service.do_*` (SHOP-01:
 poke/hug/joke_order/roast) для соцмагазина в Mini App. `actor_id`/`chat_id` —
 ТОЛЬКО из `AuthContext` (`require_membership`), тот же IDOR-контракт, что и
-`api/routes/twin.py`/`games.py` (T-04.2-02).
+`api/routes/games.py` (T-04.2-02).
 
 `target_user_id` берётся из тела запроса — это ЛЕГИТИМНО здесь (в отличие от
 identity самого actor'а): участник миниаппа сам выбирает, кого поукать/

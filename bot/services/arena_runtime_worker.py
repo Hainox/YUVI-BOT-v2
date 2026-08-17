@@ -41,6 +41,7 @@ def register_runtime_tick(scheduler, *, interval_seconds: int = 1) -> None:
         from bot.services import balance_events
         from bot.services import economy_service
         from bot.services.arena_session_service import ArenaSessionService
+        from bot.services.arena_session_service import SessionNotFound
         from bot.services.arena_session_service import persist_runtime_state
         from common.db.session import SessionLocal
         from common.models.arena import ArenaMatch
@@ -57,11 +58,26 @@ def register_runtime_tick(scheduler, *, interval_seconds: int = 1) -> None:
             service = ArenaSessionService(_runtime_client, persist_state=persist_runtime_state)
             for match in matches:
                 try:
-                    state = await service.tick(match)
+                    try:
+                        state = await service.tick(match)
+                    except SessionNotFound:
+                        # A freshly confirmed match may not have been opened
+                        # by a client yet. The same branch also repairs a
+                        # Redis loss when the DB snapshot was unavailable at
+                        # the time the session was first created. If a
+                        # snapshot exists, start_or_get restores it; otherwise
+                        # it creates the authoritative initial state.
+                        logger.info(
+                            "Arena runtime session missing; recovering match_id=%s",
+                            match.id,
+                        )
+                        state = await service.start_or_get(match)
                 except Exception:
-                    logger.exception("Arena runtime tick failed match_id=%s; resetting Redis client", match.id)
-                    await shutdown_runtime_tick()
-                    break
+                    # A corrupt or temporarily unavailable match must not
+                    # poison the shared worker: other active matches still
+                    # need their server clock and settlement tick.
+                    logger.exception("Arena runtime tick failed match_id=%s", match.id)
+                    continue
                 if not state["terminal"]:
                     continue
                 async with SessionLocal() as settle_session:

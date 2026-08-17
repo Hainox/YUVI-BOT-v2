@@ -16,7 +16,7 @@ from common.models.message import Message
 from common.models.message_embedding import MessageEmbedding
 from common.models.user import User
 
-EMBEDDING_DIM = 768
+EMBEDDING_DIM = 1024
 
 
 async def _seed_embedded_message(
@@ -30,7 +30,7 @@ async def _seed_embedded_message(
 
 
 def _vector(seed: float) -> list[float]:
-    """Детерминированный вектор длины 768 — координата 0 выделена, остальные
+    """Детерминированный вектор длины 1024 — координата 0 выделена, остальные
     нули, чтобы KMeans разводил кластеры предсказуемо и без флейков."""
     vec = [0.0] * EMBEDDING_DIM
     vec[0] = seed

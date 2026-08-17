@@ -16,8 +16,14 @@ build/
 coverage.xml
 htmlcov/
 
+# Generated benchmark output (scripts/q_bench.py)
+scripts/q_bench_results.json
+
 # GSD planning docs — local-only, contains private reference-repo analysis
 .planning/
+
+# Freebuff desktop app local state (thread DBs, project ids) — tool metadata, not source
+.freebuff/
 
 # Local dev-only image for running DB-touching commands inside the docker
 # network on Windows hosts where Docker Desktop's host<->container asyncpg
@@ -40,3 +46,4 @@ Dockerfile.dev
 ЭЛИАНА _ КОНЦЕПТЫ/
 ЮНА КОНЦЕПТЫ/
 
+backups/

@@ -66,7 +66,16 @@ async def get_chat_member_status(
     if resp.status_code != 200:
         return "left"  # то же: транзитная ошибка Telegram API не кэшируется
 
-    status = resp.json()["result"]["status"]
+    # HTTP 200 не гарантирует успешный ответ Telegram: при ok=false или
+    # изменении схемы ответа отсутствие result не должно превращаться в 500.
+    try:
+        payload = resp.json()
+        status = payload.get("result", {}).get("status")
+    except (AttributeError, TypeError, ValueError):
+        return "left"
+    if not isinstance(status, str) or not status:
+        return "left"
+
     async with _lock:
         _cache[key] = (time.monotonic(), status)
     return status

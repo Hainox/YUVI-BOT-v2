@@ -5,6 +5,13 @@ from pydantic_settings import BaseSettings
 from pydantic_settings import SettingsConfigDict
 
 
+EXPLICIT_LANGUAGE_INSTRUCTION = (
+    "Explicit-выражения, мат и грубая лексика разрешены, если они уместны "
+    "вопросу и манере этого чата. Не заменяй их эвфемизмами и не морализируй, "
+    "но не превращай ответ в травлю или дискриминацию."
+)
+
+
 class Settings(BaseSettings):
     # extra="ignore": .env — общий файл для этого приложения И docker-compose/
     # nginx (DOMAIN/CERTBOT_EMAIL/COMPOSE_PROFILES/STAGING — только для HTTPS-
@@ -28,59 +35,27 @@ class Settings(BaseSettings):
     # --- AI provider (OpenCode Go, OpenAI-совместимый) ---
     openai_base_url: str = Field(default="https://opencode.ai/zen/go/v1", alias="OPENAI_BASE_URL")
     openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
-    # Дефолт — kimi-k2.6 (выбор владельца бота 2026-07-27 по итогам диагностики
-    # реальным /twin-промптом через bot.services.ai_client на живом ключе:
-    # живой ответ за 6.0с, адекватное русское звучание — glm-5.1 был быстрее
-    # формально, 2.3с, но выбрали kimi-k2.6 по качеству/стилю ответа).
-    #
-    # ВАЖНО (найдено 2026-07-28 живым инцидентом в проде): kimi-k2.6 отлично
-    # тянет ЭТОТ конкретный промпт (свободная реплика-мимикрия персоны, без
-    # строгого формата и без анти-инъекционной фразы), но систематически падает
-    # AIEmptyResponseError на промптах со строгими инструкциями формата +
-    # анти-инъекционной фразой (topics/phrase/joke — см. ai_structured_model
-    # ниже). Поэтому openai_model с этого момента используется ТОЛЬКО
-    # twin_service (build_twin_reply/build_twin_reaction) — единственное
-    # место, для которого её реально выбирали и где она реально работает.
-    openai_model: str = Field(default="kimi-k2.6", alias="OPENAI_MODEL")
-    # Модель для ВСЕХ остальных AI-функций (ask/card/digest/summary/topics/
-    # phrase/joke/social roast+joke_order/lurker) — все они используют
-    # settings_service.get_active_prompt (или похожий строгий системный
-    # промпт) + анти-инъекционную фразу, тот же паттерн, на котором kimi-k2.6
-    # ловит AIEmptyResponseError.
-    #
-    # ВАЖНО (найдено 2026-07-28, тем же вечером): glm-5.1 (прошлый дефолт —
-    # прошла ВСЕ три формы topics/phrase/joke в первом прогоне model_bench2.py)
-    # сама упала AIEmptyResponseError на более сложной реальной задаче —
-    # group-by-topic анализ 315 шумных сообщений чата (chat_complaints_report.py,
-    # разовый диагностический скрипт). Расширенный прогон model_bench3.py по
-    # 10 моделям каталога Go (найдены в свежей документации opencode.ai/docs/ru/go)
-    # на ВСЕХ ЧЕТЫРЁХ формах (topics/phrase/joke + та самая сложная "complaints")
-    # показал: grok-4.5 — ЕДИНСТВЕННАЯ модель с 4/4 без единого сбоя, при этом
-    # быстрая (6.8-22.8с, комфортно ниже ai_call_timeout_sec=60/
-    # AI_REQUEST_TIMEOUT_MS=65с миниаппа). mimo-v2.5/mimo-v2.5-pro/minimax-m2.7
-    # тоже прошли 4/4 (чуть медленнее на complaints, 25-31с) — см.
-    # ai_available_models ниже, добавлены как проверенные альтернативы.
-    ai_structured_model: str = Field(default="grok-4.5", alias="AI_STRUCTURED_MODEL")
-    # Тот же (первый) прогон вскрыл: kimi-k2/minimax-m2/qwen-3 — мёртвые ID
-    # каталога (401 "Model ... is not supported", не медленные — реально не
-    # существуют под этими именами), заменены на актуальные kimi-k2.6/
-    # qwen3.6-plus. glm-5.2 и minimax-m3 исключены совсем — glm-5.2 упал
-    # AIEmptyResponseError на этом же промпте (reasoning съедает весь
-    # max_tokens), minimax-m3 вернул сырой английский `<think>...` ПРЯМО в
-    # content (не через отдельное reasoning-поле, как остальные) — тихо
-    # "успешный" ответ, который на деле сломан и утёк бы в чат как есть
-    # (подтвердилось СНОВА во втором прогоне model_bench3.py — та же болезнь).
-    #
-    # Второй прогон (model_bench3.py, 2026-07-28) добавил: grok-4.5, mimo-v2.5,
-    # mimo-v2.5-pro, minimax-m2.7 — все 4/4 на всех формах. НЕ добавлены:
-    # qwen3.7-max/qwen3.7-plus (тоже 4/4, но 34-74с — на сложных промптах
-    # реально рискуют упереться в таймаут), hy3 (2/4, ненадёжна), kimi-k3 и
-    # kimi-k2.7-code (мёртвые ID на нашем тарифе Go — 400 Bad Request сразу,
-    # не reasoning-сбой; k2.7-code вдобавок узкоспециализирована под код).
+    # Внутренний бенч проекта 2026-08-16 показал gpt-5.6-luna лучшей из
+    # доступных моделей текущего OpenAI-совместимого провайдера. Это дефолт
+    # и для /q, но его можно заменить через .env или /model_set.
+    openai_model: str = Field(default="gpt-5.6-luna", alias="OPENAI_MODEL")
+    # Модель для ВСЕХ остальных AI-функций (q/card/digest/summary/topics/
+    # phrase/joke/social roast+joke_order/lurker) — строгий формат + анти-
+    # инъекционная фраза. Тот же бенч 2026-08-16 (2 прогона, новый ключ):
+    # gpt-5.6-luna лучшая и здесь (topics 3.0с / complaints 4.6-5.2с, 8/8),
+    # поэтому она же стоит в structured. Запасные с полным проходом 4/4
+    # (2 прогона): mimo-v2.5 (complaints 5.9-7.6с), minimax-m2.5 (9.1-15.9с),
+    # minimax-m2.7 (12.3-12.6с) — подробности docs/ai-model-bench-2026-08-16.md.
+    ai_structured_model: str = Field(default="gpt-5.6-luna", alias="AI_STRUCTURED_MODEL")
+    # Каталог моделей OpenCode Go для fallback и /model_list.
+    # gpt-5.6-luna обслуживается через Responses API; остальные модели
+    # ниже выбраны из Go-моделей с OpenAI-compatible Chat Completions API.
+    # Для Zen меняется только OPENAI_BASE_URL на https://opencode.ai/zen/v1.
     ai_available_models: str = Field(
         default=(
-            "deepseek-v4-flash,deepseek-v4-pro,glm-5.1,grok-4.5,kimi-k2.6,"
-            "mimo-v2.5,mimo-v2.5-pro,minimax-m2.7,qwen3.6-plus"
+            "gpt-5.6-luna,mimo-v2.5,mimo-v2.5-pro,"
+            "deepseek-v4-flash,deepseek-v4-pro,"
+            "kimi-k2.7-code,kimi-k2.6,glm-5.3,glm-5.2,glm-5.1,hy3"
         ),
         alias="AI_AVAILABLE_MODELS",
     )
@@ -92,11 +67,23 @@ class Settings(BaseSettings):
         ),
         alias="AI_DEFAULT_SYSTEM_PROMPT",
     )
+    # Мат, грубые и explicit-выражения разрешены в AI-ответах, когда они
+    # уместны контексту и стилю чата; это не отменяет запрет на травлю и
+    # дискриминацию по защищённым признакам.
+    ai_allow_explicit_language: bool = Field(default=True, alias="AI_ALLOW_EXPLICIT_LANGUAGE")
     ai_max_input_tokens: int = Field(default=8000, alias="AI_MAX_INPUT_TOKENS")
     ai_max_output_tokens: int = Field(default=1500, alias="AI_MAX_OUTPUT_TOKENS")
     ai_max_chars_per_message: int = Field(default=4096, alias="AI_MAX_CHARS_PER_MESSAGE")
     ai_max_custom_prompt_chars: int = Field(default=200, alias="AI_MAX_CUSTOM_PROMPT_CHARS")
-    ai_ask_max_query_chars: int = Field(default=300, alias="AI_ASK_MAX_QUERY_CHARS")
+    ai_q_model: str = Field(default="gpt-5.6-luna", alias="AI_Q_MODEL")
+    ai_q_max_query_chars: int = Field(default=300, alias="AI_Q_MAX_QUERY_CHARS")
+    ai_q_rewrite_variants: int = Field(default=3, alias="AI_Q_REWRITE_VARIANTS")
+    ai_q_per_query_k: int = Field(default=15, alias="AI_Q_PER_QUERY_K")
+    ai_q_top_k: int = Field(default=25, alias="AI_Q_TOP_K")
+    ai_q_neighbors_each_side: int = Field(default=2, alias="AI_Q_NEIGHBORS_EACH_SIDE")
+    ai_q_max_message_chars: int = Field(default=300, alias="AI_Q_MAX_MESSAGE_CHARS")
+    ai_q_max_context_chars: int = Field(default=14000, alias="AI_Q_MAX_CONTEXT_CHARS")
+    ai_q_rewrite_max_output_tokens: int = Field(default=300, alias="AI_Q_REWRITE_MAX_OUTPUT_TOKENS")
     ai_call_timeout_sec: int = Field(default=60, alias="AI_CALL_TIMEOUT_SEC")
     ai_stream_edit_interval_sec: float = Field(default=2.5, alias="AI_STREAM_EDIT_INTERVAL_SEC")
 
@@ -105,7 +92,7 @@ class Settings(BaseSettings):
     nlp_sentiment_model: str = Field(default="seara/rubert-tiny2-russian-sentiment", alias="NLP_SENTIMENT_MODEL")
     nlp_toxicity_model: str = Field(default="cointegrated/rubert-tiny-toxicity", alias="NLP_TOXICITY_MODEL")
     nlp_embedding_model: str = Field(
-        default="sentence-transformers/paraphrase-multilingual-mpnet-base-v2",
+        default="BAAI/bge-m3",
         alias="NLP_EMBEDDING_MODEL",
     )
 
@@ -194,7 +181,7 @@ class Settings(BaseSettings):
     # канала, иначе getChatMember вернёт ошибку для ЛЮБОГО user_id.
     havd_channel_username: str = Field(default="@havdaily", alias="HAVD_CHANNEL_USERNAME")
 
-    # --- Ежедневные ритуалы, теги и Twin (фаза 5) ---
+    # --- Ежедневные ритуалы и теги (фаза 5) ---
     tag_rent_per_day: int = Field(default=500, alias="TAG_RENT_PER_DAY")
     tag_rent_allowed_days: str = Field(default="1,3,7", alias="TAG_RENT_ALLOWED_DAYS")
     title_max: int = Field(default=16, alias="TITLE_MAX")
@@ -202,26 +189,6 @@ class Settings(BaseSettings):
     # в .env перед деплоем; никогда не хардкодятся (D-11).
     steam_api_key: str = Field(default="", alias="STEAM_API_KEY")
     steam_id64: str = Field(default="", alias="STEAM_ID64")
-    # 300 (изначальный дефолт) регулярно бил в TWIN_FALLBACK_TEXT в проде:
-    # reasoning-модели каталога Go (DeepSeek/GLM и т.п.) считают "мысли" перед
-    # ответом ИЗ ТОГО ЖЕ бюджета max_tokens, что и сам ответ (ai_client.py
-    # AIEmptyResponseError) — на 300 токенах reasoning нередко съедал весь
-    # бюджет ДО первого символа content, /twin отвечал заглушкой почти
-    # каждый раз. Подняли до ai_max_output_tokens (1500) — той же величины,
-    # что уже используют все остальные короткие AI-фичи (joke/phrase/lurker/
-    # roast), без единой подобной жалобы.
-    twin_max_output_tokens: int = Field(default=1500, alias="TWIN_MAX_OUTPUT_TOKENS")
-
-    # --- Дневной двойник (TWIN-03, запрошено 2026-07-27) ---
-    # Целевое среднее число проактивных постов за день (в "рабочее" окно
-    # 9:00-23:00 МСК, см. bot/services/daily_twin_service.py) — вероятностный
-    # тик, не фиксированное расписание, поэтому это именно ЦЕЛЬ, а не точное
-    # число. daily_twin_max_posts — жёсткий потолок на статистический выброс.
-    # 18/25 (было 5/8, поднято по запросу 2026-07-27 — "штук 15-20 постов") —
-    # ~32% шанс на тик (18/56 тиков окна) вместо ~9%.
-    daily_twin_posts_target: int = Field(default=18, alias="DAILY_TWIN_POSTS_TARGET")
-    daily_twin_max_posts: int = Field(default=25, alias="DAILY_TWIN_MAX_POSTS")
-
     # --- Платные фичи, донаты, медиа, фидбек (фаза 6) ---
     # Соцмагазин (D-01/A1): цены изначально сбалансированы относительно
     # casino_min_bet=10, жертва дня=228, старт экономики=1000 (сам старт

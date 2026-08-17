@@ -11,12 +11,12 @@ from common.db.base import Base
 
 
 class MessageEmbedding(Base):
-    """Векторное представление сообщения (768-мерный эмбеддинг) для гибридного поиска /ask."""
+    """BGE-M3 1024-мерное представление сообщения для гибридного поиска /q."""
 
-    __tablename__ = "message_embeddings"
+    __tablename__ = "message_embeddings_bge"
 
     message_id: Mapped[int] = mapped_column(
         ForeignKey("messages.id", ondelete="CASCADE"), primary_key=True
     )
     chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    embedding: Mapped[list[float]] = mapped_column(Vector(768), nullable=False)
+    embedding: Mapped[list[float]] = mapped_column(Vector(1024), nullable=False)

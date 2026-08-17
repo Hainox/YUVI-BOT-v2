@@ -184,11 +184,10 @@ async def joke_order_command(message: Message, session: AsyncSession) -> None:
         await message.answer("Недостаточно ювиков.")
         return
     except Exception:  # noqa: BLE001 - social_service._run_llm's ai_client.stream()
-        # call has no try/except of its own (unlike twin_service.py's guarded
-        # second call) - AIEmptyResponseError or any other AI hiccup there
-        # previously crashed this handler silently, with no reply at all (same
-        # class of bug as bot/handlers/twin.py::twin_command, fixed in
-        # 2082287). debit_to_bank already ran inside do_joke_order but the
+        # call has no try/except of its own (unlike ai_client.complete_with_fallback's
+        # guarded retry) - AIEmptyResponseError or any other AI hiccup there
+        # previously crashed this handler silently, with no reply at all
+        # (fixed in 2082287). debit_to_bank already ran inside do_joke_order but the
         # session is never committed on this path, so it rolls back when the
         # per-update session closes (bot/middleware/db_session.py) - no money
         # actually lost.

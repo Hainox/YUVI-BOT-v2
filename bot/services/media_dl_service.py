@@ -83,7 +83,7 @@ _DOWNLOAD_CHUNK_SIZE = 65536
 
 # Глобальный админ-рубильник фичи целиком (по просьбе владельца бота,
 # 2026-07-30 — временно выключить скачивание медиа, не трогая остальной
-# функционал). Та же форма, что daily_twin_service.KEY_DAILY_TWIN_ENABLED:
+# функционал). Та же форма, что и другие ключи bot_settings:
 # persistent через bot_settings/settings_service, переживает рестарт бота.
 KEY_MEDIA_DL_ENABLED = "media_dl_enabled"
 

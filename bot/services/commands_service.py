@@ -38,7 +38,7 @@ _PUBLIC_COMMANDS: list[BotCommand] = [
     BotCommand(command="words", description="Топ слов в чате"),
     BotCommand(command="mood", description="Настроение чата"),
     BotCommand(command="toxic", description="Топ по токсичности"),
-    BotCommand(command="ask", description="Спросить AI"),
+    BotCommand(command="q", description="Спросить чат по истории"),
     BotCommand(command="card", description="Профиль-карточка участника"),
     BotCommand(command="digest", description="Дайджест чата"),
     BotCommand(command="summary", description="Саммари обсуждения"),
@@ -62,12 +62,6 @@ _PUBLIC_COMMANDS: list[BotCommand] = [
     BotCommand(command="roast", description="Роастнуть участника"),
     BotCommand(command="tag_rent", description="Арендовать титул в чате"),
     BotCommand(command="tag_cancel", description="Отменить аренду титула"),
-    BotCommand(command="twin", description="Спросить AI-двойника участника"),
-    BotCommand(command="twin_optin", description="Подключить своего AI-двойника"),
-    BotCommand(command="twin_status", description="Статус моего AI-двойника"),
-    BotCommand(command="twin_pause", description="Приостановить AI-двойника"),
-    BotCommand(command="twin_resume", description="Возобновить AI-двойника"),
-    BotCommand(command="twin_optout", description="Отключить AI-двойника"),
     BotCommand(command="victim", description="Пидор дня"),
     BotCommand(command="awards", description="Итоги дня (номинации)"),
     BotCommand(command="yuvi", description="Yuvi_Yuvi дня (лотерея)"),
@@ -89,8 +83,9 @@ _ADMIN_ONLY_COMMANDS: list[BotCommand] = [
     BotCommand(command="prompt_show", description="[Админ] Текущий промпт"),
     BotCommand(command="prompt_set", description="[Админ] Задать промпт"),
     BotCommand(command="prompt_reset", description="[Админ] Сбросить промпт"),
-    BotCommand(command="daily_twin_off", description="[Админ] Выключить двойника дня целиком"),
-    BotCommand(command="daily_twin_on", description="[Админ] Включить двойника дня обратно"),
+    BotCommand(command="explicit_on", description="[Админ] Разрешить explicit-лексику"),
+    BotCommand(command="explicit_off", description="[Админ] Отключить explicit-лексику"),
+    BotCommand(command="embed_stats", description="[Админ] Готовность /q: пересчёт эмбеддингов"),
 ]
 
 

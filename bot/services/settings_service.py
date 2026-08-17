@@ -18,15 +18,17 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from bot.config import EXPLICIT_LANGUAGE_INSTRUCTION
 from bot.config import settings
 from common.models.bot_setting import BotSetting
 
 KEY_MODEL = "ai_model"
 KEY_PROMPT = "ai_system_prompt"
+KEY_EXPLICIT_LANGUAGE = "ai_allow_explicit_language"
 
 # Sentinel "нет строки BotSetting" — ОТДЕЛЬНЫЙ от любого default (Pitfall,
 # найдено 2026-07-28): get_active_model теперь вызывается для ОДНОГО и того же
-# (chat_id, KEY_MODEL) с РАЗНЫМИ default (twin_service vs остальные сервисы,
+# (chat_id, KEY_MODEL) с РАЗНЫМИ default (q_service vs остальные сервисы,
 # см. ai_structured_model в bot/config.py). Если кэшировать уже подставленный
 # default, первый вызов для чата "залипает" в кэше навсегда — второй вызов с
 # другим default для того же чата получил бы ЧУЖОЙ закэшированный фолбэк
@@ -83,13 +85,12 @@ async def set_setting(
 
 async def get_active_model(session: AsyncSession, chat_id: int, default: str | None = None) -> str:
     """Активная модель для чата — фолбэк на явно переданный `default`, иначе
-    на settings.openai_model (env-дефолт, historically twin-специфичный —
-    см. bot/config.py). `default` позволяет вызывающему сервису задать СВОЙ
+    на settings.openai_model (env-дефолт — см. bot/config.py). `default` позволяет вызывающему сервису задать СВОЙ
     фолбэк (найдено 2026-07-28: kimi-k2.6, дефолт openai_model, систематически
     падает AIEmptyResponseError на промптах со строгим форматом — ask/card/
     digest/summary/topics/phrase/joke/social/lurker передают
-    default=settings.ai_structured_model, twin_service ничего не передаёт и
-    получает openai_model как раньше). Override через /model_set — ОДИН общий
+    default=settings.ai_structured_model, q_service передаёт свой дефолт
+    AI_Q_MODEL). Override через /model_set — ОДИН общий
     ключ (KEY_MODEL) на чат вне зависимости от default: явный выбор админа
     сознательно перекрывает оба "направления" сразу, разделение — только в
     фолбэке по умолчанию."""
@@ -98,9 +99,32 @@ async def get_active_model(session: AsyncSession, chat_id: int, default: str | N
     )
 
 
+async def get_explicit_language_enabled(session: AsyncSession, chat_id: int) -> bool:
+    """Возвращает explicit-режим чата с env-дефолтом."""
+    default = "1" if settings.ai_allow_explicit_language else "0"
+    value = await get_setting(session, chat_id, KEY_EXPLICIT_LANGUAGE, default)
+    return value == "1"
+
+
+async def set_explicit_language(
+    session: AsyncSession, chat_id: int, enabled: bool, updated_by_tg_id: int
+) -> None:
+    """Переключает explicit-режим конкретного чата без перезапуска бота."""
+    await set_setting(
+        session,
+        chat_id,
+        KEY_EXPLICIT_LANGUAGE,
+        "1" if enabled else "0",
+        updated_by_tg_id,
+    )
+
+
 async def get_active_prompt(session: AsyncSession, chat_id: int) -> str:
-    """Активный системный промпт для чата — фолбэк на settings.ai_default_system_prompt."""
-    return await get_setting(session, chat_id, KEY_PROMPT, settings.ai_default_system_prompt)
+    """Активный системный промпт плюс политика языка AI-ответов чата."""
+    prompt = await get_setting(session, chat_id, KEY_PROMPT, settings.ai_default_system_prompt)
+    if await get_explicit_language_enabled(session, chat_id):
+        return f"{prompt}\n\n{EXPLICIT_LANGUAGE_INSTRUCTION}"
+    return prompt
 
 
 def clear_cache() -> None:

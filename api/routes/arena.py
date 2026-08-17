@@ -111,12 +111,12 @@ def _display_name(user: User | None, user_id: int | None = None) -> str | None:
 
 def _viewer_match(
     match: ArenaMatch, viewer_id: int
-) -> tuple[int, int, str, str | None, int, int]:
+) -> tuple[int, int | None, str, str | None, int, int]:
     """Return viewer/opponent fields for a completed match."""
     if viewer_id == match.creator_id:
         return (
             match.creator_id,
-            match.opponent_id or 0,
+            match.opponent_id,
             match.creator_fighter,
             match.opponent_fighter,
             match.creator_bet,
@@ -149,7 +149,6 @@ def _serialize_arena_match_result(
     lost = match.loser_id == viewer_id
     is_draw = match.match_result == "draw"
     technical_loss = match.match_result == "technical_loss" and lost
-    win_xp = _ARENA_CONFIG.base_match_xp + _ARENA_CONFIG.win_bonus_xp
     rating_delta = (
         0
         if is_draw
@@ -164,7 +163,7 @@ def _serialize_arena_match_result(
     xp_gained = (
         0
         if technical_loss
-        else win_xp
+        else _ARENA_CONFIG.base_match_xp + _ARENA_CONFIG.win_bonus_xp
         if won
         else _ARENA_CONFIG.base_match_xp
         if is_draw or lost
@@ -344,7 +343,7 @@ async def get_arena_match_result(
             if not isinstance(runtime_state, dict) or not runtime_state.get("terminal"):
                 raise HTTPException(status_code=409, detail="Матч ещё не завершён")
             try:
-                await arena_service.settle_match(
+                match = await arena_service.settle_match(
                     session, match.chat_id, match.id, runtime_state
                 )
             except arena_service.ArenaServiceError:

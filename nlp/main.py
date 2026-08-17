@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from typing import Annotated
+
 from fastapi import FastAPI
 from pydantic import BaseModel
+from pydantic import Field
 
 from nlp.embeddings import embed_texts
 from nlp.sentiment import classify_sentiment
@@ -11,7 +14,9 @@ app = FastAPI(title="Yuvi Bot v2 NLP", version="0.1.0")
 
 
 class BatchRequest(BaseModel):
-    texts: list[str]
+    # NLP выполняется на CPU; ограничиваем размер одного запроса, чтобы
+    # публично доступный endpoint не мог занять процесс гигантским батчем.
+    texts: list[Annotated[str, Field(max_length=4096)]] = Field(max_length=128)
 
 
 @app.get("/health")
@@ -36,4 +41,4 @@ async def classify_batch(request: BatchRequest) -> dict[str, list[dict]]:
 
 @app.post("/embed/batch")
 async def embed_batch(request: BatchRequest) -> dict[str, list[list[float]]]:
-    return {"embeddings": embed_texts(request.texts)}
+    return {"embeddings": await embed_texts(request.texts)}
